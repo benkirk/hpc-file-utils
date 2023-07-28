@@ -28,18 +28,28 @@ EOF
 
 
 
-
 #----------------------------------------------------------------------------
-#
+# variables & default vaules
 #----------------------------------------------------------------------------
 origARGS=$@
 mode="none"
 DIRLIST=()
+FILELIST=()
 
+timestamp=$(date +%F@%T)
+
+log_dir="/glade/u/CS_HSM/requests"
+[ -w ${log_dir} ] || log_dir=$(pwd)
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
 parse_args ()
 {
     # check the first argument
     case $1 in
+
         "migrate"|"recall"|"status")
             mode=$1
             shift
@@ -52,10 +62,14 @@ parse_args ()
                             fullpath="$( cd "${1}" >/dev/null 2>&1 && pwd )"
 
                             DIRLIST+=( ${fullpath} ) # save directory in an array for later
+                        elif [ -f $1 ]; then
+                            fullpath="$(readlink -f "${1}")"
+
+                            FILELIST+=( ${fullpath} ) # save file in an array for later
                         else
                             # unknown option
                             echo "unrecognized argument: $1"
-                            echo "  directory name expected!!"
+                            echo "  file or directory name expected!!"
                             usage
                             exit 1
                         fi
@@ -65,6 +79,8 @@ parse_args ()
             done
 
             ;;
+
+        # not recognized?
         *)
             usage
             exit 1
@@ -78,11 +94,88 @@ parse_args ()
 
 
 #----------------------------------------------------------------------------
+# utility to transform full path name to a string for use in file labels.
+#----------------------------------------------------------------------------
+pathname_to_label ()
+{
+    [ ${#} -eq 1 ] || { echo "Usage: pathname_to_label <pathname>"; exit 1; }
+
+    curdir=${1}                     # full path to recall directory
+    curdirstr=${curdir/\//}         # replace the first '/' only
+    curdirstr=${curdirstr//\//\\\\} # replace remaining '/' with \/
+
+    recall_request_stub="${USER}::${curdirstr}"
+
+    echo ${recall_request_stub}
+    return 0
+}
+
+
+
+#----------------------------------------------------------------------------
 #
 #----------------------------------------------------------------------------
-do_migration ()
+migrate_files ()
 {
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep -v "COLD_STORAGE" | sort -r)"
+    sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" |  grep -v "COLD_STORAGE" | sort -r | uniq)"
+
+    #echo "migrating FILELIST = ""${FILELIST[@]}" && echo
+    echo "sortedlist = "
+    echo "${sortedlist}" && echo
+
+    MIGRATEDFILES=()
+
+    for file in ${sortedlist}; do
+        if [[ ${file} = */COLD_STORAGE* ]]; then
+            echo "--> Skpping ${file} (path already contains \"*/COLD_STORAGE\"...)"
+            continue
+        else
+            echo "Migrating ${file}"
+        fi
+
+        origfile=${file}
+        basefile=$(basename ${file})
+        oldtopdir=$(dirname ${file})
+        newtopdir=${oldtopdir}/COLD_STORAGE
+        newfile=${newtopdir}/${basefile}
+
+        echo "  origfile = " ${origfile}
+        echo "  newfile  = " ${newfile}
+        echo
+
+        if [ -e ${newfile} ]; then
+            echo "  *** WARNING: newfile collision!! ***"
+            echo "    --> skipping ${origfile}"
+            echo "    --> since ${newfile} exists"
+            continue
+        fi
+
+        set -x
+        mkdir -p ${newtopdir}
+        mv ${origfile} ${newfile}
+
+        MIGRATEDFILES+=( ${newfile} )
+
+        # logfile=${newdir}/.glade_hsm_metadata
+        # echo "# $(date)" > ${logfile}
+        # echo "# user = $(whoami)" >> ${logfile}
+        # echo "# origdir = ${origdir}" >> ${logfile}
+        # echo "# newdir  = ${newdir}"  >> ${logfile}
+        set +x
+
+    done
+
+    echo "MIGRATEDFILES = ""${MIGRATEDFILES[@]}" && echo
+}
+
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+migrate_dirs ()
+{
+    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep -v "COLD_STORAGE" | sort -r | uniq)"
 
     #echo "migrating DIRLIST = ""${DIRLIST[@]}" && echo
     echo "sortedlist = "
@@ -110,7 +203,8 @@ do_migration ()
 
         if [ -d ${newdir} ]; then
             echo "  *** WARNING: newdir collision!! ***"
-            echo "  --> skipping ${origdir} since ${newdir} exists"
+            echo "    --> skipping ${origdir}"
+            echo "    --> since ${newdir} exists"
             continue
         fi
 
@@ -120,16 +214,88 @@ do_migration ()
 
         MIGRATEDDIRS+=( ${newdir} )
 
-        logfile=${newdir}/.glade_hsm_metadata
-        echo "# $(date)" > ${logfile}
-        echo "# user = $(whoami)" >> ${logfile}
-        echo "# origdir = ${origdir}" >> ${logfile}
-        echo "# newdir  = ${newdir}"  >> ${logfile}
+        #logfile=${newdir}/.glade_hsm_metadata
+        #echo "# $(date)" > ${logfile}
+        #echo "# user = $(whoami)" >> ${logfile}
+        #echo "# origdir = ${origdir}" >> ${logfile}
+        #echo "# newdir  = ${newdir}"  >> ${logfile}
         set +x
 
     done
 
     echo "MIGRATEDDIRS = ""${MIGRATEDDIRS[@]}" && echo
+}
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+do_migrate ()
+{
+    migrate_files
+    migrate_dirs
+}
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+recall_files ()
+{
+    sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r | uniq)"
+
+    echo "sortedlist = "
+    echo "${sortedlist}" && echo
+
+    for file in ${sortedlist}; do
+
+        mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || { echo "skipping online file: ${file}"; continue; }
+
+        echo ${file}
+
+        recall_request_stub="${log_dir}/$(pathname_to_label ${file})"
+        recall_request_file="${recall_request_stub}::${timestamp}"
+        recall_request_flist="${recall_request_file}.filelist"
+        echo ${recall_request_file}
+
+
+        echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_flist}"
+        echo "${file}" >> "${recall_request_flist}"
+    done
+}
+
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+recall_dirs ()
+{
+    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r | uniq)"
+
+    echo "sortedlist = "
+    echo "${sortedlist}" && echo
+
+    for dir in ${sortedlist}; do
+        cd ${dir} || continue
+
+        curdir=$(pwd)                  # full path to recall directory
+
+        recall_request_stub="${log_dir}/$(pathname_to_label ${curdir})"
+        recall_request_file="${recall_request_stub}::${timestamp}"
+        recall_request_flist="${recall_request_file}.filelist"
+        echo ${recall_request_file}
+
+        echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_flist}"
+
+        find ${curdir} ! -type d -print0 | \
+            while read -r -d '' file; do
+
+                mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || { echo "skipping online file: ${file}"; continue; }
+                echo "${file}" >> "${recall_request_flist}"
+                #mmlsattr -L ${file} | grep -e OFFLINE -e IBMTPS
+                #for file in $(find . ! -type d); do echo $file;  mmlsattr -L ${file} | grep -e OFFLINE -e IBMTPS -c >/dev/null 2>&1 && echo offline || echo online; done
+            done
+    done
 }
 
 
@@ -139,10 +305,8 @@ do_migration ()
 #----------------------------------------------------------------------------
 do_recall ()
 {
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r)"
-
-    echo "sortedlist = "
-    echo "${sortedlist}" && echo
+    recall_files
+    recall_dirs
 }
 
 
@@ -155,10 +319,16 @@ do_status ()
     echo "Not implemented!!"
     exit 1
 
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r)"
+    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r | uniq)"
 
     echo "sortedlist = "
     echo "${sortedlist}" && echo
+
+    for dir in ${sortedlist}; do
+        cd ${dir} && pwd || continue
+        du -hs .
+        du --apparent-size -hs .
+    done
 }
 
 
@@ -169,7 +339,6 @@ do_status ()
 parse_args $@
 echo $@
 echo "mode = "$mode
-#echo "DIRLIST = ""${DIRLIST[@]}"
 
 
 case ${mode} in
