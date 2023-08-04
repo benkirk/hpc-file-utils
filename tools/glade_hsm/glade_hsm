@@ -254,11 +254,12 @@ recall_files ()
 
         recall_request_stub="${log_dir}/$(pathname_to_label ${file})"
         recall_request_file="${recall_request_stub}::${timestamp}"
+        recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
         echo ${recall_request_file}
 
 
-        echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_flist}"
+        echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
         echo "${file}" >> "${recall_request_flist}"
     done
 }
@@ -282,15 +283,16 @@ recall_dirs ()
 
         recall_request_stub="${log_dir}/$(pathname_to_label ${curdir})"
         recall_request_file="${recall_request_stub}::${timestamp}"
+        recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
         echo ${recall_request_file}
 
-        echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_flist}"
+        echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
 
         find ${curdir} ! -type d -print0 | \
             while read -r -d '' file; do
 
-                mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || { echo "skipping online file: ${file}"; continue; }
+                mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
                 echo "${file}" >> "${recall_request_flist}"
                 #mmlsattr -L ${file} | grep -e OFFLINE -e IBMTPS
                 #for file in $(find . ! -type d); do echo $file;  mmlsattr -L ${file} | grep -e OFFLINE -e IBMTPS -c >/dev/null 2>&1 && echo offline || echo online; done
