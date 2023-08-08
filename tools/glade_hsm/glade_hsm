@@ -10,10 +10,12 @@ SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
 
 #----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
 usage ()
 {
     cat <<EOF
-Usage: $0 <migrate|recall|status> <subcommand options> <dirnames>
+Usage: ${0} <migrate|recall|status> <subcommand options> <dirnames>
        migrate:
         foo
 
@@ -23,7 +25,6 @@ Usage: $0 <migrate|recall|status> <subcommand options> <dirnames>
        status:
          baz
 EOF
-
 }
 
 
@@ -48,27 +49,27 @@ log_dir="/glade/u/CS_HSM/requests"
 parse_args ()
 {
     # check the first argument
-    case $1 in
+    case ${1} in
 
         "migrate"|"recall"|"status")
-            mode=$1
+            mode=${1}
             shift
 
-            while [ $# -gt 0 ] ; do
-                case $1 in
+            while [ ${#} -gt 0 ] ; do
+                case ${1} in
 
                     *)
-                        if [ -d $1 ]; then
+                        if [ -d ${1} ]; then
                             fullpath="$( cd "${1}" >/dev/null 2>&1 && pwd )"
-
                             DIRLIST+=( ${fullpath} ) # save directory in an array for later
-                        elif [ -f $1 ]; then
-                            fullpath="$(readlink -f "${1}")"
 
+                        elif [ -f ${1} ]; then
+                            fullpath="$(readlink -f "${1}")"
                             FILELIST+=( ${fullpath} ) # save file in an array for later
+
                         else
                             # unknown option
-                            echo "unrecognized argument: $1"
+                            echo "unrecognized argument: ${1}"
                             echo "  file or directory name expected!!"
                             usage
                             exit 1
@@ -175,9 +176,10 @@ migrate_files ()
 #----------------------------------------------------------------------------
 migrate_dirs ()
 {
+    #echo "migrating DIRLIST = ""${DIRLIST[@]}" && echo
+
     sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep -v "COLD_STORAGE" | sort -r | uniq)"
 
-    #echo "migrating DIRLIST = ""${DIRLIST[@]}" && echo
     echo "sortedlist = "
     echo "${sortedlist}" && echo
 
@@ -248,7 +250,7 @@ recall_files ()
 
     for file in ${sortedlist}; do
 
-        mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || { echo "skipping online file: ${file}"; continue; }
+        mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
 
         echo ${file}
 
@@ -260,6 +262,7 @@ recall_files ()
 
 
         echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
+        echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
         echo "${file}" >> "${recall_request_flist}"
     done
 }
@@ -271,7 +274,7 @@ recall_files ()
 #----------------------------------------------------------------------------
 recall_dirs ()
 {
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r | uniq)"
+    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)"
 
     echo "sortedlist = "
     echo "${sortedlist}" && echo
@@ -288,14 +291,13 @@ recall_dirs ()
         echo ${recall_request_file}
 
         echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
+        echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
 
         find ${curdir} ! -type d -print0 | \
             while read -r -d '' file; do
 
                 mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
                 echo "${file}" >> "${recall_request_flist}"
-                #mmlsattr -L ${file} | grep -e OFFLINE -e IBMTPS
-                #for file in $(find . ! -type d); do echo $file;  mmlsattr -L ${file} | grep -e OFFLINE -e IBMTPS -c >/dev/null 2>&1 && echo offline || echo online; done
             done
     done
 }
@@ -316,21 +318,67 @@ do_recall ()
 #----------------------------------------------------------------------------
 #
 #----------------------------------------------------------------------------
-do_status ()
+status_files ()
 {
-    echo "Not implemented!!"
-    exit 1
+    echo "status_files() Not implemented!!"
+    #exit 1
+}
 
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r | uniq)"
 
-    echo "sortedlist = "
-    echo "${sortedlist}" && echo
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+status_dirs ()
+{
+    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)"
+
+    #echo "sortedlist = "
+    #echo "${sortedlist}" && echo
 
     for dir in ${sortedlist}; do
-        cd ${dir} && pwd || continue
-        du -hs .
-        du --apparent-size -hs .
-    done
+        cd ${dir} || continue
+
+        curdir=$(pwd)
+
+        echo ${curdir}
+        echo "  Disk Volume:  $(du -hs ${curdir} | awk '{print$1}')"
+        echo "  Total Volume: $(du --apparent-size -hs ${curdir} | awk '{print$1}')"
+
+        # nfiles=0
+        # noffline=0
+
+        # find ${curdir} ! -type d -print0 | \
+        #     while read -r -d '' file; do
+        #         #((++nfiles))
+        #         nfiles="$((${nfiles} + 1))"
+        #         mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+        #         #((++noffline))
+        #         #nfiles=$((nfiles + 1))
+        #     done
+
+        # echo "Total files: ${nfiles} / offline: ${noffline}"
+
+        find ${log_dir} -type f -name "*.log" -print0 | \
+            while read -r -d '' logfile; do
+              #echo ${logfile}
+              grep "${curdir}" ${logfile} -c >/dev/null 2>&1 || continue
+              echo "Recall status from ${logfile}"
+              cat ${logfile}
+            done
+        echo
+     done
+}
+
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+do_status ()
+{
+    status_files
+    status_dirs
 }
 
 
@@ -339,8 +387,8 @@ do_status ()
 # main program follows
 #----------------------------------------------------------------------------
 parse_args $@
-echo $@
-echo "mode = "$mode
+#echo $@
+#echo "mode = "$mode
 
 
 case ${mode} in
