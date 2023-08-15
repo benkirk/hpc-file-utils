@@ -12,21 +12,95 @@ SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 #----------------------------------------------------------------------------
 #
 #----------------------------------------------------------------------------
-usage ()
+usage_migrate ()
 {
     cat <<EOF
-Usage: ${0} <migrate|recall|status> <subcommand options> <dirnames>
-       migrate:
-        foo
+    migrate:
+       Relocates files/directories in preparation for HSM migration.
 
-       recall:
-         bar
+       For each specified <dirname(s)>, <filename(s)>, relocates entity into a
+       "/COLD_STORAGE/" path in preparation for HSM migration.
 
-       status:
-         baz
+       Example:
+
+          glade_hsm migrate /glade/campaign/mylab/myproj/results/
+
+            will relocate
+              /glade/campaign/mylab/myproj/results/ ->
+              /glade/campaign/mylab/myproj/COLD_STORAGE/results/
+
+       Batch system processes then run at regular intervals and migrate all
+       large files (>=100MB) underneath "/COLD_STORAGE/" paths onto tape storage.
+       All files inside a "/COLD_STORAGE/" are marked immutable regardless of size,
+       which prevents modification of contents and metadata (permissions, etc.).
+
+       Name collisions are reported but must be resolved by the user.
 EOF
 }
 
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+usage_recall ()
+{
+    cat <<EOF
+    recall:
+      Submits a recall request for entire directory tree(s), or listed file(s).
+
+       Example:
+
+          glade_hsm recall /glade/campaign/mylab/myproj/COLD_STORAGE/results/
+
+            requests that all previously migrated files inside
+              /glade/campaign/mylab/myproj/COLD_STORAGE/results/
+            be recalled from to disk in order to become readable.
+
+       NOTE: recalled files can be read from inside their "/COLD_STORAGE/" location
+       for ***FIXME*** days, after which they will be re-migrated at the next scheduled interval.
+       To permanently extract a file/directory from HSM, manually mv outside of "/COLD_STORAGE/".
+EOF
+}
+
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+usage_status ()
+{
+    cat <<EOF
+    status:
+      Summarizes the on-disk and total volume consumed by <dirname(s)>.
+      Reports status of any outstanding recall requests for the specified <dirname(s)>, if any.
+
+       Example:
+
+          glade_hsm status /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/
+
+            /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE
+            Disk Volume:  61T
+            Total Volume: 444T
+            Recall status from /glade/u/CS_HSM/requests/benkirk::glade\\campaign\\univ\\uiuc0017\\SouthAmerica_WRF4KM_PGW\\COLD_STORAGE\\2002::2023-08-04@12:54:55.log
+            # /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/2002 : recall requested on 2023-08-04@12:54:55 by benkirk
+EOF
+}
+
+
+
+#----------------------------------------------------------------------------
+#
+#----------------------------------------------------------------------------
+usage ()
+{
+    cat <<EOF
+Usage: ${0} <migrate|recall|status> <subcommand options> <dirname(s)> <filename(s)>
+EOF
+    usage_migrate && echo && echo
+    usage_recall && echo && echo
+    usage_status
+}
 
 
 #----------------------------------------------------------------------------
@@ -58,6 +132,11 @@ parse_args ()
             while [ ${#} -gt 0 ] ; do
                 case ${1} in
 
+                    "-h"|"--help")
+                        [[ ${mode} == "none" ]] && usage || usage_${mode}
+                        exit 1
+                        ;;
+
                     *)
                         if [ -d ${1} ]; then
                             fullpath="$( cd "${1}" >/dev/null 2>&1 && pwd )"
@@ -75,7 +154,7 @@ parse_args ()
                             exit 1
                         fi
                         shift # past argument
-                    ;;
+                        ;;
                 esac
             done
 
