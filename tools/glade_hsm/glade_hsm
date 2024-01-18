@@ -7,6 +7,7 @@ SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 #    { echo "cannot locate ${SCRIPTDIR}/config_env.sh}"; exit 1; }
 #----------------------------------------------------------------------------
 
+MMLSATTR="${MMLSATTR:-/usr/lpp/mmfs/bin/mmlsattr}"
 
 
 #----------------------------------------------------------------------------
@@ -55,10 +56,11 @@ usage_recall ()
 
             requests that all previously migrated files inside
               /glade/campaign/mylab/myproj/COLD_STORAGE/results/
-            be recalled from to disk in order to become readable.
+            be recalled from tape to disk in order to become readable.
+            All files have their "immutability" attribute removed, allowing for modification.
 
        NOTE: recalled files can be read from inside their "/COLD_STORAGE/" location
-       for ***FIXME*** days, after which they will be re-migrated at the next scheduled interval.
+       for 7 days, after which they will be re-migrated at the next scheduled interval.
        To permanently extract a file/directory from HSM, manually mv outside of "/COLD_STORAGE/".
 EOF
 }
@@ -329,7 +331,7 @@ recall_files ()
 
     for file in ${sortedlist}; do
 
-        mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+        ${MMLSATTR} -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
 
         echo ${file}
 
@@ -372,12 +374,10 @@ recall_dirs ()
         echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
         echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
 
-        find ${curdir} ! -type d -print0 | \
-            while read -r -d '' file; do
-
-                mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-                echo "${file}" >> "${recall_request_flist}"
-            done
+        while read -r -d '' file; do
+            ${MMLSATTR} -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+            echo "${file}" >> "${recall_request_flist}"
+        done < <(find ${curdir} ! -type d -print0)
     done
 }
 
@@ -424,27 +424,24 @@ status_dirs ()
         echo "  Disk Volume:  $(du -hs ${curdir} | awk '{print$1}')"
         echo "  Total Volume: $(du --apparent-size -hs ${curdir} | awk '{print$1}')"
 
-        # nfiles=0
-        # noffline=0
+        nfiles=0
+        noffline=0
 
-        # find ${curdir} ! -type d -print0 | \
-        #     while read -r -d '' file; do
-        #         #((++nfiles))
-        #         nfiles="$((${nfiles} + 1))"
-        #         mmlsattr -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-        #         #((++noffline))
-        #         #nfiles=$((nfiles + 1))
-        #     done
+        while read -r -d '' file; do
+            ((++nfiles))
+            #echo "${file} / ${nfiles} / ${noffline}"
+            ${MMLSATTR} -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+            noffline=$((++noffline))
+        done < <(find ${curdir} ! -type d -print0)
 
-        # echo "Total files: ${nfiles} / offline: ${noffline}"
+        echo "Total files: ${nfiles} / offline: ${noffline}"
 
-        find ${log_dir} -type f -name "*.log" -print0 | \
-            while read -r -d '' logfile; do
-              #echo ${logfile}
-              grep "${curdir}" ${logfile} -c >/dev/null 2>&1 || continue
-              echo "Recall status from ${logfile}"
-              cat ${logfile}
-            done
+        while read -r -d '' logfile; do
+            #echo ${logfile}
+            grep "${curdir}" ${logfile} -c >/dev/null 2>&1 || continue
+            echo "Recall status from ${logfile}"
+            cat ${logfile}
+        done < <(find ${log_dir} -type f -name "*.log" -print0)
         echo
      done
 }
