@@ -24,7 +24,7 @@ usage_migrate ()
 
        Example:
 
-          glade_hsm migrate /glade/campaign/mylab/myproj/results/
+          glade_hsm migrate <--single-copy> /glade/campaign/mylab/myproj/results/
 
             will relocate
               /glade/campaign/mylab/myproj/results/ ->
@@ -110,6 +110,8 @@ EOF
 #----------------------------------------------------------------------------
 origARGS=$@
 mode="none"
+single_copy=false
+cold_storage_pathname="COLD_STORAGE"
 DIRLIST=()
 FILELIST=()
 
@@ -137,6 +139,13 @@ parse_args ()
                     "-h"|"--help")
                         [[ ${mode} == "none" ]] && usage || usage_${mode}
                         exit 1
+                        ;;
+
+                    "--single-copy")
+                        single_copy=true
+                        cold_storage_pathname="COLD_STORAGE_SINGLE_COPY"
+                        echo "*** Migrated files will be limited to a single tape copy ***"
+                        shift # past argument
                         ;;
 
                     *)
@@ -218,7 +227,7 @@ migrate_files ()
         origfile=${file}
         basefile=$(basename ${file})
         oldtopdir=$(dirname ${file})
-        newtopdir=${oldtopdir}/COLD_STORAGE
+        newtopdir=${oldtopdir}/${cold_storage_pathname}
         newfile=${newtopdir}/${basefile}
 
         echo "  origfile = " ${origfile}
@@ -235,16 +244,17 @@ migrate_files ()
         set -x
         mkdir -p ${newtopdir}
         mv ${origfile} ${newfile}
+        set +x
 
         MIGRATEDFILES+=( ${newfile} )
 
-        # logfile=${newdir}/.glade_hsm_metadata
-        # echo "# $(date)" > ${logfile}
-        # echo "# user = $(whoami)" >> ${logfile}
-        # echo "# origdir = ${origdir}" >> ${logfile}
-        # echo "# newdir  = ${newdir}"  >> ${logfile}
-        set +x
+        migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${file})"
+        logfile="${migrate_request_stub}.log"
 
+        echo "# $(date)" > ${logfile}
+        echo "# user = $(whoami)" >> ${logfile}
+        echo "# origdir = ${origdir}" >> ${logfile}
+        echo "# newdir  = ${newdir}"  >> ${logfile}
     done
 
     echo "MIGRATEDFILES = ""${MIGRATEDFILES[@]}" && echo
@@ -277,7 +287,7 @@ migrate_dirs ()
         origdir=${dir}
         basedir=$(basename ${dir})
         oldtopdir=$(dirname ${dir})
-        newtopdir=${oldtopdir}/COLD_STORAGE
+        newtopdir=${oldtopdir}/${cold_storage_pathname}
         newdir=${newtopdir}/${basedir}
 
         echo "  origdir = " ${origdir}
@@ -294,16 +304,17 @@ migrate_dirs ()
         set -x
         mkdir -p ${newtopdir}
         mv ${origdir} ${newdir}
+        set +x
 
         MIGRATEDDIRS+=( ${newdir} )
 
-        #logfile=${newdir}/.glade_hsm_metadata
-        #echo "# $(date)" > ${logfile}
-        #echo "# user = $(whoami)" >> ${logfile}
-        #echo "# origdir = ${origdir}" >> ${logfile}
-        #echo "# newdir  = ${newdir}"  >> ${logfile}
-        set +x
+        migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${dir})"
+        logfile="${migrate_request_stub}.log"
 
+        echo "# $(date)" > ${logfile}
+        echo "# user = $(whoami)" >> ${logfile}
+        echo "# origdir = ${origdir}" >> ${logfile}
+        echo "# newdir  = ${newdir}"  >> ${logfile}
     done
 
     echo "MIGRATEDDIRS = ""${MIGRATEDDIRS[@]}" && echo
@@ -399,8 +410,22 @@ do_recall ()
 #----------------------------------------------------------------------------
 status_files ()
 {
-    echo "status_files() Not implemented!!"
+    #echo "status_files() Not implemented!!"
     #exit 1
+
+    sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" |  grep "COLD_STORAGE/" | sort -r | uniq)"
+
+    #echo "sortedlist = "
+    #echo "${sortedlist}" && echo
+
+    for file in ${sortedlist}; do
+
+        status="online"
+
+        ${MMLSATTR} -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 && status="offline"
+
+        echo "${file} : ${status} [$(du -h --apparent-size ${file} | awk '{print $1}')]"
+    done
 }
 
 
