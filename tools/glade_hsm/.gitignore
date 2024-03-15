@@ -1,3 +1,13 @@
 *~
 .testdirstamp
 glade/
+build-aux/
+Makefile
+Makefile.in
+*.log
+*.trs
+aclocal.m4
+autom4te.cache/
+config.status
+configure
+testtree/

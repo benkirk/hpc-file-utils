@@ -457,7 +457,7 @@ status_dirs ()
             #echo "${file} / ${nfiles} / ${noffline}"
             ${MMLSATTR} -L ${file} | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
             noffline=$((++noffline))
-        done < <(find ${curdir} ! -type d -print0)
+        done < <(find ${curdir} -readable ! -type d -print0)
 
         echo "Total files: ${nfiles} / offline: ${noffline}"
 
