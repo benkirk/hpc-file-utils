@@ -1,0 +1,58 @@
+#!/bin/bash -l
+#PBS -A <project_code>
+#PBS -j oe
+#PBS -l walltime=12:00:00
+#PBS -l select=4:ncpus=128:mpiprocs=32:mem=235G
+
+. env/config_env.sh || exit 1
+. scan_dirs.cfg || exit 1
+
+#--------------------------------------------------------------
+projname="${projnames[${PBS_ARRAY_INDEX}]}"
+srcdir="${srcdirs[${PBS_ARRAY_INDEX}]}"
+
+echo "Scanning ${srcdir}"
+#--------------------------------------------------------------
+
+sha=$(echo "${srcdir}" | md5sum | awk '{print $1}')
+LOCK=${HOME}/.scan_dir.${sha}.lock
+
+remove_lock()
+{
+    rm -f "${LOCK}"
+}
+
+another_instance()
+{
+    echo "Cannot acquire lock on ${LOCK}"
+    echo "There is another instance running, exiting"
+    exit 1
+}
+
+lockfile -r 5 -l 3600 "${LOCK}" || another_instance
+trap remove_lock EXIT
+
+#--------------------------------------------------------------
+echo && echo "Beginning ${0} at $(date)"
+
+tstart=$(date +%s)
+timestamp=$(date +%F@%H:%M)
+[[ -z ${PBS_ARRAY_ID} ]] && suffix="${timestamp}" || suffix=${PBS_ARRAY_ID/"[]"/}.${timestamp}
+
+
+#--------------------------------------------------------------
+sstart=$(date +%s)
+mpiexec -n $((4*32)) -ppn 32 \
+        --no-transfer \
+        ./walkstat/run.py \
+        --verbose \
+        --progress $((10*60)) \
+        -d ${srcdir} \
+        1> ${projname}.out.${suffix} \
+        2> ${projname}.err.${suffix}
+
+sstop=$(date +%s)
+elapsed=$((${sstop} - ${sstart}))
+echo $(python -c "print('{:.2f}'.format(${elapsed}/60/60))")" hours"
+
+remove_lock
