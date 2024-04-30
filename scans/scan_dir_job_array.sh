@@ -42,17 +42,19 @@ timestamp=$(date +%F@%H:%M)
 
 #--------------------------------------------------------------
 sstart=$(date +%s)
-mpiexec -n $((4*32)) -ppn 32 \
-        --no-transfer \
-        ./walkstat/run.py \
+time \
+mpiexec -n $((4*32)) -ppn 32 --no-transfer \
+        ./walkstat/walkstat \
         --verbose \
+        --summary summary.xlsx \
+        --summary-prefix "${projname}" \
         --progress $((10*60)) \
-        -d ${srcdir} \
+        --dirs ${srcdir} \
         1> ${projname}.out.${suffix} \
         2> ${projname}.err.${suffix}
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
-echo $(python -c "print('{:.2f}'.format(${elapsed}/60/60))")" hours"
+echo -n "Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))")" hours"
 
 remove_lock
