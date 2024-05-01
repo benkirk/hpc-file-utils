@@ -16,7 +16,7 @@ archive_logs:
 	mv -f *.xlsx *_*.o* *.out.* *.err.* logs/$${timestamp}/
 
 qdelall:
-	qdel $$(qstat -w -u $${USER} 2>/dev/null | grep ".desch" | egrep "dsync|dwalk|mirror" | cut -d'.' -f1)
+	qdel $$(qstat -w -u $${USER} 2>/dev/null | grep ".desch" | egrep "scan_" | cut -d'.' -f1)
 
 
 run: submit_scan_array.sh scan_dir_job_array.sh scan_dirs.cfg
