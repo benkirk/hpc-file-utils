@@ -55,6 +55,6 @@ mpiexec -n $((4*32)) -ppn 32 --no-transfer \
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
-echo -n "Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))")" hours"
+echo -n "Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))") hours"
 
 remove_lock
