@@ -192,7 +192,7 @@ parse_args ()
             ;;
     esac
 
-    echo $@
+    #echo $@
     return
 }
 
@@ -222,17 +222,17 @@ pathname_to_label ()
 #----------------------------------------------------------------------------
 migrate_files ()
 {
-    sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" |  grep -v "/COLD_STORAGE" | sort -r | uniq)"
+    #sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)"
 
     #echo "migrating FILELIST = ""${FILELIST[@]}" && echo
-    echo "sortedlist = "
-    echo "${sortedlist}" && echo
+    #echo "sortedlist = "
+    #echo "${sortedlist}" && echo
 
-    MIGRATEDFILES=()
+    #MIGRATEDFILES=()
 
-    for file in ${sortedlist}; do
+    while read -r file; do
         if [[ ${file} = */COLD_STORAGE* ]]; then
-            echo "--> Skpping ${file} (path already contains \"*/COLD_STORAGE\"...)"
+            echo "--> Skpping ${file} (path already contains \"*/COLD_STORAGE*\"...)"
             continue
         else
             echo "Migrating ${file}"
@@ -260,7 +260,7 @@ migrate_files ()
         mv ${origfile} ${newfile}
         set +x
 
-        MIGRATEDFILES+=( ${newfile} )
+        #MIGRATEDFILES+=( ${newfile} )
 
         migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${file})"
         logfile="${migrate_request_stub}.log"
@@ -269,9 +269,9 @@ migrate_files ()
         echo "# user = $(whoami)" >> ${logfile}
         echo "# origdir = ${origdir}" >> ${logfile}
         echo "# newdir  = ${newdir}"  >> ${logfile}
-    done
+    done < <(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)
 
-    echo "MIGRATEDFILES = ""${MIGRATEDFILES[@]}" && echo
+    #echo "MIGRATEDFILES = ""${MIGRATEDFILES[@]}" && echo
 }
 
 
@@ -283,16 +283,17 @@ migrate_dirs ()
 {
     #echo "migrating DIRLIST = ""${DIRLIST[@]}" && echo
 
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep -v "/COLD_STORAGE" | sort -r | uniq)"
+    #sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep -v "/COLD_STORAGE" | sort -r | uniq)"
 
-    echo "sortedlist = "
-    echo "${sortedlist}" && echo
+    #echo "sortedlist = "
+    #echo "${sortedlist}" && echo
 
-    MIGRATEDDIRS=()
+    #MIGRATEDDIRS=()
 
-    for dir in ${sortedlist}; do
+    while read -r dir; do
+
         if [[ ${dir} = */COLD_STORAGE* ]]; then
-            echo "--> Skpping ${dir} (path already contains \"*/COLD_STORAGE\"...)"
+            echo "--> Skpping ${dir} (path already contains \"*/COLD_STORAGE*\"...)"
             continue
         else
             echo "Migrating ${dir}"
@@ -309,18 +310,18 @@ migrate_dirs ()
         echo
 
         if [ -d ${newdir} ]; then
-            echo "  *** WARNING: newdir collision!! ***"
+            echo "  *** WARNING: name collision!! ***"
             echo "    --> skipping ${origdir}"
             echo "    --> since ${newdir} exists"
             continue
         fi
 
-        set -x
+        #set -x
         mkdir -p ${newtopdir}
         mv ${origdir} ${newdir}
-        set +x
+        #set +x
 
-        MIGRATEDDIRS+=( ${newdir} )
+        #MIGRATEDDIRS+=( ${newdir} )
 
         migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${dir})"
         logfile="${migrate_request_stub}.log"
@@ -329,9 +330,9 @@ migrate_dirs ()
         echo "# user = $(whoami)" >> ${logfile}
         echo "# origdir = ${origdir}" >> ${logfile}
         echo "# newdir  = ${newdir}"  >> ${logfile}
-    done
+    done < <(echo "${DIRLIST[@]}" | tr " " "\n" | sort -r | uniq)
 
-    echo "MIGRATEDDIRS = ""${MIGRATEDDIRS[@]}" && echo
+    #echo "MIGRATEDDIRS = ""${MIGRATEDDIRS[@]}" && echo
 }
 
 #----------------------------------------------------------------------------
@@ -424,22 +425,14 @@ do_recall ()
 #----------------------------------------------------------------------------
 status_files ()
 {
-    #echo "status_files() Not implemented!!"
-    #exit 1
-
-    sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)"
-
-    #echo "sortedlist = "
-    #echo "${sortedlist}" && echo
-
-    for file in ${sortedlist}; do
-
-        status="online"
+    while read -r file; do
+        status="online "
 
         ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 && status="offline"
 
         echo "${file} : ${status} [$(du -h --apparent-size ${file} | awk '{print $1}')]"
-    done
+
+    done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE") # | sort -r | uniq)
 }
 
 
@@ -449,12 +442,7 @@ status_files ()
 #----------------------------------------------------------------------------
 status_dirs ()
 {
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)"
-
-    #echo "sortedlist = "
-    #echo "${sortedlist}" && echo
-
-    for dir in ${sortedlist}; do
+    while read -r dir; do
         cd ${dir} || continue
 
         curdir=$(pwd)
@@ -473,7 +461,7 @@ status_dirs ()
             noffline=$((++noffline))
         done < <(find ${curdir} -readable ! -type d -print0)
 
-        echo "Total files: ${nfiles} / offline: ${noffline}"
+        echo "  Total files: ${nfiles} / offline: ${noffline}"
 
         while read -r -d '' logfile; do
             #echo ${logfile}
@@ -482,7 +470,7 @@ status_dirs ()
             cat ${logfile}
         done < <(find ${log_dir} -type f -name "*.log" -print0)
         echo
-     done
+     done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE") # | sort -r | uniq)"
 }
 
 
