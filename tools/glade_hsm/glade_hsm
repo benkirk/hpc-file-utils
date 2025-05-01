@@ -24,7 +24,7 @@ usage_migrate ()
 
        Example:
 
-          glade_hsm migrate <--single-copy> /glade/campaign/mylab/myproj/results/
+          glade_hsm migrate [--single-copy] /glade/campaign/mylab/myproj/results/
 
             will relocate
               /glade/campaign/mylab/myproj/results/ ->
@@ -152,22 +152,24 @@ parse_args ()
                         if [ -d ${1} ]; then
                             fullpath="$( cd "${1}" >/dev/null 2>&1 && pwd )"
                             case "${fullpath}" in
-                                *"/glade/campaign/"*|*"/gpfs/csfs1"*)
+                                "/glade/campaign/"*|"/gpfs/csfs1/"*)
                                     DIRLIST+=( ${fullpath} ) # save directory in an array for later
                                     ;;
                                 *)
-                                    echo "Omitting ${fullpath} - ${0} only functions on Campaign Storage."
+                                    echo "Invalid ${fullpath} - ${0} only functions on Campaign Storage."
+                                    exit 1
                                     ;;
                             esac
 
                         elif [ -f ${1} ]; then
                             fullpath="$(readlink -f "${1}")"
                             case "${fullpath}" in
-                                *"/glade/campaign/"*|*"/gpfs/csfs1/"*)
+                                "/glade/campaign/"*|"/gpfs/csfs1/"*)
                                     FILELIST+=( ${fullpath} ) # save file in an array for later
                                     ;;
                                 *)
-                                    echo "Omitting ${fullpath} - ${0} only functions on Campaign Storage."
+                                    echo "Invalid ${fullpath} - ${0} only functions on Campaign Storage."
+                                    exit 1
                                     ;;
                             esac
 
@@ -183,6 +185,12 @@ parse_args ()
                 esac
             done
 
+            #  Check if both DIRLIST and FILELIST arrays are empty
+            if [ ${#DIRLIST[@]} -eq 0 ] && [ ${#FILELIST[@]} -eq 0 ]; then
+                echo -e "${0} ${mode} : No arguments specified\n\n"
+                usage
+                exit 1
+            fi
             ;;
 
         # not recognized?
@@ -222,20 +230,21 @@ pathname_to_label ()
 #----------------------------------------------------------------------------
 migrate_files ()
 {
-    #sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)"
-
-    #echo "migrating FILELIST = ""${FILELIST[@]}" && echo
-    #echo "sortedlist = "
-    #echo "${sortedlist}" && echo
-
-    #MIGRATEDFILES=()
+    # quick return for no files
+    [ ${#FILELIST[@]} -eq 0 ] && return
 
     while read -r file; do
-        if [[ ${file} = */COLD_STORAGE* ]]; then
-            echo "--> Skpping ${file} (path already contains \"*/COLD_STORAGE*\"...)"
-            continue
+
+        if [ -e ${file} ]; then
+            if [[ ${file} = */COLD_STORAGE* ]]; then
+                echo "--> Skpping ${file} (path already contains \"*/COLD_STORAGE*\"...)"
+                continue
+            else
+                echo "Migrating ${file}"
+            fi
         else
-            echo "Migrating ${file}"
+            echo "--> No such file: ${file}"
+            continue
         fi
 
         origfile=${file}
@@ -260,8 +269,6 @@ migrate_files ()
         mv ${origfile} ${newfile}
         set +x
 
-        #MIGRATEDFILES+=( ${newfile} )
-
         migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${file})"
         logfile="${migrate_request_stub}.log"
 
@@ -270,8 +277,6 @@ migrate_files ()
         echo "# origdir = ${origdir}" >> ${logfile}
         echo "# newdir  = ${newdir}"  >> ${logfile}
     done < <(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)
-
-    #echo "MIGRATEDFILES = ""${MIGRATEDFILES[@]}" && echo
 }
 
 
@@ -281,22 +286,20 @@ migrate_files ()
 #----------------------------------------------------------------------------
 migrate_dirs ()
 {
-    #echo "migrating DIRLIST = ""${DIRLIST[@]}" && echo
-
-    #sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep -v "/COLD_STORAGE" | sort -r | uniq)"
-
-    #echo "sortedlist = "
-    #echo "${sortedlist}" && echo
-
-    #MIGRATEDDIRS=()
+    # quick return for no directories
+    [ ${#DIRLIST[@]} -eq 0 ] && return
 
     while read -r dir; do
-
-        if [[ ${dir} = */COLD_STORAGE* ]]; then
-            echo "--> Skpping ${dir} (path already contains \"*/COLD_STORAGE*\"...)"
-            continue
+        if [ -s ${dir} ]; then
+            if [[ ${dir} = */COLD_STORAGE* ]]; then
+                echo "--> Skpping ${dir} (path already contains \"*/COLD_STORAGE*\"...)"
+                continue
+            else
+                echo "Migrating ${dir}"
+            fi
         else
-            echo "Migrating ${dir}"
+            echo "--> No such directory: ${dir}"
+            continue
         fi
 
         origdir=${dir}
@@ -321,8 +324,6 @@ migrate_dirs ()
         mv ${origdir} ${newdir}
         #set +x
 
-        #MIGRATEDDIRS+=( ${newdir} )
-
         migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${dir})"
         logfile="${migrate_request_stub}.log"
 
@@ -331,8 +332,6 @@ migrate_dirs ()
         echo "# origdir = ${origdir}" >> ${logfile}
         echo "# newdir  = ${newdir}"  >> ${logfile}
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" | sort -r | uniq)
-
-    #echo "MIGRATEDDIRS = ""${MIGRATEDDIRS[@]}" && echo
 }
 
 #----------------------------------------------------------------------------
@@ -350,12 +349,10 @@ do_migrate ()
 #----------------------------------------------------------------------------
 recall_files ()
 {
-    sortedlist="$(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)"
+    # quick return for no files
+    [ ${#FILELIST[@]} -eq 0 ] && return
 
-    echo "sortedlist = "
-    echo "${sortedlist}" && echo
-
-    for file in ${sortedlist}; do
+    while read -r file; do
 
         ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
 
@@ -371,7 +368,7 @@ recall_files ()
         echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
         echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
         echo "${file}" >> "${recall_request_flist}"
-    done
+    done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
 
 
@@ -381,15 +378,13 @@ recall_files ()
 #----------------------------------------------------------------------------
 recall_dirs ()
 {
-    sortedlist="$(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)"
+    # quick return for no directories
+    [ ${#DIRLIST[@]} -eq 0 ] && return
 
-    echo "sortedlist = "
-    echo "${sortedlist}" && echo
-
-    for dir in ${sortedlist}; do
+    while read -r dir; do
         cd ${dir} || continue
 
-        curdir=$(pwd)                  # full path to recall directory
+        curdir=$(pwd) # full path to recall directory
 
         recall_request_stub="${log_dir}/$(pathname_to_label ${curdir})"
         recall_request_file="${recall_request_stub}::${timestamp}"
@@ -404,7 +399,7 @@ recall_dirs ()
             ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
             echo "${file}" >> "${recall_request_flist}"
         done < <(find ${curdir} ! -type d -print0)
-    done
+    done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
 
 
@@ -425,10 +420,13 @@ do_recall ()
 #----------------------------------------------------------------------------
 status_files ()
 {
-    while read -r file; do
-        status="online "
+    # quick return for no files
+    [ ${#FILELIST[@]} -eq 0 ] && return
 
-        ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 && status="offline"
+    while read -r file; do
+        status="on disk "
+
+        ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 && status="migrated"
 
         echo "${file} : ${status} [$(du -h --apparent-size ${file} | awk '{print $1}')]"
 
@@ -442,6 +440,9 @@ status_files ()
 #----------------------------------------------------------------------------
 status_dirs ()
 {
+    # quick return for no directories
+    [ ${#DIRLIST[@]} -eq 0 ] && return
+
     while read -r dir; do
         cd ${dir} || continue
 
