@@ -13,7 +13,8 @@ clobber:
 archive_logs:
 	timestamp=$$(date +%F@%H:%M) ; \
 	mkdir -p logs/$${timestamp}/ ; \
-	mv -f *.xlsx *_*.o* *.out.* *.err.* logs/$${timestamp}/
+	cp *.xlsx logs/$${timestamp}/ ; \
+	mv -f *_*.o* *.out.* *.err.* logs/$${timestamp}/
 
 qdelall:
 	qdel $$(qstat -w -u $${USER} 2>/dev/null | grep ".desch" | egrep "scan_" | cut -d'.' -f1)
