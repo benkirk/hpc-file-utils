@@ -215,7 +215,7 @@ class MPIClass:
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def gather_and_sum_dict(self, my_part):
         result = defaultdict(int)
-        parts = self.comm.gather(list(my_part.items()))
+        parts = self.comm.allgather(list(my_part.items()))
         if parts:
             for part in parts:
                 for k,v in part:
@@ -231,7 +231,7 @@ class MPIClass:
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def gather_and_sum_ids(self, my_part):
         result = defaultdict(IDCounts)
-        parts = self.comm.gather(list(my_part.values()))
+        parts = self.comm.allgather(list(my_part.values()))
         if parts:
             for part in parts:
                 for obj in part:
@@ -295,10 +295,10 @@ class MPIClass:
         self.uids = self.gather_and_sum_ids(self.uids)
         self.gids = self.gather_and_sum_ids(self.gids)
 
-        # # per-user dir/file counts
-        # for k,v in self.uids.items():
-        #     self.user_top_nbytes_dirs[k]  = self.gather_heaps(self.user_top_nbytes_dirs[k])
-        #     self.user_top_nbytes_files[k] = self.gather_heaps(self.user_top_nbytes_files[k])
+        # per-user dir/file counts
+        for k,v in self.uids.items():
+            self.user_top_nbytes_dirs[k]  = self.gather_heaps(self.user_top_nbytes_dirs[k])
+            self.user_top_nbytes_files[k] = self.gather_heaps(self.user_top_nbytes_files[k])
 
         sys.stdout.flush()
 
@@ -349,11 +349,11 @@ class MPIClass:
         self.summarize_topdirs(self.oldest_mtime_dirs, 'Oldest Dirs (contents mtimes)')
         self.summarize_topdirs(self.oldest_atime_dirs, 'Oldest Dirs (contents atimes)')
 
-        # # per-user dir/file summary
-        # for k,v in self.uids.items():
-        #     if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
-        #         self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name))
-        #         self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name))
+        # per-user dir/file summary
+        for k,v in self.uids.items():
+            if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
+                self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name))
+                self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name))
 
         # write summary file, if requested
         if self.options.summary:
