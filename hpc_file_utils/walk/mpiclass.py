@@ -109,15 +109,16 @@ class GIDCounts(IDCounts):
 ################################################################################
 class MPIClass:
 
-    tags ={ 'ready'         : 10,
-            'execute'       : 11,
-            'work_reply'    : 20,
-            'work_request'  : 21,
-            'work_deny'     : 22,
-            'dir_request'   : 30,
-            'dir_reply'     : 31,
-            'progress'      : 40,
-            'terminate'     : 1000 }
+    tags ={ 'ready'           : 10,
+            'execute'         : 11,
+            'work_reply'      : 20,
+            'work_request'    : 21,
+            'work_deny'       : 22,
+            'dir_request'     : 30,
+            'dir_reply'       : 31,
+            'progress'        : 40,
+            'collect_results' : 50,
+            'terminate'       : 1000 }
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self,options=None):
@@ -139,11 +140,17 @@ class MPIClass:
         self.uids = defaultdict(UIDCounts)
         self.gids = defaultdict(GIDCounts)
 
-        self.top_nitems_dirs   = MaxHeap(self.options.heap_size)
-        self.top_nbytes_dirs   = MaxHeap(self.options.heap_size)
-        self.top_nbytes_files  = MaxHeap(self.options.heap_size)
-        self.oldest_mtime_dirs = MaxHeap(self.options.heap_size)
-        self.oldest_atime_dirs = MaxHeap(self.options.heap_size)
+        self.top_nitems_dirs        = MaxHeap(self.options.heap_size)
+        self.top_nbytes_dirs        = MaxHeap(self.options.heap_size)
+        self.top_nbytes_dirs_3yrs   = MaxHeap(self.options.heap_size)
+        self.top_nbytes_dirs_5yrs   = MaxHeap(self.options.heap_size)
+        self.top_nbytes_dirs_7yrs   = MaxHeap(self.options.heap_size)
+        self.top_nbytes_files       = MaxHeap(self.options.heap_size)
+        self.oldest_mtime_dirs      = MaxHeap(self.options.heap_size)
+        self.oldest_atime_dirs      = MaxHeap(self.options.heap_size)
+
+        self.user_top_nbytes_dirs   = defaultdict(MaxHeap)
+        self.user_top_nbytes_files  = defaultdict(MaxHeap)
 
         return
 
@@ -191,6 +198,21 @@ class MPIClass:
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def gather_heaps(self, my_part):
+        result = my_part
+
+        if self.i_am_root:
+            # collect results from other ranks in any order
+            for r in range(1,self.nranks):
+                their_part = self.comm.recv(source=MPI.ANY_SOURCE, tag=self.tags['collect_results'])
+                for v in their_part: result.add(v)
+        else:
+            self.comm.send(my_part.get_list(), dest=0, tag=self.tags['collect_results'])
+
+        result = self.comm.bcast(result, root=0)
+        return result
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def gather_and_sum_dict(self, my_part):
         result = defaultdict(int)
         parts = self.comm.gather(list(my_part.items()))
@@ -225,6 +247,31 @@ class MPIClass:
         return result
 
 
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def summarize_topdirs(self, dir_list, label, output_file=sys.stdout):
+        sep='-'*80
+        if dir_list.empty(): return
+        print('\n' + sep + '\n{}:\n'.format(label) + sep, file=output_file)
+        for idx,de in dir_list.top(50):
+            print('{:>10} {:>12} {} {}/'.format(format_size(de.nbytes),
+                                                format_number(de.nitems),
+                                                datetime.fromtimestamp(de.max_atime).strftime('%Y-%m-%d'),
+                                                de.path.rstrip('/')),
+                  file=output_file)
+        return
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def summarize_topfiles(self, file_list, label, output_file=sys.stdout):
+        sep='-'*80
+        if file_list.empty(): return
+        print('\n' + sep + '\n{}:\n'.format(label) + sep)
+        for idx,fe in file_list.top(50):
+            print('{:>10} {} {}'.format(format_size(fe.nbytes),
+                                        datetime.fromtimestamp(fe.atime).strftime('%Y-%m-%d'),
+                                        fe.path))
+        return
+
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def summary(self, verbose=False):
@@ -234,16 +281,24 @@ class MPIClass:
         sep='-'*80
 
         # gather heaps
-        self.top_nitems_dirs.reset   (flatten( self.comm.gather(self.top_nitems_dirs.get_list())))
-        self.top_nbytes_dirs.reset   (flatten( self.comm.gather(self.top_nbytes_dirs.get_list())))
-        self.top_nbytes_files.reset  (flatten( self.comm.gather(self.top_nbytes_files.get_list())))
-        self.oldest_mtime_dirs.reset (flatten( self.comm.gather(self.oldest_mtime_dirs.get_list())))
-        self.oldest_atime_dirs.reset (flatten( self.comm.gather(self.oldest_atime_dirs.get_list())))
+        self.top_nitems_dirs      = self.gather_heaps(self.top_nitems_dirs)
+        self.top_nbytes_dirs      = self.gather_heaps(self.top_nbytes_dirs)
+        self.top_nbytes_dirs_3yrs = self.gather_heaps(self.top_nbytes_dirs_3yrs)
+        self.top_nbytes_dirs_5yrs = self.gather_heaps(self.top_nbytes_dirs_5yrs)
+        self.top_nbytes_dirs_7yrs = self.gather_heaps(self.top_nbytes_dirs_7yrs)
+        self.top_nbytes_files     = self.gather_heaps(self.top_nbytes_files)
+        self.oldest_mtime_dirs    = self.gather_heaps(self.oldest_mtime_dirs)
+        self.oldest_atime_dirs    = self.gather_heaps(self.oldest_atime_dirs)
 
-        self.st_modes   = self.gather_and_sum_dict(self.st_modes)
+        self.st_modes = self.gather_and_sum_dict(self.st_modes)
 
         self.uids = self.gather_and_sum_ids(self.uids)
         self.gids = self.gather_and_sum_ids(self.gids)
+
+        # # per-user dir/file counts
+        # for k,v in self.uids.items():
+        #     self.user_top_nbytes_dirs[k]  = self.gather_heaps(self.user_top_nbytes_dirs[k])
+        #     self.user_top_nbytes_files[k] = self.gather_heaps(self.user_top_nbytes_files[k])
 
         sys.stdout.flush()
 
@@ -282,20 +337,23 @@ class MPIClass:
         for k,v in self.gids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)))
 
         # summarize top files & directories
-        print('\n' + sep + '\nLargest Dirs (file count):\n' + sep)
-        for idx,de in self.top_nitems_dirs.top(50): print('{:>10} {:>10} {}/'.format(format_number(de.nitems), format_size(de.nbytes), de.path))
-        print('\n' + sep + '\nLargest Dirs (size):\n' + sep)
-        for idx,de in self.top_nbytes_dirs.top(50): print('{:>10} {:>10} {}/'.format(format_size(de.nbytes), format_number(de.nitems), de.path))
-        print('\n' + sep + '\nLargest Files (size):\n' + sep)
-        for idx,fe in self.top_nbytes_files.top(50): print('{:>10} {}'.format(format_size(fe.nbytes), fe.path))
+        self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)')
+        self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)')
+        self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)')
+        self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)')
+        self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)')
+
+        self.summarize_topfiles(self.top_nbytes_files, 'Largest Files')
 
         # summarize oldest paths
-        print('\n' + sep + '\nOldest Dirs (contents mtimes):\n' + sep)
-        for idx,de in self.oldest_mtime_dirs.top(50): print('{} {:>10} {:>10} {}/'.format(datetime.fromtimestamp(de.max_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                                                                                          format_size(de.nbytes), format_number(de.nitems), de.path))
-        print('\n' + sep + '\nOldest Dirs (contents atimes):\n' + sep)
-        for idx,de in self.oldest_atime_dirs.top(50): print('{}  {:>10} {:>10} {}/'.format(datetime.fromtimestamp(de.max_atime).strftime('%Y-%m-%d %H:%M:%S'),
-                                                                                               format_size(de.nbytes), format_number(de.nitems), de.path))
+        self.summarize_topdirs(self.oldest_mtime_dirs, 'Oldest Dirs (contents mtimes)')
+        self.summarize_topdirs(self.oldest_atime_dirs, 'Oldest Dirs (contents atimes)')
+
+        # # per-user dir/file summary
+        # for k,v in self.uids.items():
+        #     if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
+        #         self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name))
+        #         self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name))
 
         # write summary file, if requested
         if self.options.summary:

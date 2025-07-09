@@ -1,9 +1,9 @@
 #!/bin/bash
 
-maxconcur=2
+maxconcur=3
 
 queue="${queue:-main}"
-walltime="${walltime:-12:00:00}"
+walltime="${walltime:-48:00:00}"
 
 topdir=$(pwd)
 

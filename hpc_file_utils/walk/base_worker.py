@@ -2,13 +2,22 @@
 
 from mpi4py import MPI
 from mpiclass import MPIClass, DirEntry, FileEntry, format_number, UIDCounts, GIDCounts
-import os, sys, stat
+import os, sys, stat, time
 import shutil
 import queue
 from typing import NamedTuple
 
 MAXDIRS_BEFORE_SEND = 200
 PROGRESS_INCREMENT = 20000
+
+SECONDS_IN_YEAR = 60*60*24*365
+THREE_YEARS = 3*SECONDS_IN_YEAR
+FIVE_YEARS  = 5*SECONDS_IN_YEAR
+SEVEN_YEARS = 7*SECONDS_IN_YEAR
+
+NOW_TIMESTAMP = time.time()
+
+
 
 ################################################################################
 class BaseWorker(MPIClass):
@@ -44,6 +53,8 @@ class BaseWorker(MPIClass):
             thisdir_max_ctime = -1
             thisdir_max_atime = -1
 
+            thisdir_uids = set()
+
             dirdepth = dirname.count(os.path.sep)
 
             for di in os.scandir(dirname):
@@ -56,6 +67,8 @@ class BaseWorker(MPIClass):
                 thisdir_nbytes += statinfo.st_size
                 self.num_items += 1
                 self.total_size += statinfo.st_size
+
+                thisdir_uids.add(statinfo.st_uid)
 
                 self.uids[statinfo.st_uid].set_id(statinfo.st_uid)
                 self.uids[statinfo.st_uid].nitems += 1
@@ -92,11 +105,11 @@ class BaseWorker(MPIClass):
                     thisdir_max_ctime = max(thisdir_max_ctime, statinfo.st_ctime)
                     thisdir_max_atime = max(thisdir_max_atime, statinfo.st_atime)
 
-                    fe = FileEntry(pathname, statinfo.st_size,
-                                   statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
+                    fe = FileEntry(pathname, statinfo.st_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
 
                     # track the size & count of this file in our top heap
                     self.top_nbytes_files.add((statinfo.st_size, fe))
+                    self.user_top_nbytes_files[statinfo.st_uid].add((statinfo.st_size, fe))
 
                     # --------------------------------------------------------------------------
                     # additional file processing - simply a placeholder stub for derived classes
@@ -106,11 +119,16 @@ class BaseWorker(MPIClass):
 
 
             # track the size & count of this directory in our top heaps
-            de = DirEntry(dirname, thisdir_nbytes, thisdir_nitems,
-                          thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime)
+            de = DirEntry(dirname, thisdir_nbytes, thisdir_nitems, thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime)
 
             self.top_nitems_dirs.add((thisdir_nitems, de))
             self.top_nbytes_dirs.add((thisdir_nbytes, de))
+
+            if 1 == len(thisdir_uids): self.user_top_nbytes_dirs[thisdir_uids.pop()].add((thisdir_nbytes, de))
+
+            if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_7yrs.add((thisdir_nbytes, de))
+            elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_5yrs.add((thisdir_nbytes, de))
+            elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_3yrs.add((thisdir_nbytes, de))
 
             if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
                 if thisdir_max_mtime > 0: self.oldest_mtime_dirs.add((-thisdir_max_mtime, de)) # (-) to turn maxheap into a minheap

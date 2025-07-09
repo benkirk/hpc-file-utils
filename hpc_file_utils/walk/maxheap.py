@@ -5,7 +5,7 @@ from heapq import heapify, heappush, heappop, heappushpop, nlargest
 
 class MaxHeap():
 
-    def __init__(self, top_n):
+    def __init__(self, top_n=200):
         self.h = []
         self.maxsize = top_n
         heapify(self.h)
@@ -22,6 +22,9 @@ class MaxHeap():
 
     def get_list(self):
         return self.h
+
+    def empty(self):
+        return 0 == len(self.h)
 
     def reset(self, new_h, top_n=None):
         if new_h:

@@ -43,6 +43,7 @@ timestamp=$(date +%F@%H:%M)
 
 #--------------------------------------------------------------
 sstart=$(date +%s)
+rm -f ${projname}.DONE
 time \
 mpiexec -n $((4*32)) -ppn 32 --no-transfer \
         ./walkstat/walkstat \
@@ -56,6 +57,7 @@ mpiexec -n $((4*32)) -ppn 32 --no-transfer \
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
-echo "Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))") hours"
+cp ${projname}.out.${suffix} ${projname}.DONE
+echo "# Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))") hours" | tee -a ${projname}.DONE
 
 remove_lock
