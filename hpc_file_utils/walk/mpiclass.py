@@ -352,19 +352,20 @@ class MPIClass:
         self.summarize_topdirs(self.oldest_atime_dirs, 'Oldest Dirs (contents atimes)', count=50)
 
         # same, to output file
-        ofilename = 'summary{}'.format(self.options.summary_prefix if self.options.summary_prefix else '')
+        ofilename = 'summary-{}'.format(self.options.summary_prefix if self.options.summary_prefix else 'output')
         with open(ofilename,'w') as ofile:
+            print('Summary as of {}\n'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
             print(sep + '\nUsers:\n' + sep, file=ofile)
             for k,v in self.uids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
             print('\n' + sep + '\nGroups:\n' + sep, file=ofile)
             for k,v in self.gids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-            self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)', output_file=ofile)
-            self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)', output_file=ofile)
-            self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)', output_file=ofile)
-            self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)', output_file=ofile)
-            self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)', output_file=ofile)
+            self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)', output_file=ofile, count=250)
 
-            self.summarize_topfiles(self.top_nbytes_files, 'Largest Files', output_file=ofile)
+            self.summarize_topfiles(self.top_nbytes_files, 'Largest Files', output_file=ofile, count=250)
 
 
 
@@ -375,6 +376,8 @@ class MPIClass:
                 p = Path(ofilename)
                 p.parents[0].mkdir(parents=True, exist_ok=True)
                 with open(ofilename,'w') as ofile:
+                    print('Summary as of {}\n'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
+                    print('{} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name), output_file=ofile)
                     self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name), output_file=ofile)
 
