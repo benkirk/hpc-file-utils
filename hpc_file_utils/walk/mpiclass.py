@@ -378,7 +378,7 @@ class MPIClass:
                 with open(ofilename,'w') as ofile:
                     print('Summary as of {}\n'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
                     print('{} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-                    self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs'.format(v.name), output_file=ofile)
                     self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name), output_file=ofile)
 
         # write summary file, if requested

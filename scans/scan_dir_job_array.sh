@@ -52,12 +52,12 @@ mpiexec -n $((4*32)) -ppn 32 --no-transfer \
         --summary-prefix "${projname}" \
         --progress $((10*60)) \
         --dirs ${srcdir} \
-        1> ${projname}.out.${suffix} \
-        2> ${projname}.err.${suffix}
+        1> ${projname}.out \
+        2> ${projname}.err
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
-cp ${projname}.out.${suffix} ${projname}.DONE
+cp ${projname}.out ${projname}.DONE
 echo "# Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))") hours" | tee -a ${projname}.DONE
 
 remove_lock
