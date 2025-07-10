@@ -12,6 +12,7 @@ from typing import NamedTuple
 from maxheap import MaxHeap
 from datetime import datetime, timezone
 from parse_args import parse_options
+from pathlib import Path
 have_humanfriendly = False
 try:
     import humanfriendly
@@ -89,7 +90,7 @@ class UIDCounts(IDCounts):
         try:
             self.name = pwd.getpwuid(self.id).pw_name
         except KeyError:
-            self.name = '{}*'.format(self.id)
+            self.name = 'uid-{}'.format(self.id)
         return
 
 class GIDCounts(IDCounts):
@@ -248,11 +249,11 @@ class MPIClass:
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def summarize_topdirs(self, dir_list, label, output_file=sys.stdout):
+    def summarize_topdirs(self, dir_list, label, output_file=sys.stdout, count=None):
         sep='-'*80
         if dir_list.empty(): return
         print('\n' + sep + '\n{}:\n'.format(label) + sep, file=output_file)
-        for idx,de in dir_list.top(50):
+        for idx,de in dir_list.top(count):
             print('{:>10} {:>12} {} {}/'.format(format_size(de.nbytes),
                                                 format_number(de.nitems),
                                                 datetime.fromtimestamp(de.max_atime).strftime('%Y-%m-%d'),
@@ -262,14 +263,15 @@ class MPIClass:
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def summarize_topfiles(self, file_list, label, output_file=sys.stdout):
+    def summarize_topfiles(self, file_list, label, output_file=sys.stdout, count=None):
         sep='-'*80
         if file_list.empty(): return
-        print('\n' + sep + '\n{}:\n'.format(label) + sep)
-        for idx,fe in file_list.top(50):
+        print('\n' + sep + '\n{}:\n'.format(label) + sep, file=output_file)
+        for idx,fe in file_list.top(count):
             print('{:>10} {} {}'.format(format_size(fe.nbytes),
                                         datetime.fromtimestamp(fe.atime).strftime('%Y-%m-%d'),
-                                        fe.path))
+                                        fe.path),
+                  file=output_file)
         return
 
 
@@ -337,23 +339,27 @@ class MPIClass:
         for k,v in self.gids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)))
 
         # summarize top files & directories
-        self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)')
-        self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)')
-        self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)')
-        self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)')
-        self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)')
+        self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)', count=50)
+        self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)', count=50)
+        self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)', count=50)
+        self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)', count=50)
+        self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)', count=50)
 
-        self.summarize_topfiles(self.top_nbytes_files, 'Largest Files')
+        self.summarize_topfiles(self.top_nbytes_files, 'Largest Files', count=50)
 
         # summarize oldest paths
-        self.summarize_topdirs(self.oldest_mtime_dirs, 'Oldest Dirs (contents mtimes)')
-        self.summarize_topdirs(self.oldest_atime_dirs, 'Oldest Dirs (contents atimes)')
+        self.summarize_topdirs(self.oldest_mtime_dirs, 'Oldest Dirs (contents mtimes)', count=50)
+        self.summarize_topdirs(self.oldest_atime_dirs, 'Oldest Dirs (contents atimes)', count=50)
 
         # per-user dir/file summary
         for k,v in self.uids.items():
             if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
-                self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name))
-                self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name))
+                ofilename = 'usercounts/{}/{}'.format(self.options.summary_prefix if self.options.summary_prefix else '', v.name)
+                p = Path(ofilename)
+                p.parents[0].mkdir(parents=True, exist_ok=True)
+                with open(ofilename,'w') as ofile:
+                    self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs (size)'.format(v.name), output_file=ofile)
+                    self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name), output_file=ofile)
 
         # write summary file, if requested
         if self.options.summary:
