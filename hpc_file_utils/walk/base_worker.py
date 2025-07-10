@@ -134,7 +134,6 @@ class BaseWorker(MPIClass):
                 if thisdir_max_mtime > 0: self.oldest_mtime_dirs.add((-thisdir_max_mtime, de)) # (-) to turn maxheap into a minheap
                 if thisdir_max_atime > 0: self.oldest_atime_dirs.add((-thisdir_max_atime, de)) # (-) to turn maxheap into a minheap
 
-
         except Exception as error:
             print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
             #print('cannot scan {}'.format(dirname), file=sys.stderr)
