@@ -63,20 +63,30 @@ class BaseWorker(MPIClass):
 
                 statinfo = di.stat(follow_symlinks=False)
 
+                # about statinfo.st_size: we can't always trust it.
+                # for sparse files, or files migrated to take via HSM,
+                # the size is not what is occupied on disk.
+                # a better metric is (number of blocks * fs_block_size);
+                # however the block size is variable across filesystems / GPFS file sets
+                # for regular, uncompressed, unmigrated files; size <= (n_blocks*fs_block_size)
+                item_size = statinfo.st_size
+                item_nblocks = statinfo.st_blocks
+                for bs in [ 512, 1024, 2048, 4096, 8192 ]: item_size = min(statinfo.st_size, statinfo.st_blocks*bs)
+
                 thisdir_nitems += 1
-                thisdir_nbytes += statinfo.st_size
+                thisdir_nbytes += item_size
                 self.num_items += 1
-                self.total_size += statinfo.st_size
+                self.total_size += item_size
 
                 thisdir_uids.add(statinfo.st_uid)
 
                 self.uids[statinfo.st_uid].set_id(statinfo.st_uid)
                 self.uids[statinfo.st_uid].nitems += 1
-                self.uids[statinfo.st_uid].nbytes += statinfo.st_size
+                self.uids[statinfo.st_uid].nbytes += item_size
 
                 self.gids[statinfo.st_gid].set_id(statinfo.st_gid)
                 self.gids[statinfo.st_gid].nitems += 1
-                self.gids[statinfo.st_gid].nbytes += statinfo.st_size
+                self.gids[statinfo.st_gid].nbytes += item_size
 
                 # send a progress update periodically
                 # (in production we have many directories with 1M+ files, this ensures some progress is
@@ -105,11 +115,11 @@ class BaseWorker(MPIClass):
                     thisdir_max_ctime = max(thisdir_max_ctime, statinfo.st_ctime)
                     thisdir_max_atime = max(thisdir_max_atime, statinfo.st_atime)
 
-                    fe = FileEntry(pathname, statinfo.st_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
+                    fe = FileEntry(pathname, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
 
                     # track the size & count of this file in our top heap
-                    self.top_nbytes_files.add((statinfo.st_size, fe))
-                    self.user_top_nbytes_files[statinfo.st_uid].add((statinfo.st_size, fe))
+                    self.top_nbytes_files.add((item_size, fe))
+                    self.user_top_nbytes_files[statinfo.st_uid].add((item_size, fe))
 
                     # --------------------------------------------------------------------------
                     # additional file processing - simply a placeholder stub for derived classes
