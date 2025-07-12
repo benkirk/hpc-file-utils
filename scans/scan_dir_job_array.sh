@@ -45,7 +45,7 @@ timestamp=$(date +%F@%H:%M)
 sstart=$(date +%s)
 rm -f ${projname}.DONE
 time \
-mpiexec -n $((4*32)) -ppn 32 --no-transfer \
+mpiexec --no-transfer \
         ./walkstat/walkstat \
         --verbose \
         --summary summary.xlsx \

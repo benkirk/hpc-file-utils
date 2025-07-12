@@ -1,4 +1,7 @@
 *~
 scan_dirs.o*.*
-*.out.*.*.*
-*.err.*.*.*
+*.out
+*.err
+*.DONE
+summary-*
+usercounts/

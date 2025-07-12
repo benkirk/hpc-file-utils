@@ -71,7 +71,7 @@ class BaseWorker(MPIClass):
                 # for regular, uncompressed, unmigrated files; size <= (n_blocks*fs_block_size)
                 item_size = statinfo.st_size
                 item_nblocks = statinfo.st_blocks
-                for bs in [ 512, 1024, 2048, 4096, 8192 ]: item_size = min(statinfo.st_size, statinfo.st_blocks*bs)
+                for bs in [ 512 ]: item_size = min(statinfo.st_size, statinfo.st_blocks*bs)
 
                 thisdir_nitems += 1
                 thisdir_nbytes += item_size

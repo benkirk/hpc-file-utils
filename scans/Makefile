@@ -5,7 +5,7 @@ echo:
 	@echo "Hi"
 
 clean:
-	rm -f *~ *.out.* *.err.* scan_*.o*
+	rm -f *~ *.out *.err *.sh.o* 
 
 clobber:
 	$(MAKE) clean
@@ -14,7 +14,7 @@ archive_logs:
 	timestamp=$$(date +%F@%H:%M) ; \
 	mkdir -p logs/$${timestamp}/ ; \
 	cp *.xlsx logs/$${timestamp}/ ; \
-	mv -f *_*.o* *.out.* *.err.* logs/$${timestamp}/
+	mv -f *_*.o* *.out *.err *.DONE summary-* usercounts logs/$${timestamp}/
 
 qdelall:
 	qdel $$(qstat -w -u $${USER} 2>/dev/null | grep ".desch" | egrep "scan_" | cut -d'.' -f1)
