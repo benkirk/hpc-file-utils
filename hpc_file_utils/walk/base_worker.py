@@ -136,9 +136,11 @@ class BaseWorker(MPIClass):
 
             if 1 == len(thisdir_uids): self.user_top_nbytes_dirs[thisdir_uids.pop()].add((thisdir_nbytes, de))
 
-            if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_7yrs.add((thisdir_nbytes, de))
-            elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_5yrs.add((thisdir_nbytes, de))
-            elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_3yrs.add((thisdir_nbytes, de))
+            # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
+            if 10 < thisdir_max_atime:
+                if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_7yrs.add((thisdir_nbytes, de))
+                elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_5yrs.add((thisdir_nbytes, de))
+                elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_3yrs.add((thisdir_nbytes, de))
 
             if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
                 if thisdir_max_mtime > 0: self.oldest_mtime_dirs.add((-thisdir_max_mtime, de)) # (-) to turn maxheap into a minheap

@@ -27,7 +27,7 @@ def flatten(matrix):
     return None
 
 def format_size(val):
-    if have_humanfriendly: return humanfriendly.format_size(val)
+    if have_humanfriendly: return humanfriendly.format_size(val, binary=True)
     return '{:.5e} bytes'.format(val)
 
 def format_number(val):
@@ -102,7 +102,7 @@ class GIDCounts(IDCounts):
         try:
             self.name = grp.getgrgid(self.id).gr_name
         except KeyError:
-            self.name = '{}*'.format(self.id)
+            self.name = 'gid-{}'.format(self.id)
         return
 
 
@@ -355,10 +355,21 @@ class MPIClass:
         ofilename = 'summary-{}'.format(self.options.summary_prefix if self.options.summary_prefix else 'output')
         with open(ofilename,'w') as ofile:
             print('Summary as of {}\n'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
+            print(('\n'+sep)*3, file=ofile)
+            print('Total Count: {} items'.format(format_number(self.progress_counts[0])), file=ofile)
+            print('Total Size:  {}'.format(format_size(self.progress_sizes[0])), file=ofile)
+            print('Type Counts:', file=ofile)
+            for k,v in self.st_modes.items(): print('   {:5s} : {:,}'.format(k, v), file=ofile)
+
+            # summarize by uid/gid
             print(sep + '\nUsers:\n' + sep, file=ofile)
-            for k,v in self.uids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
+            for k,v in self.uids.items():
+                if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
+                    print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
             print('\n' + sep + '\nGroups:\n' + sep, file=ofile)
-            for k,v in self.gids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
+            for k,v in self.gids.items():
+                if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
+                    print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
             self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)', output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)', output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)', output_file=ofile, count=250)

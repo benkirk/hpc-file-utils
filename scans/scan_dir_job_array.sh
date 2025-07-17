@@ -3,7 +3,7 @@
 #PBS -j oe
 #PBS -r y
 #PBS -l walltime=12:00:00
-#PBS -l select=4:ncpus=128:mpiprocs=32:mem=235G
+#PBS -l select=1:ncpus=128:mpiprocs=96:mem=235G
 
 . env/config_env.sh || exit 1
 . scan_dirs.cfg || exit 1
@@ -48,12 +48,13 @@ time \
 mpiexec --no-transfer \
         ./walkstat/walkstat \
         --verbose \
-        --summary summary.xlsx \
         --summary-prefix "${projname}" \
         --progress $((10*60)) \
         --dirs ${srcdir} \
         1> ${projname}.out \
         2> ${projname}.err
+
+#         --summary summary.xlsx \
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
