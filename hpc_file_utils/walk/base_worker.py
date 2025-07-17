@@ -134,21 +134,37 @@ class BaseWorker(MPIClass):
             self.top_nitems_dirs.add((thisdir_nitems, de))
             self.top_nbytes_dirs.add((thisdir_nbytes, de))
 
-            if 1 == len(thisdir_uids): self.user_top_nbytes_dirs[thisdir_uids.pop()].add((thisdir_nbytes, de))
+            # are the contents owned by a single user id?  If so, track per-user info as well
+            single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else False
 
-            # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
-            if 10 < thisdir_max_atime:
-                if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_7yrs.add((thisdir_nbytes, de))
-                elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_5yrs.add((thisdir_nbytes, de))
-                elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime): self.top_nbytes_dirs_3yrs.add((thisdir_nbytes, de))
-
+            # granular directory tracking by timestamp thresholds.
+            # check against thresholds to avoid tracking users that only have
+            # tiny residual data
             if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
-                if thisdir_max_mtime > 0: self.oldest_mtime_dirs.add((-thisdir_max_mtime, de)) # (-) to turn maxheap into a minheap
-                if thisdir_max_atime > 0: self.oldest_atime_dirs.add((-thisdir_max_atime, de)) # (-) to turn maxheap into a minheap
+
+                if single_owner:
+                    self.user_top_nitems_dirs[single_owner].add((thisdir_nitems, de))
+                    self.user_top_nbytes_dirs[single_owner].add((thisdir_nbytes, de))
+
+                # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
+                if 10 < thisdir_max_atime:
+                    if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
+                        self.top_nbytes_dirs_7yrs.add((thisdir_nbytes, de))
+                        if single_owner: self.user_top_nbytes_dirs_7yrs[single_owner].add((thisdir_nbytes, de))
+
+                    elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime):
+                        self.top_nbytes_dirs_5yrs.add((thisdir_nbytes, de))
+                        if single_owner: self.user_top_nbytes_dirs_5yrs[single_owner].add((thisdir_nbytes, de))
+
+                    elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
+                        self.top_nbytes_dirs_3yrs.add((thisdir_nbytes, de))
+                        if single_owner: self.user_top_nbytes_dirs_3yrs[single_owner].add((thisdir_nbytes, de))
+
+                if 0 < thisdir_max_mtime: self.oldest_mtime_dirs.add((-thisdir_max_mtime, de)) # (-) to turn maxheap into a minheap
+                if 0 < thisdir_max_atime: self.oldest_atime_dirs.add((-thisdir_max_atime, de)) # (-) to turn maxheap into a minheap
 
         except Exception as error:
             print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
-            #print('cannot scan {}'.format(dirname), file=sys.stderr)
 
         # if present, wait for our work queue to drain.
         # note that since each rank is wholly responsible for a given directory,

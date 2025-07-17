@@ -150,8 +150,12 @@ class MPIClass:
         self.oldest_mtime_dirs      = MaxHeap(self.options.heap_size)
         self.oldest_atime_dirs      = MaxHeap(self.options.heap_size)
 
-        self.user_top_nbytes_dirs   = defaultdict(MaxHeap)
-        self.user_top_nbytes_files  = defaultdict(MaxHeap)
+        self.user_top_nitems_dirs      = defaultdict(MaxHeap)
+        self.user_top_nbytes_dirs      = defaultdict(MaxHeap)
+        self.user_top_nbytes_dirs_3yrs = defaultdict(MaxHeap)
+        self.user_top_nbytes_dirs_5yrs = defaultdict(MaxHeap)
+        self.user_top_nbytes_dirs_7yrs = defaultdict(MaxHeap)
+        self.user_top_nbytes_files     = defaultdict(MaxHeap)
 
         return
 
@@ -250,11 +254,11 @@ class MPIClass:
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def summarize_topdirs(self, dir_list, label, output_file=sys.stdout, count=None):
-        sep='-'*80
+        sep='#' + '-'*79
         if dir_list.empty(): return
         print('\n' + sep + '\n{}:\n'.format(label) + sep, file=output_file)
         for idx,de in dir_list.top(count):
-            print('{:>10} {:>12} {} {}/'.format(format_size(de.nbytes),
+            print('{:>11} {:>12} {} {}/'.format(format_size(de.nbytes),
                                                 format_number(de.nitems),
                                                 datetime.fromtimestamp(de.max_atime).strftime('%Y-%m-%d'),
                                                 de.path.rstrip('/')),
@@ -264,11 +268,11 @@ class MPIClass:
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def summarize_topfiles(self, file_list, label, output_file=sys.stdout, count=None):
-        sep='-'*80
+        sep='#' + '-'*79
         if file_list.empty(): return
         print('\n' + sep + '\n{}:\n'.format(label) + sep, file=output_file)
         for idx,fe in file_list.top(count):
-            print('{:>10} {} {}'.format(format_size(fe.nbytes),
+            print('{:>11} {} {}'.format(format_size(fe.nbytes),
                                         datetime.fromtimestamp(fe.atime).strftime('%Y-%m-%d'),
                                         fe.path),
                   file=output_file)
@@ -280,7 +284,7 @@ class MPIClass:
 
         self.comm.Barrier()
 
-        sep='-'*80
+        sep='#' + '-'*79
 
         # gather heaps
         self.top_nitems_dirs      = self.gather_heaps(self.top_nitems_dirs)
@@ -299,8 +303,12 @@ class MPIClass:
 
         # per-user dir/file counts
         for k,v in self.uids.items():
-            self.user_top_nbytes_dirs[k]  = self.gather_heaps(self.user_top_nbytes_dirs[k])
-            self.user_top_nbytes_files[k] = self.gather_heaps(self.user_top_nbytes_files[k])
+            self.user_top_nitems_dirs[k]       = self.gather_heaps(self.user_top_nitems_dirs[k])
+            self.user_top_nbytes_dirs[k]       = self.gather_heaps(self.user_top_nbytes_dirs[k])
+            self.user_top_nbytes_dirs_3yrs[k]  = self.gather_heaps(self.user_top_nbytes_dirs_3yrs[k])
+            self.user_top_nbytes_dirs_5yrs[k]  = self.gather_heaps(self.user_top_nbytes_dirs_5yrs[k])
+            self.user_top_nbytes_dirs_7yrs[k]  = self.gather_heaps(self.user_top_nbytes_dirs_7yrs[k])
+            self.user_top_nbytes_files[k]      = self.gather_heaps(self.user_top_nbytes_files[k])
 
         sys.stdout.flush()
 
@@ -325,58 +333,37 @@ class MPIClass:
         # root rank summarizes results
         if not self.i_am_root: return
 
-        # summarize stat types
-        print(('\n'+sep)*3)
-        print('Total Count: {} items'.format(format_number(self.progress_counts[0])))
-        print('Total Size:  {}'.format(format_size(self.progress_sizes[0])))
-        print('Type Counts:')
-        for k,v in self.st_modes.items(): print('   {:5s} : {:,}'.format(k, v))
-
-        # summarize by uid/gid
-        print('\n' + sep + '\nUsers:\n' + sep)
-        for k,v in self.uids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)))
-        print('\n' + sep + '\nGroups:\n' + sep)
-        for k,v in self.gids.items(): print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)))
-
-        # summarize top files & directories
-        self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)', count=50)
-        self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)', count=50)
-        self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)', count=50)
-        self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)', count=50)
-        self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)', count=50)
-
-        self.summarize_topfiles(self.top_nbytes_files, 'Largest Files', count=50)
-
-        # summarize oldest paths
-        self.summarize_topdirs(self.oldest_mtime_dirs, 'Oldest Dirs (contents mtimes)', count=50)
-        self.summarize_topdirs(self.oldest_atime_dirs, 'Oldest Dirs (contents atimes)', count=50)
-
-        # same, to output file
+        # write summary to output file
         ofilename = 'summary-{}'.format(self.options.summary_prefix if self.options.summary_prefix else 'output')
         with open(ofilename,'w') as ofile:
-            print('Summary as of {}\n'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
-            print(('\n'+sep)*3, file=ofile)
+            print(sep, file=ofile)
+            print('# Summary as of {}'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
+            print(sep, file=ofile)
             print('Total Count: {} items'.format(format_number(self.progress_counts[0])), file=ofile)
             print('Total Size:  {}'.format(format_size(self.progress_sizes[0])), file=ofile)
             print('Type Counts:', file=ofile)
-            for k,v in self.st_modes.items(): print('   {:5s} : {:,}'.format(k, v), file=ofile)
+            for k,v in self.st_modes.items():
+                print('{:>8} : {:,}'.format(k, v), file=ofile)
 
             # summarize by uid/gid
-            print(sep + '\nUsers:\n' + sep, file=ofile)
+            print('\n' + sep + '\n# Users:\n' + sep, file=ofile)
             for k,v in self.uids.items():
                 if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
                     print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-            print('\n' + sep + '\nGroups:\n' + sep, file=ofile)
+            print('\n' + sep + '\n# Groups:\n' + sep, file=ofile)
             for k,v in self.gids.items():
                 if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
                     print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-            self.summarize_topdirs(self.top_nitems_dirs, 'Largest Dirs (file count)', output_file=ofile, count=250)
-            self.summarize_topdirs(self.top_nbytes_dirs, 'Largest Dirs (size)', output_file=ofile, count=250)
-            self.summarize_topdirs(self.top_nbytes_dirs_3yrs, 'Largest Dirs (size) [3-5yrs)', output_file=ofile, count=250)
-            self.summarize_topdirs(self.top_nbytes_dirs_5yrs, 'Largest Dirs (size) [5-7yrs)', output_file=ofile, count=250)
-            self.summarize_topdirs(self.top_nbytes_dirs_7yrs, 'Largest Dirs (size) [7yrs+)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nitems_dirs,      '# Bloated Dirs (file count)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs,      '# Largest Dirs',              output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs_3yrs, '# Largest Dirs [3-5yrs)',     output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs_5yrs, '# Largest Dirs [5-7yrs)',     output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nbytes_dirs_7yrs, '# Largest Dirs [7yrs+)',      output_file=ofile, count=250)
 
-            self.summarize_topfiles(self.top_nbytes_files, 'Largest Files', output_file=ofile, count=250)
+            self.summarize_topfiles(self.top_nbytes_files, '# Largest Files', output_file=ofile, count=250)
+
+        # ... and also echo to stdout
+        with open(ofilename, 'r') as ofile: print(ofile.read(),end='')
 
 
 
@@ -387,21 +374,28 @@ class MPIClass:
                 p = Path(ofilename)
                 p.parents[0].mkdir(parents=True, exist_ok=True)
                 with open(ofilename,'w') as ofile:
-                    print('Summary as of {}\n'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
+                    print(sep, file=ofile)
+                    print('# Summary as of {}'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
+                    print(sep, file=ofile)
                     print('{} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-                    self.summarize_topdirs(self.user_top_nbytes_dirs[k],   '{} - Largest Dirs'.format(v.name), output_file=ofile)
-                    self.summarize_topfiles(self.user_top_nbytes_files[k], '{} - Largest Files'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nitems_dirs[k],      '# {} - Bloated Dirs (file count)'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nbytes_dirs[k],      '# {} - Largest Dirs'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nbytes_dirs_3yrs[k], '# {} - Largest Dirs [3-5yrs)'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nbytes_dirs_5yrs[k], '# {} - Largest Dirs [5-7yrs)'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nbytes_dirs_7yrs[k], '# {} - Largest Dirs [7yrs+)'.format(v.name), output_file=ofile)
+                    self.summarize_topfiles(self.user_top_nbytes_files[k],    '# {} - Largest Files'.format(v.name), output_file=ofile)
 
-        # write summary file, if requested
-        if self.options.summary:
-            print('\n--> Writing summary to {}'.format(self.options.summary))
+        #---------------------------------------------
+        # write summary spreadsheet file, if requested
+        if self.options.spreadsheet:
+            print('\n--> Writing summary to {}'.format(self.options.spreadsheet))
             import pandas as pd
 
             sheet_prefix = '{} - '.format(self.options.summary_prefix) if self.options.summary_prefix else ''
-            mode = 'a' if os.path.exists(self.options.summary) else 'w'
+            mode = 'a' if os.path.exists(self.options.spreadsheet) else 'w'
             if_sheet_exists = None if 'w' == mode else 'replace'
 
-            with pd.ExcelWriter(self.options.summary,
+            with pd.ExcelWriter(self.options.spreadsheet,
                                 mode=mode, if_sheet_exists=if_sheet_exists) as writer:
                 # directories
                 l = []
@@ -457,7 +451,7 @@ class MPIClass:
             from openpyxl.utils.dataframe import dataframe_to_rows
             from openpyxl.styles import Alignment, Font
 
-            wb = load_workbook(self.options.summary)
+            wb = load_workbook(self.options.spreadsheet)
             #print(wb.sheetnames)
 
             for ws in wb.worksheets:
@@ -503,7 +497,7 @@ class MPIClass:
                     #column[0].value = column[0].value.replace('_',' ').title()
 
             # Save the workbook
-            wb.save(self.options.summary)
-            print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')))
+            wb.save(self.options.spreadsheet)
 
+        print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')))
         return

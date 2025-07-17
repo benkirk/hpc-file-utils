@@ -12,7 +12,7 @@ def parse_options(appname=None):
     # common arguments first
     parser.add_argument('-d', '--dirs', nargs='+', help='List of Directories', required=True)
     parser.add_argument('-p', '--progress', type=int, default=5, help='Frequency to report progress (default:5 seconds, <=0 disables)')
-    parser.add_argument('-s', '--summary', default=None, help='Summary spreadsheet', type=str, required=False)
+    parser.add_argument('-s', '--spreadsheet', default=None, help='Summary spreadsheet', type=str, required=False)
     parser.add_argument('--summary-prefix', default=None, help='Summary spreadsheet entity prefix', required=False)
     parser.add_argument('-e', '--errors', default=None, help='Error log file name (default: stderr)', type=str, required=False)
     parser.add_argument('-v', '--verbose', action='store_true', help='Print detailed information')
@@ -34,7 +34,7 @@ def parse_options(appname=None):
         args.threshold_size = 0
     else:
         from humanfriendly import parse_size
-        args.threshold_size = parse_size(args.threshold_size)
+        args.threshold_size = parse_size(args.threshold_size, binary=True)
 
     for d in args.dirs:
         if not os.path.isdir(d):
