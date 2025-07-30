@@ -15,8 +15,8 @@ clobber:
 archive_logs:
 	timestamp=$$(date +%F@%H:%M) ; \
 	mkdir -p logs/$${timestamp}/ ; \
-	mv -f *.DONE summary-* usercounts logs/$${timestamp}/ ; \
-	rm -f *.out *.err scan_dirs.o*.* logs/latest ; \
+	mv -f summary-* usercounts logs/$${timestamp}/ ; \
+	rm -f *.DONE *.out *.err scan_dirs.o*.* logs/latest ; \
 	cd logs; \
 	ln -s $${timestamp} latest
 

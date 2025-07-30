@@ -58,7 +58,7 @@ mpiexec --no-transfer \
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
-cp ${projname}.out ${projname}.DONE
+mv -f ${projname}.out ${projname}.DONE
 echo "# Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))") hours" | tee -a ${projname}.DONE
 
 remove_lock
