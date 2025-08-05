@@ -390,6 +390,7 @@ recall_dirs ()
         recall_request_file="${recall_request_stub}::${timestamp}"
         recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
+        recall_request_tmplist="${recall_request_flist}.tmp"
         echo ${recall_request_file}
 
         echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
@@ -397,8 +398,10 @@ recall_dirs ()
 
         while read -r -d '' file; do
             ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-            echo "${file}" >> "${recall_request_flist}"
+            echo "${file}" >> "${recall_request_tmplist}"
         done < <(find ${curdir} ! -type d -print0)
+
+        mv -f ${recall_request_tmplist} ${recall_request_flist}
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
 
