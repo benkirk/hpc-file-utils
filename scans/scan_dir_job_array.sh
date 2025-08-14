@@ -11,7 +11,7 @@
 #--------------------------------------------------------------
 projname="${projnames[${PBS_ARRAY_INDEX}]}"
 srcdir="${srcdirs[${PBS_ARRAY_INDEX}]}"
-
+srcdir="$(realpath ${srcdir})" # <-- clean up any /foo//bar type paths to /foo/bar
 echo "Scanning ${srcdir}"
 #--------------------------------------------------------------
 
@@ -50,7 +50,7 @@ mpiexec --no-transfer \
         --verbose \
         --summary-prefix "${projname}" \
         --progress $((10*60)) \
-        --dirs ${srcdir} \
+        --dirs ${srcdir}/*/ \
         1> ${projname}.out \
         2> ${projname}.err
 
@@ -60,5 +60,16 @@ sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))
 mv -f ${projname}.out ${projname}.DONE
 echo "# Done at $(date) in $(python -c "print('{:.2f}'.format(${elapsed}/60/60))") hours" | tee -a ${projname}.DONE
+
+if [ -w "${srcdir}/.usage" ]; then
+    destfile=${srcdir}/.usage/summary.txt
+
+    echo "Copying out results to ${destfile} ..."
+
+    rm -f ${destfile}
+    cp summary-${projname} ${destfile}
+    mkdir -p "${srcdir}/.usage/usercounts/"
+    rsync -axv --force --delete ./usercounts/${projname}/ ${srcdir}/.usage/usercounts/
+fi
 
 remove_lock

@@ -354,11 +354,11 @@ class MPIClass:
             for k,v in self.gids.items():
                 if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
                     print('{:>12} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-            self.summarize_topdirs(self.top_nitems_dirs,      '# Bloated Dirs (file count)', output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs,      '# Largest Dirs',              output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs_3yrs, '# Largest Dirs [3-5yrs)',     output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs_5yrs, '# Largest Dirs [5-7yrs)',     output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs_7yrs, '# Largest Dirs [7yrs+)',      output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nitems_dirs,      '# Bloated Dirs (file count)', output_file=ofile, count=250)
 
             self.summarize_topfiles(self.top_nbytes_files, '# Largest Files', output_file=ofile, count=250)
 
@@ -377,12 +377,13 @@ class MPIClass:
                     print(sep, file=ofile)
                     print('# Summary as of {}'.format(datetime.now().isoformat(sep=' ', timespec='minutes')), file=ofile)
                     print(sep, file=ofile)
-                    print('{} : {:>10} {:>10}'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
-                    self.summarize_topdirs(self.user_top_nitems_dirs[k],      '# {} - Bloated Dirs (file count)'.format(v.name), output_file=ofile)
+                    print('{} : {:>10} {:>10} items'.format(v.name,format_size(v.nbytes),format_number(v.nitems)), file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs[k],      '# {} - Largest Dirs'.format(v.name), output_file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs_3yrs[k], '# {} - Largest Dirs [3-5yrs)'.format(v.name), output_file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs_5yrs[k], '# {} - Largest Dirs [5-7yrs)'.format(v.name), output_file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs_7yrs[k], '# {} - Largest Dirs [7yrs+)'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nitems_dirs[k],      '# {} - Bloated Dirs (file count)'.format(v.name), output_file=ofile)
+
                     self.summarize_topfiles(self.user_top_nbytes_files[k],    '# {} - Largest Files'.format(v.name), output_file=ofile)
 
         #---------------------------------------------
