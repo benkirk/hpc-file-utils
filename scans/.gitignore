@@ -5,3 +5,4 @@ scan_dirs.o*.*
 *.DONE
 summary-*
 usercounts/
+__pycache__/
