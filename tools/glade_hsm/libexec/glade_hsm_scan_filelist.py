@@ -41,7 +41,13 @@ def process_file(filepath):
 
     #print(f"Processing: {filepath}")
 
-    stat_info = os.stat(filepath)
+    try:
+        stat_info = os.stat(filepath)
+    except Exception as e:
+        print(e)
+        print(f"Error processing file '{filepath}': {e}")
+        return 0,0
+
 
     # decode file type - should be a regular file only; (output from find -type f)
     fmode = stat_info.st_mode
@@ -95,6 +101,11 @@ def main():
         if is_offline:
             n_offline_files += 1
 
+        # incremental progress
+        if 0 == n_total_files%100e3:
+            print(' ... {:,} files, {:,} offline, {} currently on disk, {} total.'.format(n_total_files, n_offline_files,
+                                                                                          human_readable_bytes(total_ondisk_bytes),
+                                                                                          human_readable_bytes(total_true_bytes)))
     print('  Disk Volume:  {}'.format(human_readable_bytes(total_ondisk_bytes)))
     print('  Total Volume: {}'.format(human_readable_bytes(total_true_bytes)))
     print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
