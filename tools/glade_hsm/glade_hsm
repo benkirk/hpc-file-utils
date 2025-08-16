@@ -2,7 +2,7 @@
 
 #----------------------------------------------------------------------------
 # environment
-SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+SCRIPTDIR="$( cd "$( dirname $(readlink "${BASH_SOURCE[0]}" ) )" >/dev/null 2>&1 && pwd )"
 #[ -f ${SCRIPTDIR}/config_env.sh ] && . ${SCRIPTDIR}/config_env.sh || \
 #    { echo "cannot locate ${SCRIPTDIR}/config_env.sh}"; exit 1; }
 #----------------------------------------------------------------------------
@@ -399,7 +399,12 @@ recall_dirs ()
         while read -r -d '' file; do
             ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
             echo "${file}" >> "${recall_request_tmplist}"
-        done < <(find ${curdir} ! -type d -print0)
+        done < <(find ${curdir} -type f -print0)
+
+        echo "python version:"
+        unset SCAN_FILELIST_OUTPUTFILE
+        find ${curdir} -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
+
 
         mv -f ${recall_request_tmplist} ${recall_request_flist}
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
@@ -463,9 +468,13 @@ status_dirs ()
             #echo "${file} / ${nfiles} / ${noffline}"
             ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
             noffline=$((++noffline))
-        done < <(find ${curdir} -readable ! -type d -print0)
+        done < <(find ${curdir} -readable -type f -print0)
 
         echo "  Total files: ${nfiles} / offline: ${noffline}"
+
+        echo "python version:"
+        unset SCAN_FILELIST_OUTPUTFILE
+        find ${curdir} -readable -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
         while read -r -d '' logfile; do
             #echo ${logfile}
