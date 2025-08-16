@@ -9,7 +9,7 @@ GPFS_BLOCKSIZE=512
 
 # takes an integer number of bytes and returns a human-readable string
 def human_readable_bytes(num_bytes):
-    units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
+    units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
     size = float(num_bytes)
     for unit in units:
         if size < 1024.0:
@@ -55,9 +55,9 @@ def process_file(filepath):
 
     # however the block size is variable across filesystems / GPFS file sets
     # for regular, uncompressed, unmigrated files; size <= (n_blocks*fs_block_size)
-    file_ondisk_size = stat_info.st_size
+    file_true_size = stat_info.st_size
     file_nblocks = stat_info.st_blocks
-    file_true_size = min(file_ondisk_size, file_nblocks*GPFS_BLOCKSIZE)
+    file_ondisk_size = min(file_true_size, file_nblocks*GPFS_BLOCKSIZE)
 
     return file_ondisk_size, file_true_size
 

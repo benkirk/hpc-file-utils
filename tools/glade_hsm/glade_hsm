@@ -2,9 +2,7 @@
 
 #----------------------------------------------------------------------------
 # environment
-SCRIPTDIR="$( cd "$( dirname $(readlink "${BASH_SOURCE[0]}" ) )" >/dev/null 2>&1 && pwd )"
-#[ -f ${SCRIPTDIR}/config_env.sh ] && . ${SCRIPTDIR}/config_env.sh || \
-#    { echo "cannot locate ${SCRIPTDIR}/config_env.sh}"; exit 1; }
+SCRIPTDIR="$( cd "$( dirname $(realpath "${BASH_SOURCE[0]}") )" >/dev/null 2>&1 && pwd )"
 #----------------------------------------------------------------------------
 
 MMLSATTR="${MMLSATTR:-/usr/lpp/mmfs/bin/mmlsattr}"
@@ -405,7 +403,6 @@ recall_dirs ()
         unset SCAN_FILELIST_OUTPUTFILE
         find ${curdir} -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
-
         mv -f ${recall_request_tmplist} ${recall_request_flist}
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
@@ -457,24 +454,26 @@ status_dirs ()
         curdir=$(pwd)
 
         echo ${curdir}
-        echo "  Disk Volume:  $(du -hs ${curdir} | awk '{print$1}')"
-        echo "  Total Volume: $(du --apparent-size -hs ${curdir} | awk '{print$1}')"
 
-        nfiles=0
-        noffline=0
-
-        while read -r -d '' file; do
-            ((++nfiles))
-            #echo "${file} / ${nfiles} / ${noffline}"
-            ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-            noffline=$((++noffline))
-        done < <(find ${curdir} -readable -type f -print0)
-
-        echo "  Total files: ${nfiles} / offline: ${noffline}"
-
-        echo "python version:"
+	# echo "python version:"
         unset SCAN_FILELIST_OUTPUTFILE
         find ${curdir} -readable -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
+
+	# echo "bash version:"
+        # echo "  Disk Volume:  $(du -hs ${curdir} | awk '{print$1}')"
+        # echo "  Total Volume: $(du --apparent-size -hs ${curdir} | awk '{print$1}')"
+
+        # nfiles=0
+        # noffline=0
+
+        # while read -r -d '' file; do
+        #     ((++nfiles))
+        #     #echo "${file} / ${nfiles} / ${noffline}"
+        #     ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+        #     noffline=$((++noffline))
+        # done < <(find ${curdir} -readable -type f -print0)
+
+        # echo "  Total files: ${nfiles} / offline: ${noffline}"
 
         while read -r -d '' logfile; do
             #echo ${logfile}
