@@ -110,6 +110,7 @@ origARGS=$@
 mode="none"
 single_copy=false
 cold_storage_pathname="COLD_STORAGE"
+CONFIRM=YES
 DIRLIST=()
 FILELIST=()
 
@@ -137,6 +138,11 @@ parse_args ()
                     "-h"|"--help")
                         [[ ${mode} == "none" ]] && usage || usage_${mode}
                         exit 1
+                        ;;
+
+                    "-f"|"--force")
+                        unset CONFIRM
+                        shift # past argument
                         ;;
 
                     "--single-copy")
@@ -205,6 +211,26 @@ parse_args ()
 
 
 #----------------------------------------------------------------------------
+# Promt user for confirmation and capture response
+#----------------------------------------------------------------------------
+get_confirmation()
+{
+    local msg="$@"
+    confirmed=0
+    if [ -z ${CONFIRM} ]; then
+        confirmed=1
+    else
+        read -p "${msg} " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            confirmed=1
+        fi
+    fi
+}
+
+
+
+#----------------------------------------------------------------------------
 # utility to transform full path name to a string for use in file labels.
 #----------------------------------------------------------------------------
 pathname_to_label ()
@@ -262,6 +288,9 @@ migrate_files ()
             continue
         fi
 
+        get_confirmation "Are you sure you want to continue (y/n)?"
+        [ 1 -eq ${confirmed} ] || { echo "not confirmed, continuing..."; continue; }
+
         set -x
         mkdir -p ${newtopdir}
         mv ${origfile} ${newfile}
@@ -317,6 +346,9 @@ migrate_dirs ()
             continue
         fi
 
+        get_confirmation "Are you sure you want to continue (y/n)?"
+        [ 1 -eq ${confirmed} ] || { echo "not confirmed, continuing..."; continue; }
+
         #set -x
         mkdir -p ${newtopdir}
         mv ${origdir} ${newdir}
@@ -354,7 +386,7 @@ recall_files ()
 
         ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
 
-        echo ${file}
+        echo "Recalling ${file}"
 
         recall_request_stub="${log_dir}/$(pathname_to_label ${file})"
         recall_request_file="${recall_request_stub}::${timestamp}"
@@ -362,6 +394,8 @@ recall_files ()
         recall_request_flist="${recall_request_file}.filelist"
         echo ${recall_request_file}
 
+        get_confirmation "Are you sure you want to continue (y/n)?"
+        [ 1 -eq ${confirmed} ] || { echo "not confirmed, continuing..."; continue; }
 
         echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
         echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
@@ -389,22 +423,31 @@ recall_dirs ()
         recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
         recall_request_tmplist="${recall_request_flist}.tmp"
-        echo ${recall_request_file}
+        #echo ${recall_request_file}
 
-        echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
-        echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
+        # while read -r -d '' file; do
+        #     ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+        #     echo "${file}" >> "${recall_request_tmplist}"
+        # done < <(find ${curdir} -type f -print0)
 
-        while read -r -d '' file; do
-            ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-            echo "${file}" >> "${recall_request_tmplist}"
-        done < <(find ${curdir} -type f -print0)
-
-        echo "python version:"
-        unset SCAN_FILELIST_OUTPUTFILE
+        export GLADE_HSM_RECALL_FILE_LIST=${recall_request_tmplist}
         find ${curdir} -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
         # it is possible we found no files, in which case there is no temporary  list.
-        [ -f ${recall_request_tmplist} ] && mv -f ${recall_request_tmplist} ${recall_request_flist}
+        if [ -f ${recall_request_tmplist} ]; then
+
+            get_confirmation "Are you sure you want to continue (y/n)?"
+            if [ 1 -eq ${confirmed} ]; then
+                echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
+                echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
+                mv -f ${recall_request_tmplist} ${recall_request_flist}
+            else
+                echo "not confirmed."
+            fi
+        else
+            echo "no offline files found in ${curdir}"
+        fi
+
 
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
@@ -458,7 +501,7 @@ status_dirs ()
         echo ${curdir}
 
 	# echo "python version:"
-        unset SCAN_FILELIST_OUTPUTFILE
+        unset GLADE_HSM_RECALL_FILE_LIST
         find ${curdir} -readable -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
 	# echo "bash version:"

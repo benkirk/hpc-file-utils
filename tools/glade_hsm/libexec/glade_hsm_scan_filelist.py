@@ -64,7 +64,7 @@ def process_file(filepath):
 def main():
 
     # output file name - if any
-    ofilename=os.getenv('SCAN_FILELIST_OUTPUTFILE')
+    ofilename=os.getenv('GLADE_HSM_RECALL_FILE_LIST')
 
     # append 'filepath' to ouptut file list.
     # keep the file descriptor open as an attribute like s static variable,

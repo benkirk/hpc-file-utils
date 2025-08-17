@@ -1,0 +1,249 @@
+#!/bin/bash
+
+[ -z ${SCRATCH} ] && { echo " no \$SCRATCH directory defined.."; exit 1; }
+[ -d ${SCRATCH} ] || { echo " no \$SCRATCH directory: $SCRATCH"; exit 1; }
+[ -z ${WORK} ] && { echo " no \$WORK directory defined.."; exit 1; }
+[ -d ${WORK} ] || { echo " no \$WORK directory: $WORK"; exit 1; }
+[ -z ${HOME} ] && { echo " no \$HOME directory defined.."; exit 1; }
+[ -d ${HOME} ] || { echo " no \$HOME directory: $HOME"; exit 1; }
+
+purgedirs="${SCRATCH}/.PURGE/ ${WORK}/.PURGE/ ${HOME}/.PURGE/"
+purgedir="INVALID"
+
+n_current=0
+n_concurrent=6
+find_cmd=$(which lfs 2>/dev/null || which find)
+PURGELIST=()
+
+
+
+usage()
+{
+    local prog=${0##*/}
+    cat <<-EOF
+usage: $prog [-h -p -f -v -q] dir0 ... dirN
+
+purge files & directories from a filesystem, by stashing them elsewhere for batch removal.
+
+examples
+    \$ $prog ./mydir/*
+    remove all subdirs from ./mydir; leaves ./mydir empty.
+
+    \$ $prog -f *
+    removes everything from the current directory, without prompting
+    (replacement for rm -rf *)
+
+options
+    -h|--help      print this message and exit
+    -p|--prompt    prompt for confirmation
+    -f|--force     force, e.g. do not prompt for confirmation
+    -v|--verbose   verbose
+    -q|--quiet     quiet
+    --clean        removes stashed items
+EOF
+}
+
+
+process_command_line()
+{
+    # default VALUES
+    CONFIRM=YES
+    VERBOSE=YES
+    SPAWN_PURGE=NO
+    unset PURGELIST
+
+    # no args --> help
+    [ 0 -ne ${#} ] || { usage; exit 1; }
+
+    while [ ${#} -gt 0 ] ; do
+        key="${1}"
+
+        case $key in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -f|--force)
+                unset CONFIRM
+                shift # past argument
+                ;;
+            -p|--propmt)
+                CONFIRM=YES
+                shift # past argument
+                ;;
+            -q|--quiet)
+                unset VERBOSE
+                shift # past argument
+                ;;
+            -v|--verbose)
+                VERBOSE=YES
+                shift # past argument
+                ;;
+            --clean)
+                SPAWN_PURGE=YES
+                shift # past argument
+                ;;
+            *)
+                if [ -d ${1} ]; then
+                    PURGELIST+=("${1}") # save directory in an array for later
+                elif [ -f ${1} -o -L ${1} ]; then
+                    PURGELIST+=("${1}") # save file,symlink in an array for later
+                else
+                    # unknown option
+                    echo "unrecognized argument - no such file or directory: ${1}"
+                    usage
+                    exit 1
+                fi
+                shift # past argument
+                ;;
+        esac
+    done
+}
+
+
+
+get_purgedir()
+{
+    purgedir="INVALID"
+
+    [ 1 -eq ${#} ] || { echo "get_purgedir() expecting only 1 argument!"; exit 1; }
+    local _item=${1}
+    local _item_mntpoint=$(stat -c "%m" ${_item}) || { echo "cannot determine mount point for ${_item}!"; exit 1; }
+    local _d
+    local _d_mntpoint
+
+    for _d in ${purgedirs}; do
+        mkdir -p ${_d}
+        [ -d ${_d} ] || continue
+        _d_mntpoint=$(stat -c "%m" ${_d}) || { echo "cannot determine mount point for ${_d}!"; exit 1; }
+        [ ${_d_mntpoint} == ${_item_mntpoint} ] && purgedir=${_d} && return
+    done
+
+    echo "error: cannot determine purgedir for item ${_item}!"
+    exit 1
+}
+
+
+
+get_confirmation()
+{
+    local msg="$@"
+    confirmed=0
+    if [ -z ${CONFIRM} ]; then
+        confirmed=1
+    else
+        read -p "${msg} " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            confirmed=1
+        fi
+    fi
+}
+
+
+
+stash_items()
+{
+    if [ ${#} -eq 0 ]; then
+        echo "Nothing to purge??"
+        exit 0
+    fi
+
+    get_confirmation  "are you sure you want to purge ${PURGELIST[@]} from the filesystem (y/n)?"
+    [ 1 -eq ${confirmed} ] || { echo "not confirmed, exiting"; return; }
+
+    for item in $@; do
+        # remove files/symlinks
+        if [ -f ${item} -o -L ${item} ]; then
+            [ -z ${VERBOSE} ] || echo "  --> Removing ${item}"
+            /bin/rm -f ${item}
+            continue
+        fi
+
+        # directories
+        timestamp=$(date +%F)
+        get_purgedir ${item}
+        item_tmpdir=$(mktemp -d --tmpdir=${purgedir} purge-${timestamp}-${USER}.XXXXXXXXXX) || continue
+        if [ -d ${item_tmpdir} ] ; then
+            [ -z ${VERBOSE} ] || echo "  --> Stashing ${item} into ${purgedir} for removal"
+            mv ${item} ${item_tmpdir}
+            echo "stashed ${item} from $(pwd) into ${item_tmpdir} on $(date) for purge" \
+                > ${item_tmpdir}/stash.log
+        fi
+    done
+}
+
+
+
+purge_subdir()
+{
+    [ 1 -eq ${#} ] || { echo "ERROR: expecting 1 argument, \$@="$@; exit 1; }
+
+    local my_subdir=${1}
+    local maxargs=10000
+
+    #local verbose_rm="-v"
+    [ -z ${VERBOSE} ] && unset verbose_rm
+
+    # does my_subdir still exist? could have been cleaned up by a different node
+    [ -d ${my_subdir} ] || return
+
+    local task_label="[${n_current}] "
+
+    (cd "${my_subdir}" && pwd >/dev/null 2>&1) || { echo "cannot cd into ${my_subdir}!" ; exit 1; }
+
+    [ -z ${VERBOSE} ] || echo "  --> ${task_label}Purging ${my_subdir}"
+
+    # ${find_cmd} any regular files, symlinks, etc...
+    ${find_cmd} ${my_subdir} ! -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rm -f ${verbose_rm}
+
+    # remove empty directories, from depth first
+    find ${my_subdir} -depth -mindepth 1 -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rmdir ${verbose_rm}
+
+    # remove the (hopefully empty) containing directory, if it still exists
+    # (try this first instead of jumping to 'rm -rf' so we see if there are any surprise leftovers)
+    [ -d ${my_subdir} ] && /bin/rmdir ${my_subdir}
+
+    # rm -rf last resort, if it still exists
+    [ -d ${my_subdir} ] && /bin/rm -f ${my_subdir}
+}
+
+
+
+purge_directories()
+{
+    local lockfile=${TMPDIR}/purge.lock
+
+    (
+        flock -w 1 9 || { echo "cannot obtain lock on ${lockfile}"; exit 1; }
+
+        # ... commands executed under lock ...
+        get_confirmation  "  are you sure you want to purge ${purgedirs} items from the filesystem (y/n)?"
+        [ 1 -eq ${confirmed} ] || { echo "not confirmed, exiting"; exit 1; }
+
+        # loop over the purgedirs list
+        for purgedir in ${purgedirs} ; do
+            # be sure purgedir is available, and usable, so
+            # we don't remove stuff in the wrong place!!
+            [ -d ${purgedir} ] || continue
+            (cd ${purgedir} && pwd >/dev/null 2>&1) || { echo "cannot cd into ${purgedir}!" ; exit 1; }
+
+            # loop over top-level subdirectories from purgedir
+            while read -r -d '' subdir; do
+                purge_subdir ${subdir}
+            done < <(find ${purgedir} -maxdepth 1 -mindepth 1 -type d -name "purge-*"  -print0)
+            # loop on subdirectories
+        done # loop on purgedirs
+
+        [ -z ${VERBOSE} ] ||  echo "Done."
+
+    ) 9>${lockfile}
+}
+
+
+
+# Main program follows
+process_command_line $@
+
+[[ -z "${PURGELIST[@]}" ]] || stash_items "${PURGELIST[@]}"
+[[ "YES" == "${SPAWN_PURGE}" ]] && purge_directories
