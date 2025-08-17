@@ -539,12 +539,13 @@ status_dirs ()
 
         # echo "  Total files: ${nfiles} / offline: ${noffline}"
 
+	# status any relevant log files from the past month
         while read -r -d '' logfile; do
             #echo ${logfile}
             grep "${curdir}" ${logfile} -c >/dev/null 2>&1 || continue
             echo "Recall status from ${logfile}"
             cat ${logfile}
-        done < <(find ${log_dir} -type f -name "*.log" -print0)
+        done < <(find ${log_dir} -mtime -31 -type f -name "*.log" -print0)
         echo
      done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE") # | sort -r | uniq)"
 }
