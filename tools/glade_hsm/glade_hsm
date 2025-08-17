@@ -223,12 +223,13 @@ get_confirmation()
     if [ -z ${CONFIRM} ]; then
         confirmed=1
     else
-        read -p "${msg} " -n 1 -r
+	read -p "${msg} " -n 1 reply < /dev/tty
         echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [[ ${reply} =~ ^[Yy]$ ]]; then
             confirmed=1
         fi
     fi
+    return ${confirmed}
 }
 
 
@@ -292,20 +293,23 @@ migrate_files ()
         fi
 
         get_confirmation "Are you sure you want to continue (y/n)?"
-        [ 1 -eq ${confirmed} ] || { echo "not confirmed, continuing..."; continue; }
+        if [ 1 -eq ${confirmed} ]; then
+            set -x
+            mkdir -p ${newtopdir}
+            mv ${origfile} ${newfile}
+            set +x
 
-        set -x
-        mkdir -p ${newtopdir}
-        mv ${origfile} ${newfile}
-        set +x
+            migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${file})"
+            logfile="${migrate_request_stub}.log"
 
-        migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${file})"
-        logfile="${migrate_request_stub}.log"
-
-        echo "# $(date)" > ${logfile}
-        echo "# user = $(whoami)" >> ${logfile}
-        echo "# origdir = ${origdir}" >> ${logfile}
-        echo "# newdir  = ${newdir}"  >> ${logfile}
+            echo "# $(date)" > ${logfile}
+            echo "# user = $(whoami)" >> ${logfile}
+            echo "# origdir = ${origdir}" >> ${logfile}
+            echo "# newdir  = ${newdir}"  >> ${logfile}
+	else
+	    echo "not confirmed, continuing..."
+	    continue
+	fi
     done < <(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)
 }
 
@@ -395,14 +399,18 @@ recall_files ()
         recall_request_file="${recall_request_stub}::${timestamp}"
         recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
-        echo ${recall_request_file}
 
         get_confirmation "Are you sure you want to continue (y/n)?"
-        [ 1 -eq ${confirmed} ] || { echo "not confirmed, continuing..."; continue; }
-
-        echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
-        echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
-        echo "${file}" >> "${recall_request_flist}"
+	if [ 1 -eq ${confirmed} ]; then
+            #echo ${recall_request_file}
+            echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
+            echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
+            echo "${file}" >> "${recall_request_flist}"
+	    cat "${recall_request_log}"
+	else
+	    echo "not confirmed, skipping ${file} ..."
+	    continue
+	fi
     done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
 
@@ -443,9 +451,12 @@ recall_dirs ()
             if [ 1 -eq ${confirmed} ]; then
                 echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
                 echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
+		cat "${recall_request_log}"
                 mv -f ${recall_request_tmplist} ${recall_request_flist}
             else
-                echo "not confirmed."
+                echo "not confirmed, skipping ${curdir}"
+		rm -f ${recall_request_tmplist}
+		continue
             fi
         else
             echo "no offline files found in ${curdir}"

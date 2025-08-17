@@ -188,7 +188,7 @@ purge_subdir()
     # does my_subdir still exist? could have been cleaned up by a different node
     [ -d ${my_subdir} ] || return
 
-    local task_label="[${n_current}] "
+    local task_label="" #"[${n_current}] "
 
     (cd "${my_subdir}" && pwd >/dev/null 2>&1) || { echo "cannot cd into ${my_subdir}!" ; exit 1; }
 
@@ -200,12 +200,12 @@ purge_subdir()
     # remove empty directories, from depth first
     find ${my_subdir} -depth -mindepth 1 -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rmdir ${verbose_rm}
 
-    # remove the (hopefully empty) containing directory, if it still exists
-    # (try this first instead of jumping to 'rm -rf' so we see if there are any surprise leftovers)
-    [ -d ${my_subdir} ] && /bin/rmdir ${my_subdir}
+    # # remove the (hopefully empty) containing directory, if it still exists
+    # # (try this first instead of jumping to 'rm -rf' so we see if there are any surprise leftovers)
+    # [ -d ${my_subdir} ] && /bin/rmdir ${my_subdir} >/dev/null 2>&1 && return
 
     # rm -rf last resort, if it still exists
-    [ -d ${my_subdir} ] && /bin/rm -f ${my_subdir}
+    [ -d ${my_subdir} ] && /bin/rm -rf ${my_subdir}
 }
 
 

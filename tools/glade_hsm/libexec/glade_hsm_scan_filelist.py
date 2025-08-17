@@ -65,6 +65,7 @@ def main():
 
     # output file name - if any
     ofilename=os.getenv('GLADE_HSM_RECALL_FILE_LIST')
+    print(ofilename)
 
     # append 'filepath' to ouptut file list.
     # keep the file descriptor open as an attribute like s static variable,
@@ -74,9 +75,12 @@ def main():
     # encounter an offline file
     def append_to_filelist(filepath):
         assert ofilename
-        if not hasattr(append_to_filelist, 'file'):
-            append_to_filelist.file = open(ofilename, 'w')
-        append_to_filelist.file.write(filepath + '\n')
+        if not hasattr(append_to_filelist, 'recall_list'):
+            #print('Opening File')
+            append_to_filelist.recall_list = open(ofilename, 'wt')
+
+        #print(f'Writing to {ofilename} file: '+filepath)
+        append_to_filelist.recall_list.write(filepath + '\n')
         return
 
     # initialize counters
@@ -114,6 +118,11 @@ def main():
     print('  Disk Volume:  {}'.format(human_readable_bytes(total_ondisk_bytes)))
     print('  Total Volume: {}'.format(human_readable_bytes(total_true_bytes)))
     print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
+
+    # force flush before exit; otherwise no guarantee we will see the output
+    # (observed on Derecho...)
+    if hasattr(append_to_filelist, 'recall_list'): append_to_filelist.recall_list.flush()
+
     return
 
 
