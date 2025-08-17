@@ -154,7 +154,10 @@ parse_args ()
 
                     *)
                         if [ -d ${1} ]; then
+                            # ensure we can access the directory...
                             fullpath="$( cd "${1}" >/dev/null 2>&1 && pwd )"
+                            # then canonicalize
+                            fullpath="$(realpath ${fullpath})"
                             case "${fullpath}" in
                                 "/glade/campaign/"*|"/gpfs/csfs1/"*)
                                     DIRLIST+=( ${fullpath} ) # save directory in an array for later
@@ -166,7 +169,7 @@ parse_args ()
                             esac
 
                         elif [ -f ${1} ]; then
-                            fullpath="$(readlink -f "${1}")"
+                            fullpath="$(realpath "${1}")"
                             case "${fullpath}" in
                                 "/glade/campaign/"*|"/gpfs/csfs1/"*)
                                     FILELIST+=( ${fullpath} ) # save file in an array for later
