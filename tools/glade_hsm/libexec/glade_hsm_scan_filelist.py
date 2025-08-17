@@ -5,6 +5,38 @@ import sys, os, stat, time
 
 GPFS_BLOCKSIZE=512
 
+
+
+# a python class with a write method that contains an output file object,
+# and only opens the output file the first time the write method is called
+class LazyWriter:
+    def __init__(self, filename, mode="wt", encoding="utf-8"):
+        self.filename = filename
+        self.mode = mode
+        self.encoding = encoding
+        self._file = None   # File handle will be opened lazily
+
+    def write(self, data):
+        if self._file is None:
+            # Open the file the first time write() is called
+            self._file = open(self.filename, self.mode, encoding=self.encoding)
+        self._file.write(data)
+
+    def flush(self):
+        if self._file is not None:
+            self._file.flush()
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    def __del__(self):
+        # Make sure file is closed when object is destroyed
+        self.close()
+
+
+
 # takes an integer number of bytes and returns a human-readable string
 def human_readable_bytes(num_bytes):
     units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
@@ -35,7 +67,7 @@ def read_null_terminated_filenames(stream, chunk_size=4096):
 
 
 
-def process_file(filepath):
+def get_file_status(filepath):
 
     #print(f"Processing: {filepath}")
 
@@ -51,13 +83,14 @@ def process_file(filepath):
     # the size is not what is occupied on disk.
     # a better metric is (number of blocks * fs_block_size);
 
-    # however the block size is variable across filesystems / GPFS file sets
     # for regular, uncompressed, unmigrated files; size <= (n_blocks*fs_block_size)
     file_true_size = stat_info.st_size
     file_nblocks = stat_info.st_blocks
     file_ondisk_size = min(file_true_size, file_nblocks*GPFS_BLOCKSIZE)
 
-    return file_ondisk_size, file_true_size
+    is_offline = True if file_true_size > 100*file_ondisk_size else False
+
+    return file_ondisk_size, file_true_size, is_offline
 
 
 
@@ -67,21 +100,7 @@ def main():
     ofilename=os.getenv('GLADE_HSM_RECALL_FILE_LIST')
     #print(ofilename)
 
-    # append 'filepath' to ouptut file list.
-    # keep the file descriptor open as an attribute like s static variable,
-    # opening it once.
-    # we don't open the file outright, it is possible there are no offline
-    # files in the input list.  So we will open on-demand, only, if we
-    # encounter an offline file
-    def append_to_filelist(filepath):
-        assert ofilename
-        if not hasattr(append_to_filelist, 'recall_list'):
-            #print('Opening File')
-            append_to_filelist.recall_list = open(ofilename, 'wt')
-
-        #print(f'Writing to {ofilename} file: '+filepath)
-        append_to_filelist.recall_list.write(filepath + '\n')
-        return
+    offline_list = LazyWriter(ofilename)
 
     # initialize counters
     n_total_files=0
@@ -92,7 +111,7 @@ def main():
     for filepath in read_null_terminated_filenames(sys.stdin.buffer):
 
         try:
-            file_ondisk_bytes, file_true_bytes = process_file(filepath)
+            file_ondisk_bytes, file_true_bytes, is_offline = get_file_status(filepath)
 
         except Exception as e:
             print(f"Error processing file '{filepath}': {e}")
@@ -102,12 +121,11 @@ def main():
         total_true_bytes += file_true_bytes
 
         n_total_files += 1
-        is_offline = True if file_true_bytes > 100*file_ondisk_bytes else False
 
         if is_offline:
             n_offline_files += 1
             if ofilename:
-                append_to_filelist(filepath)
+                offline_list.write(filepath + '\n')
 
         # incremental progress
         if 0 == n_total_files%100e3:
@@ -118,10 +136,6 @@ def main():
     print('  Disk Volume:  {}'.format(human_readable_bytes(total_ondisk_bytes)))
     print('  Total Volume: {}'.format(human_readable_bytes(total_true_bytes)))
     print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
-
-    # force flush before exit; otherwise no guarantee we will see the output
-    # (observed on Derecho...)
-    if hasattr(append_to_filelist, 'recall_list'): append_to_filelist.recall_list.flush()
 
     return
 
