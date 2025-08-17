@@ -146,7 +146,7 @@ parse_args ()
                         ;;
 
                     "-f"|"--force")
-                        unset CONFIRM
+                        CONFIRM="NO"
                         shift # past argument
                         ;;
 
@@ -225,7 +225,7 @@ get_confirmation()
 {
     local msg="$@"
     confirmed=0
-    if [ -z ${CONFIRM} ]; then
+    if [[ "NO" == "${CONFIRM}" ]]; then
         confirmed=1
     else
 	read -p "${msg} " -n 1 reply < /dev/tty
