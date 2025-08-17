@@ -5,8 +5,6 @@ import sys, os, stat, time
 
 GPFS_BLOCKSIZE=512
 
-
-
 # takes an integer number of bytes and returns a human-readable string
 def human_readable_bytes(num_bytes):
     units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
@@ -41,13 +39,7 @@ def process_file(filepath):
 
     #print(f"Processing: {filepath}")
 
-    try:
-        stat_info = os.stat(filepath)
-    except Exception as e:
-        print(e)
-        print(f"Error processing file '{filepath}': {e}")
-        return 0,0
-
+    stat_info = os.stat(filepath)
 
     # decode file type - should be a regular file only; (output from find -type f)
     fmode = stat_info.st_mode
@@ -71,18 +63,23 @@ def process_file(filepath):
 
 def main():
 
-    ofile=os.getenv('SCAN_FILELIST_OUTPUTFILE')
-    myrank=os.getenv('XARGS_RANK')
-    ranklabel= '[{}] '.format(myrank) if myrank else ''
+    # output file name - if any
+    ofilename=os.getenv('SCAN_FILELIST_OUTPUTFILE')
 
-    # print(ofile)
+    # append 'filepath' to ouptut file list.
+    # keep the file descriptor open as an attribute like s static variable,
+    # opening it once.
+    # we don't open the file outright, it is possible there are no offline
+    # files in the input list.  So we will open on-demand, only, if we
+    # encounter an offline file
+    def append_to_filelist(filepath):
+        assert ofilename
+        if not hasattr(append_to_filelist, 'file'):
+            append_to_filelist.file = open(ofilename, 'w')
+        append_to_filelist.file.write(filepath + '\n')
+        return
 
-    # # Parallel processing
-    # with ThreadPoolExecutor(max_workers=6) as executor:
-    #     for filepath in read_null_terminated_filenames(sys.stdin.buffer):
-    #         executor.submit(process_file, filepath)
-
-    # serial processing
+    # initialize counters
     n_total_files=0
     n_offline_files=0
     total_ondisk_bytes=0
@@ -90,7 +87,12 @@ def main():
 
     for filepath in read_null_terminated_filenames(sys.stdin.buffer):
 
-        file_ondisk_bytes, file_true_bytes = process_file(filepath)
+        try:
+            file_ondisk_bytes, file_true_bytes = process_file(filepath)
+
+        except Exception as e:
+            print(f"Error processing file '{filepath}': {e}")
+            continue
 
         total_ondisk_bytes += file_ondisk_bytes
         total_true_bytes += file_true_bytes
@@ -100,12 +102,15 @@ def main():
 
         if is_offline:
             n_offline_files += 1
+            if ofilename:
+                append_to_filelist(filepath)
 
         # incremental progress
         if 0 == n_total_files%100e3:
-            print(' ... {:,} files, {:,} offline, {} currently on disk, {} total.'.format(n_total_files, n_offline_files,
-                                                                                          human_readable_bytes(total_ondisk_bytes),
-                                                                                          human_readable_bytes(total_true_bytes)))
+            print(' ... found {:,} files, {:,} offline, {} currently on disk, {} total.'.format(n_total_files,
+                                                                                                n_offline_files,
+                                                                                                human_readable_bytes(total_ondisk_bytes),
+                                                                                                human_readable_bytes(total_true_bytes)))
     print('  Disk Volume:  {}'.format(human_readable_bytes(total_ondisk_bytes)))
     print('  Total Volume: {}'.format(human_readable_bytes(total_true_bytes)))
     print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))

@@ -403,7 +403,9 @@ recall_dirs ()
         unset SCAN_FILELIST_OUTPUTFILE
         find ${curdir} -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
-        mv -f ${recall_request_tmplist} ${recall_request_flist}
+        # it is possible we found no files, in which case there is no temporary  list.
+        [ -f ${recall_request_tmplist} ] && mv -f ${recall_request_tmplist} ${recall_request_flist}
+
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
 
