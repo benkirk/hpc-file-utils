@@ -65,7 +65,7 @@ def main():
 
     # output file name - if any
     ofilename=os.getenv('GLADE_HSM_RECALL_FILE_LIST')
-    print(ofilename)
+    #print(ofilename)
 
     # append 'filepath' to ouptut file list.
     # keep the file descriptor open as an attribute like s static variable,
