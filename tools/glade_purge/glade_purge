@@ -1,29 +1,49 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-[ -z ${SCRATCH} ] && { echo " no \$SCRATCH directory defined.."; exit 1; }
-[ -d ${SCRATCH} ] || { echo " no \$SCRATCH directory: $SCRATCH"; exit 1; }
-[ -z ${WORK} ] && { echo " no \$WORK directory defined.."; exit 1; }
-[ -d ${WORK} ] || { echo " no \$WORK directory: $WORK"; exit 1; }
-[ -z ${HOME} ] && { echo " no \$HOME directory defined.."; exit 1; }
-[ -d ${HOME} ] || { echo " no \$HOME directory: $HOME"; exit 1; }
+# -e: exit on error
+# -u: treat unset variables as errors
+# -o pipefail: fail if any command in a pipeline fails
+set -euo pipefail
 
-purgedirs="${SCRATCH}/.PURGE/ ${WORK}/.PURGE/ ${HOME}/.PURGE/"
+#----------------------------------------------------------------------------
+# environment
+SCRIPTDIR="$( cd "$( dirname $(realpath "${BASH_SOURCE[0]}") )" >/dev/null 2>&1 && pwd )"
+source ${SCRIPTDIR}/common.sh
+MMLSATTR="${MMLSATTR:-/usr/lpp/mmfs/bin/mmlsattr}"
+#----------------------------------------------------------------------------
+
+
+[ -z ${USER} ] && { echo "\$USER not defined!"; exit 1; }
+
+[ -z ${HOME} ] && { echo "no \$HOME directory defined."; exit 1; }
+[ -w ${HOME} ] || { echo "no writable \$HOME directory: ${HOME}"; exit 1; }
+
 purgedir="INVALID"
 
-n_current=0
-n_concurrent=6
-find_cmd=$(which lfs 2>/dev/null || which find)
-PURGELIST=()
+find_cmd="lfs find"
+PURGELIST_DIRS=()
+PURGELIST_FILES=()
+
+# state information & logging support
+CONFDIR="${HOME}/.glade_purge"
+LOGDIR="${CONFDIR}"
+LOGFILE="${LOGDIR}/log"
+KNOWN_PURGEDIRS="${CONFDIR}/purgedirs.list"
+mkdir -p ${CONFDIR} ${LOGDIR}
 
 
 
+#----------------------------------------------------------------------------
+# simple help message
+#----------------------------------------------------------------------------
 usage()
 {
     local prog=${0##*/}
     cat <<-EOF
 usage: $prog [-h -p -f -v -q] dir0 ... dirN
 
-purge files & directories from a filesystem, by stashing them elsewhere for batch removal.
+Purge files & directories from a filesystem. Files are removed immediately,
+directories are relocated for later batch removal.
 
 examples
     \$ $prog ./mydir/*
@@ -44,27 +64,32 @@ EOF
 }
 
 
+
+#----------------------------------------------------------------------------
+# process command line args
+#----------------------------------------------------------------------------
 process_command_line()
 {
     # default VALUES
     CONFIRM=YES
     VERBOSE=YES
     SPAWN_PURGE=NO
-    unset PURGELIST
+    unset PURGELIST_DIRS
+    unset PURGELIST_FILES
 
     # no args --> help
-    [ 0 -ne ${#} ] || { usage; exit 1; }
+    [ 0 -ne ${#} ] || { usage; exit 0; }
 
     while [ ${#} -gt 0 ] ; do
         key="${1}"
 
-        case $key in
+        case ${key} in
             -h|--help)
                 usage
                 exit 0
                 ;;
             -f|--force)
-                unset CONFIRM
+                CONFIRM=NO
                 shift # past argument
                 ;;
             -p|--propmt)
@@ -72,7 +97,7 @@ process_command_line()
                 shift # past argument
                 ;;
             -q|--quiet)
-                unset VERBOSE
+                VERBOSE=NO
                 shift # past argument
                 ;;
             -v|--verbose)
@@ -83,14 +108,21 @@ process_command_line()
                 SPAWN_PURGE=YES
                 shift # past argument
                 ;;
+            "-"*)
+                # unknown option (unmatched -<foo>)
+                echo "unrecognized argument: ${1}" && echo
+                usage
+                exit 1
+                ;;
+
             *)
                 if [ -d ${1} ]; then
-                    PURGELIST+=("${1}") # save directory in an array for later
+                    PURGELIST_DIRS+=($(realpath "${1}")) # save directory in an array for later
                 elif [ -f ${1} -o -L ${1} ]; then
-                    PURGELIST+=("${1}") # save file,symlink in an array for later
+                    PURGELIST_FILES+=("${1}") # save file,symlink in an array for later
                 else
                     # unknown option
-                    echo "unrecognized argument - no such file or directory: ${1}"
+                    echo "unrecognized argument - no such file or directory?: ${1}" && echo
                     usage
                     exit 1
                 fi
@@ -102,127 +134,296 @@ process_command_line()
 
 
 
-get_purgedir()
-{
-    purgedir="INVALID"
-
-    [ 1 -eq ${#} ] || { echo "get_purgedir() expecting only 1 argument!"; exit 1; }
-    local _item=${1}
-    local _item_mntpoint=$(stat -c "%m" ${_item}) || { echo "cannot determine mount point for ${_item}!"; exit 1; }
-    local _d
-    local _d_mntpoint
-
-    for _d in ${purgedirs}; do
-        mkdir -p ${_d}
-        [ -d ${_d} ] || continue
-        _d_mntpoint=$(stat -c "%m" ${_d}) || { echo "cannot determine mount point for ${_d}!"; exit 1; }
-        [ ${_d_mntpoint} == ${_item_mntpoint} ] && purgedir=${_d} && return
-    done
-
-    echo "error: cannot determine purgedir for item ${_item}!"
-    exit 1
-}
-
-
-
+#----------------------------------------------------------------------------
+# promt for confirmation, storing confirmed=0/1.
+#  - force reading interactive from /dev/tty
+#----------------------------------------------------------------------------
 get_confirmation()
 {
     local msg="$@"
     confirmed=0
-    if [ -z ${CONFIRM} ]; then
+    if [[ "NO" == "${CONFIRM}" ]]; then
         confirmed=1
     else
-        read -p "${msg} " -n 1 -r
+        printf "%b" "${msg} " # <-- interprets any \n in ${msg}
+        read -n 1 -r reply </dev/tty
         echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [[ ${reply} =~ ^[Yy]$ ]]; then
             confirmed=1
         fi
     fi
+
+    [ 1 -eq ${confirmed} ] || { echo "not confirmed, exiting"; exit 1; }
 }
 
 
 
+#----------------------------------------------------------------------------
+# echo; unless not VERBOSE
+#----------------------------------------------------------------------------
+verbose_echo()
+{
+    [[ "NO" == "${VERBOSE}" ]] && return
+    echo "${@}"
+}
+
+
+
+#----------------------------------------------------------------------------
+# print a message to the logfile
+#----------------------------------------------------------------------------
+log_msg()
+{
+    local timestamp="$(date +%F@%H:%M)"
+    mkdir -p ${LOGDIR} || exit 1
+    echo "[${timestamp}]: ${@}" >> ${LOGFILE}
+}
+
+
+
+#----------------------------------------------------------------------------
+# determine GPFS fileset an item belongs to (if any)
+#----------------------------------------------------------------------------
+get_fileset()
+{
+    fileset="INVALID"
+
+    [ 1 -eq ${#} ] || { echo "get_fileset() expecting only 1 argument!"; exit 1; }
+
+    fileset=$(${MMLSATTR} -L ${1} 2>/dev/null | grep -i "fileset" || echo "not_GPFS")
+    echo "${fileset}"
+}
+
+
+
+#----------------------------------------------------------------------------
+# determine appropriate purge directory for a given item:
+#  walk up a directory tree to find topmost writable path on the same fileset
+#  set result as 'purgedir'
+#----------------------------------------------------------------------------
+get_purgedir()
+{
+    [ 1 -eq ${#} ] || { echo "get_topmost_writable_directory() expecting only 1 argument!"; exit 1; }
+
+    purgedir="INVALID"
+
+    local topdir="${1}"
+    local topdir_fileset="$(get_fileset ${topdir})"
+
+    #echo ${topdir}
+    #echo ${topdir_fileset}
+
+    local top_writable="INVALID"
+    local dir=$(realpath "${topdir}")
+
+    # walk up the directory tree; saving the topmost
+    # writable directory on the same fileset - so that mv's remain fast.
+    while [ "${dir}" != "/" ]; do
+        if [ -w "${dir}" ]; then
+            if [[ "$(get_fileset ${dir})" == "${topdir_fileset}" ]]; then
+                top_writable="${dir}"
+            fi
+        fi
+        dir=$(dirname "${dir}")
+    done
+
+    # no suitable path found - error
+    if [[ "INVALID" == "${top_writable}" ]]; then
+        echo "Cannot purge ${topdir}"
+        echo "no writable directories in hierarchy found!"
+        exit 1
+
+    # otherwise;
+    else
+        purgedir=$(realpath "${top_writable}/.PURGE")
+        #echo "${top_writable}"
+        #echo "${purgedir}"
+
+        # create purgedir if needed
+        if [ ! -d ${purgedir} ]; then
+
+            # defult permissions for new .PURGE/ directories -
+            # (make group writable on campaign, but don't be tricked by
+            # '/glade/campaign/work/'  - same as /glade/work)
+            local newdir_mode="u=rwx,g=rx,o=rx"
+
+            case "${topdir}" in
+                "/glade/campaign/work/"*) ;;
+                "/gpfs/csfs1/work/"*) ;;
+                "/glade/campaign/"*) ;& # <-- Fallthrough
+                "/gpfs/csfs1/"*)
+                    newdir_mode="u=rwx,g=rwx,o=rx"
+                    ;;
+            esac
+
+            message="Creating new purge directory: ${purgedir}"
+            verbose_echo "${message}"
+            mkdir -p --mode=${newdir_mode} ${purgedir}
+
+            # only log now - if successful
+            log_msg "${message}"
+
+        # exists but not writable - error
+        elif [ ! -w ${purgedir} ]; then
+            echo "ERROR: cannot write to existing purge directory - check ownership and permissions::"
+            ls -ld ${purgedir}
+            exit 1
+        fi
+
+        # we have a usable purgedir - save its existence for future cleanup
+        # append if not in list
+        # grep:
+        #     -F: fixed string match (not regex),
+        #     -x: match the whole line,
+        #     -q: quiet, no output — just returns 0 or 1.
+        grep -Fxq "${purgedir}" "${KNOWN_PURGEDIRS}" 2>/dev/null || echo "${purgedir}" >> "${KNOWN_PURGEDIRS}"
+    fi
+}
+
+
+
+#----------------------------------------------------------------------------
+# place items into appropriate purge directory for later removal
+#----------------------------------------------------------------------------
 stash_items()
 {
-    if [ ${#} -eq 0 ]; then
-        echo "Nothing to purge??"
-        exit 0
-    fi
+    local lockfile=${CONFDIR}/stash.lock
+    (
+        flock -w 1 9 || { echo "cannot obtain lock on ${lockfile}"; exit 1; }
 
-    get_confirmation  "are you sure you want to purge ${PURGELIST[@]} from the filesystem (y/n)?"
-    [ 1 -eq ${confirmed} ] || { echo "not confirmed, exiting"; return; }
-
-    for item in $@; do
-        # remove files/symlinks
-        if [ -f ${item} -o -L ${item} ]; then
-            [ -z ${VERBOSE} ] || echo "  --> Removing ${item}"
-            /bin/rm -f ${item}
-            continue
+        if [ ${#} -eq 0 ]; then
+            return 0
         fi
 
-        # directories
-        timestamp=$(date +%F)
-        get_purgedir ${item}
-        item_tmpdir=$(mktemp -d --tmpdir=${purgedir} purge-${timestamp}-${USER}.XXXXXXXXXX) || continue
-        if [ -d ${item_tmpdir} ] ; then
-            [ -z ${VERBOSE} ] || echo "  --> Stashing ${item} into ${purgedir} for removal"
-            mv ${item} ${item_tmpdir}
-            echo "stashed ${item} from $(pwd) into ${item_tmpdir} on $(date) for purge" \
-                > ${item_tmpdir}/stash.log
-        fi
-    done
+        get_confirmation "\nAre you sure you want to purge\n${@}\nFrom the filesystem (y/n)?"
+
+        local timestamp=$(date +%F)
+
+        for item in ${@}; do
+
+            # remove files/symlinks
+            if [ -f ${item} -o -L ${item} ]; then
+                verbose_echo "  --> Removing ${item}"
+                /bin/rm -f ${item}
+                continue
+            fi
+
+            # directories
+            get_purgedir ${item}
+            [ -w "${purgedir}" ] || { echo "ERROR: no writable purge directory found: purgedir=${purgedir}"; exit 1; }
+
+            item_tmpdir=$(mktemp -d --tmpdir=${purgedir} ${USER}-purge-${timestamp}.XXXXXXXXXX)
+
+            # move the requested directory into a new directory under purgedir, with logging
+            if [ -w ${item_tmpdir} ] ; then
+                message="Moving '${item}' into '${item_tmpdir}' for deferred removal"
+                verbose_echo "  --> ${message}"
+                mv ${item} ${item_tmpdir}
+                log_msg "${message}"
+                echo "${message}" > ${item_tmpdir}/stash.log
+
+                # error handling
+            else
+                echo "ERROR: \"mktemp -d --${purgedir}\" failed!"
+                exit 1
+            fi
+        done
+
+    ) 9>${lockfile}
 }
 
 
 
+#----------------------------------------------------------------------------
+# Update the list of known .PURGE/ directories
+#----------------------------------------------------------------------------
+update_known_purgedirs()
+{
+    # quick return if KNOWN_PURGEDIRS is empty
+    [ -f "${KNOWN_PURGEDIRS}" ] || return 0
+
+    # Create a temporary file
+    tmp=$(mktemp)
+
+    while IFS= read -r dir; do
+
+        # Keep only existing directories
+        if [[ -d "${dir}" ]]; then
+            if [[ -n "$(ls -A ${dir})" ]]; then
+                echo "{$dir" >> "$tmp"
+            else
+                verbose_echo "cleanup: ${dir} exists but is empty, removing..."
+                /bin/rmdir ${dir} 2>/dev/null || echo "${dir}" >> "$tmp"
+            fi
+        else
+            verbose_echo "cleanup: ${dir} no longer exists - removing from ${KNOWN_PURGEDIRS}"
+        fi
+
+    done < "${KNOWN_PURGEDIRS}"
+
+    # Replace original file
+
+    mv -f "${tmp}" "${KNOWN_PURGEDIRS}"
+}
+
+
+
+#----------------------------------------------------------------------------
+# remove an individual directory
+#----------------------------------------------------------------------------
 purge_subdir()
 {
     [ 1 -eq ${#} ] || { echo "ERROR: expecting 1 argument, \$@="$@; exit 1; }
 
-    local my_subdir=${1}
+    local my_subdir=$(realpath "${1}")
     local maxargs=10000
+    local n_concurrent=6
 
-    #local verbose_rm="-v"
-    [ -z ${VERBOSE} ] && unset verbose_rm
-
-    # does my_subdir still exist? could have been cleaned up by a different node
+    # does my_subdir still exist? could have been cleaned up by a different process
     [ -d ${my_subdir} ] || return
 
-    local task_label="" #"[${n_current}] "
+    # pedantic error checking; make sure we're removing something under a ".PURGE" directory
+    [[ "${my_subdir}" == *"/.PURGE/"* ]] || { echo "Refusing to process ${my_subdir} - path does not contain \"/.PURGE/\"!"; exit 1; }
 
     (cd "${my_subdir}" && pwd >/dev/null 2>&1) || { echo "cannot cd into ${my_subdir}!" ; exit 1; }
 
-    [ -z ${VERBOSE} ] || echo "  --> ${task_label}Purging ${my_subdir}"
+    verbose_echo "    --> ${my_subdir}"
 
     # ${find_cmd} any regular files, symlinks, etc...
-    ${find_cmd} ${my_subdir} ! -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rm -f ${verbose_rm}
+    ${find_cmd} ${my_subdir} ! -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rm -f
 
-    # remove empty directories, from depth first
-    find ${my_subdir} -depth -mindepth 1 -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rmdir ${verbose_rm}
-
-    # # remove the (hopefully empty) containing directory, if it still exists
-    # # (try this first instead of jumping to 'rm -rf' so we see if there are any surprise leftovers)
-    # [ -d ${my_subdir} ] && /bin/rmdir ${my_subdir} >/dev/null 2>&1 && return
+    # remove empty directories
+    find ${my_subdir} -depth -type d -print0 2>/dev/null | xargs 2>/dev/null --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rmdir
+    #find ${my_subdir} -type d -empty -print0 | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rmdir
 
     # rm -rf last resort, if it still exists
-    [ -d ${my_subdir} ] && /bin/rm -rf ${my_subdir}
+    if [ -d ${my_subdir} ]; then
+        verbose_echo "falling back to rm -rf ${my_subdir}"
+        /bin/rm -vrf ${my_subdir}
+    fi
 }
 
 
 
+#----------------------------------------------------------------------------
+# remove items from known purge directories
+#----------------------------------------------------------------------------
 purge_directories()
 {
-    local lockfile=${TMPDIR}/purge.lock
-
+    local lockfile=${CONFDIR}/purge.lock
     (
         flock -w 1 9 || { echo "cannot obtain lock on ${lockfile}"; exit 1; }
 
-        # ... commands executed under lock ...
-        get_confirmation  "  are you sure you want to purge ${purgedirs} items from the filesystem (y/n)?"
-        [ 1 -eq ${confirmed} ] || { echo "not confirmed, exiting"; exit 1; }
+        # quick return if KNOWN_PURGEDIRS is empty
+        [ -s "${KNOWN_PURGEDIRS}" ] || return 0
 
-        # loop over the purgedirs list
-        for purgedir in ${purgedirs} ; do
+        # ... commands executed under lock ...
+        get_confirmation  "\nAre you sure you want to purge items in\n$(cat ${KNOWN_PURGEDIRS} | tr '\n' ' ')\nFrom the filesystem (y/n)?"
+
+        while IFS= read -r purgedir; do
+
+            echo "  --> Purging ${purgedir}"
+
             # be sure purgedir is available, and usable, so
             # we don't remove stuff in the wrong place!!
             [ -d ${purgedir} ] || continue
@@ -230,20 +431,30 @@ purge_directories()
 
             # loop over top-level subdirectories from purgedir
             while read -r -d '' subdir; do
-                purge_subdir ${subdir}
-            done < <(find ${purgedir} -maxdepth 1 -mindepth 1 -type d -name "purge-*"  -print0)
-            # loop on subdirectories
-        done # loop on purgedirs
 
-        [ -z ${VERBOSE} ] ||  echo "Done."
+                purge_subdir ${subdir}
+
+            done < <(find ${purgedir} -maxdepth 1 -mindepth 1 -type d -name "*purge-*"  -print0)
+            # end loop on subdirectories
+
+        done < "${KNOWN_PURGEDIRS}"
+        # end loop on purgedirs
+
+        update_known_purgedirs
+
+        verbose_echo "Done."
 
     ) 9>${lockfile}
 }
 
 
 
+#----------------------------------------------------------------------------
 # Main program follows
-process_command_line $@
+#----------------------------------------------------------------------------
+process_command_line ${@}
 
-[[ -z "${PURGELIST[@]}" ]] || stash_items "${PURGELIST[@]}"
-[[ "YES" == "${SPAWN_PURGE}" ]] && purge_directories
+stash_items "${PURGELIST_FILES[@]}" "${PURGELIST_DIRS[@]}"
+[[ "YES" == "${SPAWN_PURGE}"  ]] && purge_directories
+
+exit 0
