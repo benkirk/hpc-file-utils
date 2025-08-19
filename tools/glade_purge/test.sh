@@ -23,18 +23,19 @@ make_test_dirs()
 {
     testdirs=()
     testfiles=()
-    #testdirs+=("~/for_purge_test")
-    testdirs+=("${HOME}/for_purge_test")
-    testdirs+=("${WORK}/for_purge_test")
-    testdirs+=("${SCRATCH}/for_purge_test")
-    testdirs+=("${SCRATCH}/../${USER}/for_purge_test2")
-    testdirs+=("/glade/campaign/cisl/csg/${USER}")
+    testdirs+=(~/for_purge_test_foo)
+    testdirs+=(${HOME}/for_purge_test)
+    testdirs+=(${WORK}/for_purge_test)
+    testdirs+=(${SCRATCH}/for_purge_test)
+    testdirs+=(${SCRATCH}/../${USER}/for_purge_test2)
+    testdirs+=(/glade/campaign/cisl/csg/${USER}/glade_purge_testdir)
 
     echo "testdirs=${testdirs[@]}"
 
-    for dir in "${testdirs[@]}"; do
+    for dir in ${testdirs[@]}; do
         #echo ${dir}
-        mkdir -p ${dir}/{a,b,c,d}/{w,x,y,z}
+        #set -x
+        mkdir -p "${dir}"/{a,b,c,d}/{w,x,y,z}
 
         # create a file in each directory
         while read -r -d '' subdir; do
@@ -44,7 +45,7 @@ make_test_dirs()
 
             testfiles+=($(realpath ${subdir}/ofile2.txt))
 
-        done < <(find ${dir} -type d -print0)
+        done < <(find "${dir}" -type d -print0)
 
         #find ${dir} ! -type d -ls
     done
@@ -102,7 +103,7 @@ inspect_purge_dirs
 
 cat <<EOF
 #----------------------------------------------------------------------------
-# test 2 - clean & purge as one step; (force/quiet)
+# test 2 - clean & purge as one step; (force/quiet).
 #----------------------------------------------------------------------------
 EOF
 make_test_dirs
@@ -120,5 +121,30 @@ make_test_dirs
 ${GLADE_PURGE} ${testfiles[@]} --quiet --force
 ${GLADE_PURGE} ${testdirs[@]} --quiet --force
 inspect_purge_dirs
-${GLADE_PURGE} --clean
+${GLADE_PURGE} --clean --force
+inspect_purge_dirs
+
+
+
+cat <<EOF
+#----------------------------------------------------------------------------
+# test 4 - clean from an empty state - should not error
+#----------------------------------------------------------------------------
+EOF
+inspect_purge_dirs
+${GLADE_PURGE} --clean --force
+${GLADE_PURGE} --clean --force
+inspect_purge_dirs
+
+
+
+cat <<EOF
+#----------------------------------------------------------------------------
+# test 5 - do not clean - leaves PURGE dirs around to allow testing
+# for write conflicts from other users
+# (run tests in succession from different users under the same campaign space)
+#----------------------------------------------------------------------------
+EOF
+make_test_dirs
+${GLADE_PURGE} ${testdirs[@]} --quiet --force
 inspect_purge_dirs
