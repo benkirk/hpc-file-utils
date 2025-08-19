@@ -271,8 +271,8 @@ get_purgedir()
             fi
 
             # only log now - if successful
-            log_msg "${message}"
-            log_msg "\t$(ls -ld ${purgedir})"
+            log_msg "Creating new purge directory: '$(ls -ld ${purgedir})'"
+
         # exists but not writable - error
         elif [[ ! -w ${purgedir} ]]; then
             echo "ERROR: cannot write to existing purge directory - check ownership and permissions::"
@@ -366,7 +366,9 @@ update_known_purgedirs()
                 echo "${dir}" >> "$tmp"
             else
                 verbose_echo "cleanup: ${dir} exists but is empty, removing..."
-                /bin/rmdir ${dir} 2>/dev/null || echo "${dir}" >> "$tmp"
+                /bin/rmdir ${dir} 2>/dev/null \
+                    && log_msg "Removing empty purge directory: ${dir}" \
+                        || echo "${dir}" >> "$tmp"
             fi
         else
             verbose_echo "cleanup: ${dir} no longer exists - removing from ${KNOWN_PURGEDIRS}"
@@ -401,6 +403,8 @@ purge_subdir()
     (cd "${my_subdir}" && pwd >/dev/null 2>&1) || { echo "cannot cd into ${my_subdir}!" ; exit 1; }
 
     verbose_echo "    --> ${my_subdir}"
+
+    log_msg "Purging '${my_subdir}'"
 
     # ${find_cmd} any regular files, symlinks, etc...
     ${find_cmd} ${my_subdir} ! -type d -print0 2>/dev/null | xargs --max-args=${maxargs} -r -0 -P ${n_concurrent} /bin/rm -f
