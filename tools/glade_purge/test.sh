@@ -56,7 +56,7 @@ make_test_dirs()
 inspect_purge_dirs()
 {
     # quick return if KNOWN_PURGEDIRS is empty
-    [ -s "${KNOWN_PURGEDIRS}" ] || return 0
+    [[ -s "${KNOWN_PURGEDIRS}" ]] || return 0
 
     echo -e "\nListing known purge directories from ${KNOWN_PURGEDIRS}"
 
@@ -64,7 +64,7 @@ inspect_purge_dirs()
 
         # be sure purgedir is available, and usable, so
         # we don't remove stuff in the wrong place!!
-        [ -d ${purgedir} ] || { echo "no such directory: ${purgedir}"; continue; }
+        [[ -d ${purgedir} ]] || { echo "no such directory: ${purgedir}"; continue; }
 
         echo "${purgedir} :"
         ls -A ${purgedir}
@@ -77,7 +77,7 @@ inspect_purge_dirs()
 #----------------------------------------------------------------------------
 # main program follows
 #----------------------------------------------------------------------------
-[ -x "${GLADE_PURGE}" ] || exit 1
+[[ -x "${GLADE_PURGE}" ]] || exit 1
 
 
 

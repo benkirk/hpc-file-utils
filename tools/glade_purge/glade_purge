@@ -174,9 +174,9 @@ verbose_echo()
 #----------------------------------------------------------------------------
 log_msg()
 {
-    local timestamp="$(date +%F@%H:%M)"
+    local timestamp="$(date +%F@%H:%M:%S)"
     mkdir -p ${LOGDIR} || exit 1
-    echo "[${timestamp}]: ${@}" >> ${LOGFILE}
+    echo -e "[${timestamp}]: ${@}" >> ${LOGFILE}
 }
 
 
@@ -272,7 +272,7 @@ get_purgedir()
 
             # only log now - if successful
             log_msg "${message}"
-
+            log_msg "\t$(ls -ld ${purgedir})"
         # exists but not writable - error
         elif [[ ! -w ${purgedir} ]]; then
             echo "ERROR: cannot write to existing purge directory - check ownership and permissions::"
@@ -363,7 +363,7 @@ update_known_purgedirs()
         # Keep only existing directories
         if [[ -d "${dir}" ]]; then
             if [[ -n "$(ls -A ${dir})" ]]; then
-                echo "{$dir" >> "$tmp"
+                echo "${dir}" >> "$tmp"
             else
                 verbose_echo "cleanup: ${dir} exists but is empty, removing..."
                 /bin/rmdir ${dir} 2>/dev/null || echo "${dir}" >> "$tmp"
