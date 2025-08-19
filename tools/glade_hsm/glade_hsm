@@ -14,6 +14,26 @@ set -euo pipefail
 
 
 #----------------------------------------------------------------------------
+# variables & default vaules
+#----------------------------------------------------------------------------
+origARGS=$@
+mode="none"
+single_copy=false
+cold_storage_pathname="COLD_STORAGE"
+CONFIRM=YES
+DIRLIST=()
+FILELIST=()
+
+timestamp=$(date +%F@%T)
+
+# log_dir - can be overridden for testing
+log_dir="${log_dir:-/glade/u/CS_HSM/requests}"
+
+[[ -w ${log_dir} ]] || { echo "No writable logdir found!!"; exit 1; }
+
+
+
+#----------------------------------------------------------------------------
 # migrate subcommand help message
 #----------------------------------------------------------------------------
 usage_migrate ()
@@ -109,40 +129,32 @@ EOF
 
 
 #----------------------------------------------------------------------------
-# variables & default vaules
-#----------------------------------------------------------------------------
-origARGS=$@
-mode="none"
-single_copy=false
-cold_storage_pathname="COLD_STORAGE"
-CONFIRM=YES
-DIRLIST=()
-FILELIST=()
-
-timestamp=$(date +%F@%T)
-
-log_dir="/glade/u/CS_HSM/requests"
-[ -w ${log_dir} ] || log_dir=$(pwd)
-
-
-#----------------------------------------------------------------------------
 # process command line arguments
 #----------------------------------------------------------------------------
 parse_args ()
 {
+    cmd=$(basename ${0})
+
+    [[ ${#} -gt 0 ]] || { usage; exit 0; }
+
     # check the first argument
     case ${1} in
+
+        "-h"|"--help")
+            usage
+            exit 0
+            ;;
 
         "migrate"|"recall"|"status")
             mode=${1}
             shift
 
-            while [ ${#} -gt 0 ] ; do
+            while [[ ${#} -gt 0 ]] ; do
                 case ${1} in
 
                     "-h"|"--help")
-                        [[ ${mode} == "none" ]] && usage || usage_${mode}
-                        exit 1
+                        usage_${mode}
+                        exit 0
                         ;;
 
                     "-f"|"--force")
@@ -158,7 +170,7 @@ parse_args ()
                         ;;
 
                     *)
-                        if [ -d ${1} ]; then
+                        if [[ -d ${1} ]]; then
                             # ensure we can access the directory...
                             fullpath="$( cd "${1}" >/dev/null 2>&1 && pwd )"
                             # then canonicalize
@@ -168,19 +180,19 @@ parse_args ()
                                     DIRLIST+=( ${fullpath} ) # save directory in an array for later
                                     ;;
                                 *)
-                                    echo "Invalid ${fullpath} - ${0} only functions on Campaign Storage."
+                                    echo "Invalid directory: ${fullpath} - ${cmd} only functions on Campaign Storage."
                                     exit 1
                                     ;;
                             esac
 
-                        elif [ -f ${1} ]; then
+                        elif [[ -f ${1} ]]; then
                             fullpath="$(realpath "${1}")"
                             case "${fullpath}" in
                                 "/glade/campaign/"*|"/gpfs/csfs1/"*)
                                     FILELIST+=( ${fullpath} ) # save file in an array for later
                                     ;;
                                 *)
-                                    echo "Invalid ${fullpath} - ${0} only functions on Campaign Storage."
+                                    echo "Invalid file: ${fullpath} - ${cmd} only functions on Campaign Storage."
                                     exit 1
                                     ;;
                             esac
@@ -198,8 +210,8 @@ parse_args ()
             done
 
             #  Check if both DIRLIST and FILELIST arrays are empty
-            if [ ${#DIRLIST[@]} -eq 0 ] && [ ${#FILELIST[@]} -eq 0 ]; then
-                echo -e "${0} ${mode} : No arguments specified\n\n"
+            if [[ ${#DIRLIST[@]} -eq 0 ]] && [[ ${#FILELIST[@]} -eq 0 ]]; then
+                echo -e "${cmd} ${mode} : No arguments specified\n\n"
                 usage
                 exit 1
             fi
@@ -208,7 +220,7 @@ parse_args ()
         # not recognized?
         *)
             usage
-            exit 1
+            exit 0
             ;;
     esac
 
@@ -227,13 +239,18 @@ get_confirmation()
     confirmed=0
     if [[ "NO" == "${CONFIRM}" ]]; then
         confirmed=1
+        return 0
     else
-	read -p "${msg} " -n 1 reply < /dev/tty
+        printf "%b" "${msg} " # <-- interprets any \n in ${msg}
+        read -n 1 -r reply </dev/tty
         echo
         if [[ ${reply} =~ ^[Yy]$ ]]; then
             confirmed=1
+            return 0
         fi
     fi
+
+    return 1
 }
 
 
@@ -243,15 +260,16 @@ get_confirmation()
 #----------------------------------------------------------------------------
 pathname_to_label ()
 {
-    [ ${#} -eq 1 ] || { echo "Usage: pathname_to_label <pathname>"; exit 1; }
+    [[ ${#} -eq 1 ]] || { echo "Usage: pathname_to_label <pathname>"; exit 1; }
 
-    curdir=${1}                     # full path to recall directory
-    curdirstr=${curdir/\//}         # replace the first '/' only
-    curdirstr=${curdirstr//\//\\\\} # replace remaining '/' with \/
+    curdir=${1}                         # full path to recall directory
+    curdir=$(realpath "${curdir}")      # canonicalize path
+    #curdirstr=${curdir/\//}            # replace the first '/' only
+    #curdirstr=${curdirstr//\//\\\\}    # replace remaining '/' with \/
+    curdirsha=$(echo ${curdir} | sha256sum | awk '{print $1}')
+    stub="${USER}-${curdirsha}"
 
-    recall_request_stub="${USER}::${curdirstr}"
-
-    echo ${recall_request_stub}
+    echo ${stub}
     return 0
 }
 
@@ -263,11 +281,11 @@ pathname_to_label ()
 migrate_files ()
 {
     # quick return for no files
-    [ ${#FILELIST[@]} -eq 0 ] && return
+    [[ ${#FILELIST[@]} -eq 0 ]] && return
 
     while read -r file; do
 
-        if [ -e ${file} ]; then
+        if [[ -e ${file} ]]; then
             if [[ ${file} = */COLD_STORAGE* ]]; then
                 echo "--> Skpping ${file} (path already contains \"*/COLD_STORAGE*\"...)"
                 continue
@@ -279,41 +297,40 @@ migrate_files ()
             continue
         fi
 
-        origfile=${file}
-        basefile=$(basename ${file})
-        oldtopdir=$(dirname ${file})
-        newtopdir=${oldtopdir}/${cold_storage_pathname}
-        newfile=${newtopdir}/${basefile}
+        local origfile=${file}
+        local basefile=$(basename ${file})
+        local oldtopdir=$(dirname ${file})
+        local newtopdir=${oldtopdir}/${cold_storage_pathname}
+        local newfile=${newtopdir}/${basefile}
 
         echo "  origfile = " ${origfile}
         echo "  newfile  = " ${newfile}
         echo
 
-        if [ -e ${newfile} ]; then
+        if [[ -e ${newfile} ]]; then
             echo "  *** WARNING: newfile collision!! ***"
             echo "    --> skipping ${origfile}"
             echo "    --> since ${newfile} exists"
             continue
         fi
 
-        get_confirmation "Are you sure you want to continue (y/n)?"
-        if [ 1 -eq ${confirmed} ]; then
-            set -x
-            mkdir -p ${newtopdir}
-            mv ${origfile} ${newfile}
-            set +x
+        get_confirmation "Are you sure you want to continue (y/n)?" \
+            || { echo -e "not confirmed, continuing...\n"; continue; }
 
-            migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${file})"
-            logfile="${migrate_request_stub}.log"
+        #set -x
+        mkdir -p ${newtopdir}
+        mv ${origfile} ${newfile}
+        #set +x
 
-            echo "# $(date)" > ${logfile}
-            echo "# user = $(whoami)" >> ${logfile}
-            echo "# origdir = ${origdir}" >> ${logfile}
-            echo "# newdir  = ${newdir}"  >> ${logfile}
-	else
-	    echo "not confirmed, continuing..."
-	    continue
-	fi
+        migrate_request_stub="${log_dir}/migrate-$(pathname_to_label ${file})-${timestamp}"
+        logfile="${migrate_request_stub}.log"
+
+        cat <<EOF >${logfile}
+${timestamp}: User: ${USER}
+${timestamp}: Original File: ${origfile}
+${timestamp}: New File:      ${newfile}
+EOF
+
     done < <(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)
 }
 
@@ -325,10 +342,10 @@ migrate_files ()
 migrate_dirs ()
 {
     # quick return for no directories
-    [ ${#DIRLIST[@]} -eq 0 ] && return
+    [[ ${#DIRLIST[@]} -eq 0 ]] && return
 
     while read -r dir; do
-        if [ -s ${dir} ]; then
+        if [[ -s ${dir} ]]; then
             if [[ ${dir} = */COLD_STORAGE* ]]; then
                 echo "--> Skpping ${dir} (path already contains \"*/COLD_STORAGE*\"...)"
                 continue
@@ -340,40 +357,43 @@ migrate_dirs ()
             continue
         fi
 
-        origdir=${dir}
-        basedir=$(basename ${dir})
-        oldtopdir=$(dirname ${dir})
-        newtopdir=${oldtopdir}/${cold_storage_pathname}
-        newdir=${newtopdir}/${basedir}
+        local origdir=${dir}
+        local basedir=$(basename ${dir})
+        local oldtopdir=$(dirname ${dir})
+        local newtopdir=${oldtopdir}/${cold_storage_pathname}
+        local newdir=${newtopdir}/${basedir}
 
         echo "  origdir = " ${origdir}
         echo "  newdir  = " ${newdir}
         echo
 
-        if [ -d ${newdir} ]; then
+        if [[ -d ${newdir} ]]; then
             echo "  *** WARNING: name collision!! ***"
             echo "    --> skipping ${origdir}"
             echo "    --> since ${newdir} exists"
             continue
         fi
 
-        get_confirmation "Are you sure you want to continue (y/n)?"
-        [ 1 -eq ${confirmed} ] || { echo "not confirmed, continuing..."; continue; }
+        get_confirmation "Are you sure you want to continue (y/n)?" \
+            || { echo -e "not confirmed, continuing...\n"; continue; }
 
         #set -x
         mkdir -p ${newtopdir}
         mv ${origdir} ${newdir}
         #set +x
 
-        migrate_request_stub="${log_dir}/migrate::$(pathname_to_label ${dir})"
+        migrate_request_stub="${log_dir}/migrate-$(pathname_to_label ${dir})-${timestamp}"
         logfile="${migrate_request_stub}.log"
 
-        echo "# $(date)" > ${logfile}
-        echo "# user = $(whoami)" >> ${logfile}
-        echo "# origdir = ${origdir}" >> ${logfile}
-        echo "# newdir  = ${newdir}"  >> ${logfile}
+        cat <<EOF >${logfile}
+${timestamp}: User: ${USER}
+${timestamp}: Original Directory: ${origdir}
+${timestamp}: New Directory:      ${newdir}
+EOF
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" | sort -r | uniq)
 }
+
+
 
 #----------------------------------------------------------------------------
 # glade_hsm migrate subcommand
@@ -391,7 +411,7 @@ do_migrate ()
 recall_files ()
 {
     # quick return for no files
-    [ ${#FILELIST[@]} -eq 0 ] && return
+    [[ ${#FILELIST[@]} -eq 0 ]] && return
 
     while read -r file; do
 
@@ -399,22 +419,21 @@ recall_files ()
 
         echo "Recalling ${file}"
 
-        recall_request_stub="${log_dir}/$(pathname_to_label ${file})"
-        recall_request_file="${recall_request_stub}::${timestamp}"
-        recall_request_log="${recall_request_file}.log"
-        recall_request_flist="${recall_request_file}.filelist"
+        local recall_request_stub="${log_dir}/recall-$(pathname_to_label ${file})"
+        local recall_request_file="${recall_request_stub}-${timestamp}"
+        local recall_request_log="${recall_request_file}.log"
+        local recall_request_flist="${recall_request_file}.filelist"
 
-        get_confirmation "Are you sure you want to continue (y/n)?"
-	if [ 1 -eq ${confirmed} ]; then
-            #echo ${recall_request_file}
-            echo "# ${file} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
-            echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
-            echo "${file}" >> "${recall_request_flist}"
-	    cat "${recall_request_log}"
-	else
-	    echo "not confirmed, skipping ${file} ..."
-	    continue
-	fi
+        get_confirmation "Are you sure you want to continue (y/n)?" \
+            || { echo -e "not confirmed, continuing...\n"; continue; }
+
+        #echo ${recall_request_file}
+        cat <<EOF > ${recall_request_log}
+${timestamp}: ${USER} initiated ${file} recall request
+EOF
+        echo "${file}" >> "${recall_request_flist}"
+	cat "${recall_request_log}"
+
     done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 }
 
@@ -426,19 +445,18 @@ recall_files ()
 recall_dirs ()
 {
     # quick return for no directories
-    [ ${#DIRLIST[@]} -eq 0 ] && return
+    [[ ${#DIRLIST[@]} -eq 0 ]] && return
 
     while read -r dir; do
         cd ${dir} || continue
 
         curdir=$(pwd) # full path to recall directory
 
-        recall_request_stub="${log_dir}/$(pathname_to_label ${curdir})"
-        recall_request_file="${recall_request_stub}::${timestamp}"
+        recall_request_stub="${log_dir}/recall-$(pathname_to_label ${curdir})"
+        recall_request_file="${recall_request_stub}-${timestamp}"
         recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
-        recall_request_tmplist="${recall_request_flist}.tmp"
-        #echo ${recall_request_file}
+        recall_request_tmplist="$(mktemp)"
 
         # while read -r -d '' file; do
         #     ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
@@ -449,19 +467,17 @@ recall_dirs ()
         find ${curdir} -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
         # it is possible we found no files, in which case there is no temporary  list.
-        if [ -f ${recall_request_tmplist} ]; then
+        if [[ -s ${recall_request_tmplist} ]]; then
 
-            get_confirmation "Are you sure you want to continue (y/n)?"
-            if [ 1 -eq ${confirmed} ]; then
-                echo "# ${curdir} : recall requested on ${timestamp} by ${USER}" > "${recall_request_log}"
-                echo "# (see ${recall_request_flist} for listing of recalled files)" >> "${recall_request_log}"
-		cat "${recall_request_log}"
-                mv -f ${recall_request_tmplist} ${recall_request_flist}
-            else
-                echo "not confirmed, skipping ${curdir}"
-		rm -f ${recall_request_tmplist}
-		continue
-            fi
+            get_confirmation "Are you sure you want to continue (y/n)?" \
+                || { echo -e "not confirmed, continuing...\n"; continue; }
+
+            cat <<EOF > ${recall_request_log}
+${timestamp}: ${USER} initiated '${curdir}' recall request
+${timestamp}: requested file list: ${recall_request_flist}
+EOF
+	    cat "${recall_request_log}"
+            mv -f ${recall_request_tmplist} ${recall_request_flist}
         else
             echo "no offline files found in ${curdir}"
         fi
@@ -489,7 +505,7 @@ do_recall ()
 status_files ()
 {
     # quick return for no files
-    [ ${#FILELIST[@]} -eq 0 ] && return
+    [[ ${#FILELIST[@]} -eq 0 ]] && return
 
     while read -r file; do
         status="on disk "
@@ -509,7 +525,7 @@ status_files ()
 status_dirs ()
 {
     # quick return for no directories
-    [ ${#DIRLIST[@]} -eq 0 ] && return
+    [[ ${#DIRLIST[@]} -eq 0 ]] && return
 
     while read -r dir; do
         cd ${dir} || continue
@@ -544,7 +560,7 @@ status_dirs ()
             grep "${curdir}" ${logfile} -c >/dev/null 2>&1 || continue
             echo "Recall status from ${logfile}"
             cat ${logfile}
-        done < <(find ${log_dir} -mtime -31 -type f -name "*.log" -print0)
+        done < <(find ${log_dir} -mtime -31 -type f -name "recall-*.log" -print0)
         echo
      done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE") # | sort -r | uniq)"
 }
