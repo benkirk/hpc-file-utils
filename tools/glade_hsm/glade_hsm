@@ -16,6 +16,9 @@ set -euo pipefail
 #----------------------------------------------------------------------------
 # variables & default vaules
 #----------------------------------------------------------------------------
+export GPFS_BLOCKSIZE=512
+export HSM_THRESHOLD_SIZE_CHECK=$(( 50 * 1024 * 1024 ))
+
 origARGS=$@
 mode="none"
 single_copy=false
@@ -267,10 +270,50 @@ pathname_to_label ()
     #curdirstr=${curdir/\//}            # replace the first '/' only
     #curdirstr=${curdirstr//\//\\\\}    # replace remaining '/' with \/
     curdirsha=$(echo ${curdir} | sha256sum | awk '{print $1}')
-    stub="${USER}-${curdirsha}"
+    stub="${curdirsha}"
 
     echo ${stub}
     return 0
+}
+
+
+
+#----------------------------------------------------------------------------
+# Check file state to determine if online or offline
+#----------------------------------------------------------------------------
+check_file_status()
+{
+    [[ ${#} -eq 1 ]] || { echo "Usage: check_file_status <pathname>"; exit 1; }
+    [[ -f ${1} ]] || { echo -e " not a file?: ${1}\nUsage: check_file_status <pathname>"; exit 1; }
+
+    local file=$(realpath ${1})
+
+    status="INVALID"
+
+    read nblocks true_size < <(stat --format="%b %s" ${file})
+    ondisk_size=$(( ${nblocks} * ${GPFS_BLOCKSIZE} ))
+    ratio=$(( ${ondisk_size} / ${true_size} ))
+
+#     cat <<EOF
+# file: ${file}
+# nblocks: ${nblocks}
+# true_size:   ${true_size}
+# ondisk_size: ${ondisk_size}
+# ratio:       ${ratio}
+# EOF
+
+    # we only migrate 'large' files'; (>100MiB).
+    # for tiny files less than our blocksize are never migrated, and the ratio is inappropriate
+    if [[ ${true_size} -lt ${HSM_THRESHOLD_SIZE_CHECK} ]]; then
+        status="on disk"
+    else
+        [[ 1 -eq ${ratio} ]] && status="on disk" || status="migrated"
+    fi
+
+    #${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 && status="migrated" || status="on disk"
+
+    return 0
+
 }
 
 
@@ -303,8 +346,8 @@ migrate_files ()
         local newtopdir=${oldtopdir}/${cold_storage_pathname}
         local newfile=${newtopdir}/${basefile}
 
-        echo "  origfile = " ${origfile}
-        echo "  newfile  = " ${newfile}
+        echo "  origfile = ${origfile}"
+        echo "  newfile  = ${newfile}"
         echo
 
         if [[ -e ${newfile} ]]; then
@@ -322,7 +365,7 @@ migrate_files ()
         mv ${origfile} ${newfile}
         #set +x
 
-        migrate_request_stub="${log_dir}/migrate-$(pathname_to_label ${file})-${timestamp}"
+        migrate_request_stub="${log_dir}/migrate-${USER}-$(pathname_to_label ${file})-${timestamp}"
         logfile="${migrate_request_stub}.log"
 
         cat <<EOF >${logfile}
@@ -363,8 +406,8 @@ migrate_dirs ()
         local newtopdir=${oldtopdir}/${cold_storage_pathname}
         local newdir=${newtopdir}/${basedir}
 
-        echo "  origdir = " ${origdir}
-        echo "  newdir  = " ${newdir}
+        echo "  origdir = ${origdir}"
+        echo "  newdir  = ${newdir}"
         echo
 
         if [[ -d ${newdir} ]]; then
@@ -382,7 +425,7 @@ migrate_dirs ()
         mv ${origdir} ${newdir}
         #set +x
 
-        migrate_request_stub="${log_dir}/migrate-$(pathname_to_label ${dir})-${timestamp}"
+        migrate_request_stub="${log_dir}/migrate-${USER}-$(pathname_to_label ${dir})-${timestamp}"
         logfile="${migrate_request_stub}.log"
 
         cat <<EOF >${logfile}
@@ -405,6 +448,7 @@ do_migrate ()
 }
 
 
+
 #----------------------------------------------------------------------------
 # glade_hsm recall <filename(s)> subcommand
 #----------------------------------------------------------------------------
@@ -413,28 +457,56 @@ recall_files ()
     # quick return for no files
     [[ ${#FILELIST[@]} -eq 0 ]] && return
 
+    # create a single filelist
+    local offline_file_list="$(mktemp)"
+
+    n_offline=0
+    bytes_offline=0
+
     while read -r file; do
 
-        ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
+        check_file_status ${file}
 
-        echo "Recalling ${file}"
+        size_label=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${true_size}")
+        echo "${file}: [${size_label}, ${status}]"
 
-        local recall_request_stub="${log_dir}/recall-$(pathname_to_label ${file})"
-        local recall_request_file="${recall_request_stub}-${timestamp}"
-        local recall_request_log="${recall_request_file}.log"
-        local recall_request_flist="${recall_request_file}.filelist"
+        if [[ "migrated" = "${status}" ]]; then
+            #echo "Requesting recall: '${file}'"
+            echo "${file}" >> ${offline_file_list}
+        else
+            continue
+        fi
 
-        get_confirmation "Are you sure you want to continue (y/n)?" \
-            || { echo -e "not confirmed, continuing...\n"; continue; }
-
-        #echo ${recall_request_file}
-        cat <<EOF > ${recall_request_log}
-${timestamp}: ${USER} initiated ${file} recall request
-EOF
-        echo "${file}" >> "${recall_request_flist}"
-	cat "${recall_request_log}"
+        n_offline=$(( ${n_offline} + 1 ))
+        bytes_offline=$(( ${bytes_offline} + ${true_size} ))
 
     done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
+
+
+    # check for empty list
+    if [[ ! -s ${offline_file_list} ]]; then
+        echo "No offline files found."
+        return
+    fi
+
+    size_offline=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${bytes_offline}")
+    local msg="Requesting recall of ${n_offline} files / ${size_offline}\nAre you sure you want to continue (y/n)?"
+
+    get_confirmation ${msg} \
+        || { echo -e "not confirmed, continuing...\n"; continue; }
+
+    #echo ${offline_file_list}
+    local sha_label=$(sha256sum ${offline_file_list} | awk '{print $1}')
+    local recall_request_stub="${log_dir}/recall-${USER}-${sha_label}"
+    local recall_request_file="${recall_request_stub}-${timestamp}"
+    local recall_request_log="${recall_request_file}.log"
+    local recall_request_flist="${recall_request_file}.filelist"
+    cat <<EOF > ${recall_request_log}
+${timestamp}: ${USER} initiated recall request of ${n_offline} files / ${size_offline}
+${timestamp}: requested file list: '${recall_request_flist}'
+EOF
+    cat ${recall_request_log}
+    mv -f ${offline_file_list} ${recall_request_flist}
 }
 
 
@@ -452,19 +524,17 @@ recall_dirs ()
 
         curdir=$(pwd) # full path to recall directory
 
-        recall_request_stub="${log_dir}/recall-$(pathname_to_label ${curdir})"
+        recall_request_stub="${log_dir}/recall-${USER}-$(pathname_to_label ${curdir})"
         recall_request_file="${recall_request_stub}-${timestamp}"
         recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
+        # we will create a temporary list and then move the final result to avoid a race condition
+        # with the system process that is triggered by the existence of a "*.filelist" file
         recall_request_tmplist="$(mktemp)"
-
-        # while read -r -d '' file; do
-        #     ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-        #     echo "${file}" >> "${recall_request_tmplist}"
-        # done < <(find ${curdir} -type f -print0)
 
         export GLADE_HSM_RECALL_FILE_LIST=${recall_request_tmplist}
         find ${curdir} -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
+        unset GLADE_HSM_RECALL_FILE_LIST
 
         # it is possible we found no files, in which case there is no temporary  list.
         if [[ -s ${recall_request_tmplist} ]]; then
@@ -474,9 +544,9 @@ recall_dirs ()
 
             cat <<EOF > ${recall_request_log}
 ${timestamp}: ${USER} initiated '${curdir}' recall request
-${timestamp}: requested file list: ${recall_request_flist}
+${timestamp}: requested file list: '${recall_request_flist}'
 EOF
-	    cat "${recall_request_log}"
+	    cat ${recall_request_log}
             mv -f ${recall_request_tmplist} ${recall_request_flist}
         else
             echo "no offline files found in ${curdir}"
@@ -508,13 +578,12 @@ status_files ()
     [[ ${#FILELIST[@]} -eq 0 ]] && return
 
     while read -r file; do
-        status="on disk "
+        check_file_status ${file}
 
-        ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 && status="migrated"
+        size_label=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${true_size}")
+        echo "${file}: [${size_label}, ${status}]"
 
-        echo "${file} : ${status} [$(du -h --apparent-size ${file} | awk '{print $1}')]"
-
-    done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE") # | sort -r | uniq)
+    done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE")
 }
 
 
@@ -538,29 +607,15 @@ status_dirs ()
         unset GLADE_HSM_RECALL_FILE_LIST
         find ${curdir} -readable -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
-	# echo "bash version:"
-        # echo "  Disk Volume:  $(du -hs ${curdir} | awk '{print$1}')"
-        # echo "  Total Volume: $(du --apparent-size -hs ${curdir} | awk '{print$1}')"
-
-        # nfiles=0
-        # noffline=0
-
-        # while read -r -d '' file; do
-        #     ((++nfiles))
-        #     #echo "${file} / ${nfiles} / ${noffline}"
-        #     ${MMLSATTR} -L "${file}" | grep -c -e OFFLINE -e IBMTPS >/dev/null 2>&1 || continue
-        #     noffline=$((++noffline))
-        # done < <(find ${curdir} -readable -type f -print0)
-
-        # echo "  Total files: ${nfiles} / offline: ${noffline}"
-
 	# status any relevant log files from the past month
+        local recall_logfile_search_pattern="recall-*$(pathname_to_label ${curdir})*.log"
+
         while read -r -d '' logfile; do
             #echo ${logfile}
             grep "${curdir}" ${logfile} -c >/dev/null 2>&1 || continue
-            echo "Recall status from ${logfile}"
+            echo "Recall status:"
             cat ${logfile}
-        done < <(find ${log_dir} -mtime -31 -type f -name "recall-*.log" -print0)
+        done < <(find ${log_dir} -mtime -31 -type f -name "${recall_logfile_search_pattern}" -print0)
         echo
      done < <(echo "${DIRLIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE") # | sort -r | uniq)"
 }

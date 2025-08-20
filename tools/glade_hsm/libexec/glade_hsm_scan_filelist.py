@@ -3,7 +3,7 @@
 
 import sys, os, stat, time
 
-GPFS_BLOCKSIZE=512
+GPFS_BLOCKSIZE=int(os.getenv('GPFS_BLOCKSIZE', '512'))
 
 
 
@@ -133,10 +133,12 @@ def main():
                                                                                                 n_offline_files,
                                                                                                 human_readable_bytes(total_ondisk_bytes),
                                                                                                 human_readable_bytes(total_true_bytes)))
+    print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
     print('  Disk Volume:  {}'.format(human_readable_bytes(total_ondisk_bytes)))
     print('  Total Volume: {}'.format(human_readable_bytes(total_true_bytes)))
-    print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
-
+    if ofilename:
+        if n_offline_files != 0:
+            print('  Recall Volume: {}'.format(human_readable_bytes(total_true_bytes - total_ondisk_bytes)))
     return
 
 
