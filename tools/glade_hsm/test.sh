@@ -28,16 +28,15 @@ make_test_dirs()
 
     #echo ${testdir}
     #set -x
-    mkdir -p "${testdir}"/{a,b,c}
+    mkdir -p "${testdir}"/{2010,2011,2012}
 
-    cnt=0
     # create a file in each directory
     while read -r -d '' subdir; do
 
-        date > ${subdir}/tiny${cnt}.txt
-        dd if=/dev/random of=${subdir}/large${cnt}.dat bs=1M count=256 >/dev/null 2>&1
-
-        cnt=$((${cnt}+1))
+        date > ${subdir}/tiny-input.txt
+	for cnt in $(seq 1 4); do
+	    dd if=/dev/random of=${subdir}/large-output-${cnt}.dat bs=1M count=128 >/dev/null 2>&1
+	done
 
     done < <(find "${testdir}" -type d -print0)
 
@@ -117,8 +116,8 @@ cat <<EOF
 #          (so long as our logs are not in the system search path, no recall will occur)
 #----------------------------------------------------------------------------
 EOF
-${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/{2021,2022}
-${GLADE_HSM} status /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/{2021,2022}
+time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/{2021,2022}
+time ${GLADE_HSM} status /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/{2021,2022}
 
 
 
@@ -130,6 +129,7 @@ cat <<EOF
 EOF
 time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/2022/*
 time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/2021/* --force # <-- force allows us to get a repeatable timing
+time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/{2021,2021}/* --force # <-- should take twice as long but filter out duplicates and result in the same SHA
 
 
 

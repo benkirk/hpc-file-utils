@@ -27,7 +27,12 @@ CONFIRM=YES
 DIRLIST=()
 FILELIST=()
 
-timestamp=$(date +%F@%T)
+
+#timestamp=$(date +%F@%T)
+timestamp()
+{
+    echo "$(date +%F@%T)"
+}
 
 # log_dir - can be overridden for testing
 log_dir="${log_dir:-/glade/u/CS_HSM/requests}"
@@ -365,13 +370,13 @@ migrate_files ()
         mv ${origfile} ${newfile}
         #set +x
 
-        migrate_request_stub="${log_dir}/migrate-${USER}-$(pathname_to_label ${file})-${timestamp}"
+        migrate_request_stub="${log_dir}/migrate-${USER}-$(pathname_to_label ${file})-$(timestamp)"
         logfile="${migrate_request_stub}.log"
 
         cat <<EOF >${logfile}
-${timestamp}: User: ${USER}
-${timestamp}: Original File: ${origfile}
-${timestamp}: New File:      ${newfile}
+$(timestamp): User: ${USER}
+$(timestamp): Original File: ${origfile}
+$(timestamp): New File:      ${newfile}
 EOF
 
     done < <(echo "${FILELIST[@]}" | tr " " "\n" | sort -r | uniq)
@@ -425,13 +430,13 @@ migrate_dirs ()
         mv ${origdir} ${newdir}
         #set +x
 
-        migrate_request_stub="${log_dir}/migrate-${USER}-$(pathname_to_label ${dir})-${timestamp}"
+        migrate_request_stub="${log_dir}/migrate-${USER}-$(pathname_to_label ${dir})-$(timestamp)"
         logfile="${migrate_request_stub}.log"
 
         cat <<EOF >${logfile}
-${timestamp}: User: ${USER}
-${timestamp}: Original Directory: ${origdir}
-${timestamp}: New Directory:      ${newdir}
+$(timestamp): User: ${USER}
+$(timestamp): Original Directory: ${origdir}
+$(timestamp): New Directory:      ${newdir}
 EOF
     done < <(echo "${DIRLIST[@]}" | tr " " "\n" | sort -r | uniq)
 }
@@ -457,40 +462,56 @@ recall_files ()
     # quick return for no files
     [[ ${#FILELIST[@]} -eq 0 ]] && return
 
-    # create a single filelist
+    # create a single filelist from all offline files in ${FILELIST[@]}
     local offline_file_list="$(mktemp)"
 
-    n_offline=0
-    bytes_offline=0
+    # print the requested files NULL separated allows us to use the Python process scanner.
+    filtered=()
+    for f in "${FILELIST[@]}"; do
+        [[ ${f} == */COLD_STORAGE* ]] && filtered+=("${f}")
+    done
+    export GLADE_HSM_RECALL_FILE_LIST=${offline_file_list}
+    printf '%s\0' "${filtered[@]}" | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
-    while read -r file; do
+    # pure bash version follows - ~5X slower.
+    # n_offline=0
+    # bytes_offline=0
 
-        check_file_status ${file}
+    # while read -r file; do
 
-        size_label=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${true_size}")
-        echo "${file}: [${size_label}, ${status}]"
+    #     check_file_status ${file}
 
-        if [[ "migrated" = "${status}" ]]; then
-            #echo "Requesting recall: '${file}'"
-            echo "${file}" >> ${offline_file_list}
-        else
-            continue
-        fi
+    #     size_label=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${true_size}")
+    #     echo "${file}: [${size_label}, ${status}]"
 
-        n_offline=$(( ${n_offline} + 1 ))
-        bytes_offline=$(( ${bytes_offline} + ${true_size} ))
+    #     if [[ "migrated" = "${status}" ]]; then
+    #         #echo "Requesting recall: '${file}'"
+    #         echo "${file}" >> ${offline_file_list}
+    #     else
+    #         continue
+    #     fi
 
-    done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
+    #     n_offline=$(( ${n_offline} + 1 ))
+    #     bytes_offline=$(( ${bytes_offline} + ${true_size} ))
+
+    # done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
 
 
     # check for empty list
     if [[ ! -s ${offline_file_list} ]]; then
-        echo "No offline files found."
+        echo "No offline files found in input file list."
         return
+    else
+        # sort the list, ensure unique, and overwrite
+        # (This is safe because sort handles the temporary file internally to avoid clobbering the original content during sorting.)
+        # This also will give us a consistent file ordering --> unique SHA below, regardless of input order of the files.
+        sort -ru ${offline_file_list} -o ${offline_file_list}
+        n_offline=$(wc -l ${offline_file_list} | awk '{print $1}')
     fi
 
-    size_offline=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${bytes_offline}")
-    local msg="Requesting recall of ${n_offline} files / ${size_offline}\nAre you sure you want to continue (y/n)?"
+    #size_offline=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${bytes_offline}")
+    #local msg="Requesting recall of ${n_offline} files / ${size_offline}\nAre you sure you want to continue (y/n)?"
+    local msg="Are you sure you want to continue (y/n)?"
 
     get_confirmation ${msg} \
         || { echo -e "not confirmed, continuing...\n"; continue; }
@@ -498,12 +519,12 @@ recall_files ()
     #echo ${offline_file_list}
     local sha_label=$(sha256sum ${offline_file_list} | awk '{print $1}')
     local recall_request_stub="${log_dir}/recall-${USER}-${sha_label}"
-    local recall_request_file="${recall_request_stub}-${timestamp}"
+    local recall_request_file="${recall_request_stub}-$(timestamp)"
     local recall_request_log="${recall_request_file}.log"
     local recall_request_flist="${recall_request_file}.filelist"
     cat <<EOF > ${recall_request_log}
-${timestamp}: ${USER} initiated recall request of ${n_offline} files / ${size_offline}
-${timestamp}: requested file list: '${recall_request_flist}'
+$(timestamp): ${USER} initiated recall request of ${n_offline} files
+$(timestamp): requested file list: '${recall_request_flist}'
 EOF
     cat ${recall_request_log}
     mv -f ${offline_file_list} ${recall_request_flist}
@@ -525,7 +546,7 @@ recall_dirs ()
         curdir=$(pwd) # full path to recall directory
 
         recall_request_stub="${log_dir}/recall-${USER}-$(pathname_to_label ${curdir})"
-        recall_request_file="${recall_request_stub}-${timestamp}"
+        recall_request_file="${recall_request_stub}-$(timestamp)"
         recall_request_log="${recall_request_file}.log"
         recall_request_flist="${recall_request_file}.filelist"
         # we will create a temporary list and then move the final result to avoid a race condition
@@ -543,8 +564,8 @@ recall_dirs ()
                 || { echo -e "not confirmed, continuing...\n"; continue; }
 
             cat <<EOF > ${recall_request_log}
-${timestamp}: ${USER} initiated '${curdir}' recall request
-${timestamp}: requested file list: '${recall_request_flist}'
+$(timestamp): ${USER} initiated '${curdir}' recall request
+$(timestamp): requested file list: '${recall_request_flist}'
 EOF
 	    cat ${recall_request_log}
             mv -f ${recall_request_tmplist} ${recall_request_flist}
