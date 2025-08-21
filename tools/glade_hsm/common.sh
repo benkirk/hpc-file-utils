@@ -21,3 +21,35 @@ err_report() {
 }
 
 trap err_report ERR
+
+
+
+# simple function to return a timestamp string
+timestamp() { echo "$(date +%F@%T)"; }
+
+
+
+
+#----------------------------------------------------------------------------
+# Promt user for confirmation and capture response
+#----------------------------------------------------------------------------
+get_confirmation()
+{
+    local msg="$@"
+    confirmed=0
+    if [[ "NO" == "${CONFIRM}" ]]; then
+        confirmed=1
+        return 0
+    else
+        printf "%b" "${msg} " # <-- interprets any \n in ${msg}
+        read -n 1 -r reply </dev/tty
+        echo
+        if [[ ${reply} =~ ^[Yy]$ ]]; then
+            confirmed=1
+            return 0
+        fi
+    fi
+
+    return 1
+}
+CONFIRM="YES" # <-- default value

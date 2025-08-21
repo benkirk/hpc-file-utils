@@ -18,7 +18,7 @@ set -euo pipefail
 # variables & default vaules
 #----------------------------------------------------------------------------
 export GPFS_BLOCKSIZE=512
-export HSM_THRESHOLD_SIZE_CHECK=$(( 50 * 1024 * 1024 ))
+export HSM_THRESHOLD_SIZE_CHECK=$(( 100 * 1024 * 1024 - 10 )) # <-- ~100MiB with margin
 
 origARGS=$@
 mode="none"
@@ -29,8 +29,6 @@ DIRLIST=()
 FILELIST=()
 
 
-# simple function to return a timestamp string
-timestamp() { echo "$(date +%F@%T)"; }
 
 # log_dir - can be overridden for testing
 log_dir="${log_dir:-/glade/u/CS_HSM/requests}"
@@ -237,31 +235,6 @@ parse_args ()
 
 
 #----------------------------------------------------------------------------
-# Promt user for confirmation and capture response
-#----------------------------------------------------------------------------
-get_confirmation()
-{
-    local msg="$@"
-    confirmed=0
-    if [[ "NO" == "${CONFIRM}" ]]; then
-        confirmed=1
-        return 0
-    else
-        printf "%b" "${msg} " # <-- interprets any \n in ${msg}
-        read -n 1 -r reply </dev/tty
-        echo
-        if [[ ${reply} =~ ^[Yy]$ ]]; then
-            confirmed=1
-            return 0
-        fi
-    fi
-
-    return 1
-}
-
-
-
-#----------------------------------------------------------------------------
 # utility to transform full path name to a string for use in file labels.
 #----------------------------------------------------------------------------
 pathname_to_label ()
@@ -270,8 +243,6 @@ pathname_to_label ()
 
     local curdir=${1}                         # full path to recall directory
     local curdir=$(realpath "${curdir}")      # canonicalize path
-    #local curdirstr=${curdir/\//}            # replace the first '/' only
-    #local curdirstr=${curdirstr//\//\\\\}    # replace remaining '/' with \/
     local curdirsha=$(echo ${curdir} | sha256sum | awk '{print $1}')
     local shortsha=${curdirsha:0:16}
     local stub="${shortsha}"
@@ -285,10 +256,10 @@ pathname_to_label ()
 #----------------------------------------------------------------------------
 # Check file state to determine if online or offline
 #----------------------------------------------------------------------------
-check_file_status()
+check_file_state()
 {
-    [[ ${#} -eq 1 ]] || { echo "Usage: check_file_status <pathname>"; exit 1; }
-    [[ -f ${1} ]] || { echo -e " not a file?: ${1}\nUsage: check_file_status <pathname>"; exit 1; }
+    [[ ${#} -eq 1 ]] || { echo "Usage: check_file_state <pathname>"; exit 1; }
+    [[ -f ${1} ]] || { echo -e " not a file?: ${1}\nUsage: check_file_state <pathname>"; exit 1; }
 
     local file=$(realpath ${1})
 
@@ -474,11 +445,11 @@ recall_files ()
     sort -ru ${input_file_list} -o ${input_file_list}
 
     export GLADE_HSM_RECALL_FILE_LIST=${offline_file_list}
-    tr '\n' '\0' < ${input_file_list} | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
+    tr '\n' '\0' < ${input_file_list} | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py && rm -f ${input_file_list}
 
     # check for empty list
     if [[ ! -s ${offline_file_list} ]]; then
-        echo "No offline files found in input file list."
+        echo "  No offline files found in input file list."
         return
     else
         # sort the list, ensure unique, and overwrite
@@ -521,10 +492,9 @@ recall_dirs ()
     [[ ${#DIRLIST[@]} -eq 0 ]] && return
 
     while read -r dir; do
-        cd ${dir} || continue
+        cd ${dir} || { echo -e "cannot cd ${dir}\nls -ld ${dir}\nCheck Permissions?"; continue; }
 
-        curdir=$(pwd) # full path to recall directory
-
+        curdir=$(realpath "${dir}") # full path to recall directory
         recall_request_stub="${log_dir}/recall-${USER}-$(pathname_to_label ${curdir})"
         recall_request_file="${recall_request_stub}-$(timestamp)"
         recall_request_log="${recall_request_file}.log"
@@ -550,7 +520,7 @@ EOF
 	    cat ${recall_request_log}
             mv -f ${recall_request_tmplist} ${recall_request_flist}
         else
-            echo "no offline files found in ${curdir}"
+            echo "  No offline files found in ${curdir}"
         fi
 
 
@@ -579,7 +549,7 @@ status_files ()
     [[ ${#FILELIST[@]} -eq 0 ]] && return
 
     while read -r file; do
-        check_file_status ${file}
+        check_file_state ${file}
 
         size_label=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${true_size}")
         echo "${file}: [${size_label}, ${status}]"
@@ -598,11 +568,11 @@ status_dirs ()
     [[ ${#DIRLIST[@]} -eq 0 ]] && return
 
     while read -r dir; do
-        cd ${dir} || continue
+        cd ${dir} || { echo -e "cannot cd ${dir}\nls -ld ${dir}\nCheck Permissions?"; continue; }
 
-        curdir=$(pwd)
+        curdir=$(realpath "${dir}") # full path to status directory
 
-        echo ${curdir}
+        echo "'${curdir}' HSM status:"
 
 	# echo "python version:"
         unset GLADE_HSM_RECALL_FILE_LIST

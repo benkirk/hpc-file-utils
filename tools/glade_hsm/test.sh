@@ -69,10 +69,11 @@ ${GLADE_HSM} --help >/dev/null # print once. above...
 cat <<EOF
 #----------------------------------------------------------------------------
 # test 1 - migrate a couple files
-#        - migrate all direcories
+#          migrate all direcories
 #----------------------------------------------------------------------------
 EOF
 make_test_dirs
+find ${testdir} -type f -ls
 ${GLADE_HSM} migrate ${testdir}/*.*
 ${GLADE_HSM} migrate ${testdir}/*/
 
@@ -81,7 +82,7 @@ ${GLADE_HSM} migrate ${testdir}/*/
 cat <<EOF
 #----------------------------------------------------------------------------
 # test 2 - rerun as one step; inspect logs to make sure SHAs are working
-#        - migrate all direcories
+#          migrate all direcories
 #----------------------------------------------------------------------------
 EOF
 rm -rf ${testdir}/COLD_STORAGE
@@ -92,7 +93,7 @@ ${GLADE_HSM} migrate ${testdir}/*.* ${testdir}/*/ --force
 
 cat <<EOF
 #----------------------------------------------------------------------------
-# test 3 - status - synthetic files
+# test 3 - status - synthetic files & directories
 #----------------------------------------------------------------------------
 EOF
 ${GLADE_HSM} status ${testdir}/COLD_STORAGE/*.*
