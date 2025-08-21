@@ -129,8 +129,9 @@ cat <<EOF
 EOF
 time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/2022/*
 time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/2021/* --force # <-- force allows us to get a repeatable timing
-time ${GLADE_HSM} recall /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/{2021,2021}/* --force # <-- should take twice as long but filter out duplicates and result in the same SHA
-
+cd /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/ # <-- test relative paths,. should yield same list//SHA etc...
+time ${GLADE_HSM} recall {2021,2021}/* --force # <-- should take twice as long but filter out duplicates and result in the same SHA
+cd -
 
 
 echo "Removing TESTROOT=${TESTROOT}"

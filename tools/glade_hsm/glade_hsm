@@ -3,6 +3,7 @@
 #----------------------------------------------------------------------------
 # environment
 SCRIPTDIR="$( cd "$( dirname $(realpath "${BASH_SOURCE[0]}") )" >/dev/null 2>&1 && pwd )"
+source ${SCRIPTDIR}/common.sh
 MMLSATTR="${MMLSATTR:-/usr/lpp/mmfs/bin/mmlsattr}"
 #----------------------------------------------------------------------------
 
@@ -28,11 +29,8 @@ DIRLIST=()
 FILELIST=()
 
 
-#timestamp=$(date +%F@%T)
-timestamp()
-{
-    echo "$(date +%F@%T)"
-}
+# simple function to return a timestamp string
+timestamp() { echo "$(date +%F@%T)"; }
 
 # log_dir - can be overridden for testing
 log_dir="${log_dir:-/glade/u/CS_HSM/requests}"
@@ -270,12 +268,13 @@ pathname_to_label ()
 {
     [[ ${#} -eq 1 ]] || { echo "Usage: pathname_to_label <pathname>"; exit 1; }
 
-    curdir=${1}                         # full path to recall directory
-    curdir=$(realpath "${curdir}")      # canonicalize path
-    #curdirstr=${curdir/\//}            # replace the first '/' only
-    #curdirstr=${curdirstr//\//\\\\}    # replace remaining '/' with \/
-    curdirsha=$(echo ${curdir} | sha256sum | awk '{print $1}')
-    stub="${curdirsha}"
+    local curdir=${1}                         # full path to recall directory
+    local curdir=$(realpath "${curdir}")      # canonicalize path
+    #local curdirstr=${curdir/\//}            # replace the first '/' only
+    #local curdirstr=${curdirstr//\//\\\\}    # replace remaining '/' with \/
+    local curdirsha=$(echo ${curdir} | sha256sum | awk '{print $1}')
+    local shortsha=${curdirsha:0:16}
+    local stub="${shortsha}"
 
     echo ${stub}
     return 0
@@ -463,6 +462,7 @@ recall_files ()
     [[ ${#FILELIST[@]} -eq 0 ]] && return
 
     # create a single filelist from all offline files in ${FILELIST[@]}
+    local input_file_list="$(mktemp)"
     local offline_file_list="$(mktemp)"
 
     # print the requested files NULL separated allows us to use the Python process scanner.
@@ -470,32 +470,11 @@ recall_files ()
     for f in "${FILELIST[@]}"; do
         [[ ${f} == */COLD_STORAGE* ]] && filtered+=("${f}")
     done
+    printf '%s\n' "${filtered[@]}" > ${input_file_list}
+    sort -ru ${input_file_list} -o ${input_file_list}
+
     export GLADE_HSM_RECALL_FILE_LIST=${offline_file_list}
-    printf '%s\0' "${filtered[@]}" | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
-
-    # pure bash version follows - ~5X slower.
-    # n_offline=0
-    # bytes_offline=0
-
-    # while read -r file; do
-
-    #     check_file_status ${file}
-
-    #     size_label=$(numfmt --to=iec-i --suffix=B --format="%.2f" "${true_size}")
-    #     echo "${file}: [${size_label}, ${status}]"
-
-    #     if [[ "migrated" = "${status}" ]]; then
-    #         #echo "Requesting recall: '${file}'"
-    #         echo "${file}" >> ${offline_file_list}
-    #     else
-    #         continue
-    #     fi
-
-    #     n_offline=$(( ${n_offline} + 1 ))
-    #     bytes_offline=$(( ${bytes_offline} + ${true_size} ))
-
-    # done < <(echo "${FILELIST[@]}" | tr " " "\n" |  grep "/COLD_STORAGE" | sort -r | uniq)
-
+    tr '\n' '\0' < ${input_file_list} | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
 
     # check for empty list
     if [[ ! -s ${offline_file_list} ]]; then
@@ -517,8 +496,9 @@ recall_files ()
         || { echo -e "not confirmed, continuing...\n"; continue; }
 
     #echo ${offline_file_list}
-    local sha_label=$(sha256sum ${offline_file_list} | awk '{print $1}')
-    local recall_request_stub="${log_dir}/recall-${USER}-${sha_label}"
+    local list_sha=$(sha256sum ${offline_file_list} | awk '{print $1}')
+    local shortsha=${list_sha:0:16}
+    local recall_request_stub="${log_dir}/recall-${USER}-${shortsha}"
     local recall_request_file="${recall_request_stub}-$(timestamp)"
     local recall_request_log="${recall_request_file}.log"
     local recall_request_flist="${recall_request_file}.filelist"
