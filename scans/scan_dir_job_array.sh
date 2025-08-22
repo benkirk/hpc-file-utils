@@ -68,8 +68,8 @@ if [ -w "${srcdir}/.usage" ]; then
 
     rm -f ${destfile}
     cp summary-${projname} ${destfile}
-    mkdir -p "${srcdir}/.usage/usercounts/"
-    rsync -axv --force --delete ./usercounts/${projname}/ ${srcdir}/.usage/usercounts/
+    mkdir -p "${srcdir}/.usage/userlists/"
+    rsync -axv --force --delete ./userlists/${projname}/ ${srcdir}/.usage/userlists/
 fi
 
 remove_lock

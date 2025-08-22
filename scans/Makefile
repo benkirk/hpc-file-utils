@@ -10,12 +10,12 @@ clean:
 clobber:
 	$(MAKE) clean
 	rm -f *.DONE summary-*
-	rm -rf usercounts
+	rm -rf userlists
 
 archive_logs:
 	timestamp=$$(date +%F@%H:%M) ; \
 	mkdir -p logs/$${timestamp}/ ; \
-	mv -f summary-* usercounts logs/$${timestamp}/ ; \
+	mv -f summary-* userlists logs/$${timestamp}/ ; \
 	rm -f *.DONE *.out *.err scan_dirs.o*.* logs/latest ; \
 	cd logs; \
 	ln -s $${timestamp} latest

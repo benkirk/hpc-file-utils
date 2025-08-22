@@ -4,5 +4,5 @@ scan_dirs.o*.*
 *.err
 *.DONE
 summary-*
-usercounts/
+userlists/
 __pycache__/

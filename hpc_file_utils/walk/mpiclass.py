@@ -370,7 +370,7 @@ class MPIClass:
             self.summarize_topdirs(self.top_nbytes_dirs_3yrs, '# Largest Directories, last access [3-5yrs)',     output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs_5yrs, '# Largest Directories, last access [5-7yrs)',     output_file=ofile, count=250)
             self.summarize_topdirs(self.top_nbytes_dirs_7yrs, '# Largest Directories, last access [7yrs+)',      output_file=ofile, count=250)
-            self.summarize_topdirs(self.top_nitems_dirs,      '# Bloated Dirs (file count)', output_file=ofile, count=250)
+            self.summarize_topdirs(self.top_nitems_dirs,      '# Bloated Directories (file count)', output_file=ofile, count=250)
 
             self.summarize_topfiles(self.top_nbytes_files, '# Largest Files', output_file=ofile, count=250)
 
@@ -382,7 +382,7 @@ class MPIClass:
         # per-user dir/file summary
         for k,v in self.uids.items():
             if v.nitems >= self.options.threshold_count or v.nbytes >= self.options.threshold_size:
-                ofilename = 'usercounts/{}/{}'.format(self.options.summary_prefix if self.options.summary_prefix else '', v.name)
+                ofilename = 'userlists/{}/{}'.format(self.options.summary_prefix if self.options.summary_prefix else '', v.name)
                 p = Path(ofilename)
                 p.parents[0].mkdir(parents=True, exist_ok=True)
                 with open(ofilename,'w') as ofile:
@@ -395,7 +395,7 @@ class MPIClass:
                     self.summarize_topdirs(self.user_top_nbytes_dirs_3yrs[k], '# {} - Largest Directories, last access [3-5yrs)'.format(v.name), output_file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs_5yrs[k], '# {} - Largest Directories, last access [5-7yrs)'.format(v.name), output_file=ofile)
                     self.summarize_topdirs(self.user_top_nbytes_dirs_7yrs[k], '# {} - Largest Directories, last access [7yrs+)'.format(v.name), output_file=ofile)
-                    self.summarize_topdirs(self.user_top_nitems_dirs[k],      '# {} - Bloated Dirs (file count)'.format(v.name), output_file=ofile)
+                    self.summarize_topdirs(self.user_top_nitems_dirs[k],      '# {} - Bloated Directories (file count)'.format(v.name), output_file=ofile)
 
                     self.summarize_topfiles(self.user_top_nbytes_files[k],    '# {} - Largest Files'.format(v.name), output_file=ofile)
 
