@@ -138,21 +138,29 @@ def main():
 
         # incremental progress
         if 0 == n_total_files%100e3:
-            print(' ... found {:,} files, {:,} offline, {} currently on disk, {} total.'.format(n_total_files,
-                                                                                                n_offline_files,
-                                                                                                human_readable_bytes(total_ondisk_bytes),
-                                                                                                human_readable_bytes(total_true_bytes)))
-    if n_offline_files > 0:
-        print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
-    else:
-        print('  Total Files: {:,}'.format(n_total_files))
+            total_ondisk_str = human_readable_bytes(total_ondisk_bytes)
+            total_true_str   = human_readable_bytes(total_true_bytes)
+            explainer_str    = ' [{} accounting for compression{}]'.format(total_true_str,
+                                                                           ' & HSM' if n_offline_files > 0 else '')
 
-    print('  Total Data:  {} On Disk, {} True Size'.format(human_readable_bytes(total_ondisk_bytes),
-                                                           human_readable_bytes(total_true_bytes)))
+            print(' ... found {:,} files{}, {} on disk{}'.format(n_total_files,
+                                                                 ' [{:,} offline]'.format(n_offline_files) if n_offline_files > 0 else '',
+                                                                 total_ondisk_str,
+                                                                 explainer_str if total_ondisk_str != total_true_str else ''))
+
+    print('  Total Files: {:,}{}'.format(n_total_files,
+                                         ' [{:,} Offline]'.format(n_offline_files) if n_offline_files > 0 else ''))
+
+    total_ondisk_str = human_readable_bytes(total_ondisk_bytes)
+    total_true_str   = human_readable_bytes(total_true_bytes)
+    explainer_str    = ' [{} True Size, Accounting for Compression{}]'.format(total_true_str, ' & HSM' if n_offline_files > 0 else '') if total_ondisk_str != total_true_str else ''
+    print('  Total Data:  {} On Disk{}'.format(total_ondisk_str,
+                                               explainer_str))
+
     if 0 != n_candidate_files:
-        print('  HSM Candidates: {:,} file{}, {}'.format(n_candidate_files,
-                                                         's' if n_candidate_files >1 else '',
-                                                         human_readable_bytes(total_candidate_bytes)))
+        print('  HSM Suitability: {:,} file{}, {}'.format(n_candidate_files,
+                                                          's' if n_candidate_files >1 else '',
+                                                          human_readable_bytes(total_candidate_bytes)))
     if ofilename:
         if n_offline_files != 0:
             print('  Recall Volume: {}'.format(human_readable_bytes(total_true_bytes - total_ondisk_bytes)))
