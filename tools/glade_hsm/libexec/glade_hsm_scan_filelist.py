@@ -3,8 +3,8 @@
 
 import sys, os, stat, time
 
-GPFS_BLOCKSIZE=int(os.getenv('GPFS_BLOCKSIZE', '512'))
-
+GPFS_BLOCKSIZE=int(os.getenv('GPFS_BLOCKSIZE', 512))
+HSM_THRESHOLD_SIZE_CHECK=int(os.getenv('HSM_THRESHOLD_SIZE_CHECK', 100*1024*1024-10)) # <-- ~100MiB with margin
 
 
 # a python class with a write method that contains an output file object,
@@ -88,7 +88,10 @@ def get_file_status(filepath):
     file_nblocks = stat_info.st_blocks
     file_ondisk_size = min(file_true_size, file_nblocks*GPFS_BLOCKSIZE)
 
-    is_offline = True if file_true_size > 100*file_ondisk_size else False
+    is_offline = False
+    # we only potentially migrate files > 100MiB,
+    if file_true_size > HSM_THRESHOLD_SIZE_CHECK:
+        is_offline = True if file_true_size > 100*file_ondisk_size else False
 
     return file_ondisk_size, file_true_size, is_offline
 
@@ -105,8 +108,10 @@ def main():
     # initialize counters
     n_total_files=0
     n_offline_files=0
+    n_candidate_files=0
     total_ondisk_bytes=0
     total_true_bytes=0
+    total_candidate_bytes=0
 
     for filepath in read_null_terminated_filenames(sys.stdin.buffer):
 
@@ -127,15 +132,27 @@ def main():
             if ofilename:
                 offline_list.write(filepath + '\n')
 
+        if file_true_bytes > HSM_THRESHOLD_SIZE_CHECK and not is_offline:
+            n_candidate_files += 1
+            total_candidate_bytes += file_ondisk_bytes
+
         # incremental progress
         if 0 == n_total_files%100e3:
             print(' ... found {:,} files, {:,} offline, {} currently on disk, {} total.'.format(n_total_files,
                                                                                                 n_offline_files,
                                                                                                 human_readable_bytes(total_ondisk_bytes),
                                                                                                 human_readable_bytes(total_true_bytes)))
-    print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
-    print('  Disk Volume:  {}'.format(human_readable_bytes(total_ondisk_bytes)))
-    print('  Total Volume: {}'.format(human_readable_bytes(total_true_bytes)))
+    if n_offline_files > 0:
+        print('  Total Files: {:,} / Offline: {:,}'.format(n_total_files,n_offline_files))
+    else:
+        print('  Total Files: {:,}'.format(n_total_files))
+
+    print('  Total Data:  {} On Disk, {} True Size'.format(human_readable_bytes(total_ondisk_bytes),
+                                                           human_readable_bytes(total_true_bytes)))
+    if 0 != n_candidate_files:
+        print('  HSM Candidates: {:,} file{}, {}'.format(n_candidate_files,
+                                                         's' if n_candidate_files >1 else '',
+                                                         human_readable_bytes(total_candidate_bytes)))
     if ofilename:
         if n_offline_files != 0:
             print('  Recall Volume: {}'.format(human_readable_bytes(total_true_bytes - total_ondisk_bytes)))
