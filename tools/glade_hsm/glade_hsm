@@ -43,26 +43,27 @@ log_dir="${log_dir:-/glade/u/CS_HSM/requests}"
 usage_migrate ()
 {
     cat <<EOF
-    migrate:
-       Relocates files/directories in preparation for HSM migration.
+Usage: ${progname} migrate <dirname(s)> <filename(s)>
 
-       For each specified <dirname(s)>, <filename(s)>, relocates entity into a
-       "/COLD_STORAGE/" path in preparation for HSM migration.
+  Relocates files/directories in preparation for HSM migration.
 
-       Example:
+  For each specified <dirname(s)>, <filename(s)>, relocates entity into a
+  "/COLD_STORAGE/" path in preparation for HSM migration.
 
-          glade_hsm migrate [--single-copy] /glade/campaign/mylab/myproj/results/
+  Example:
 
-            will relocate
-              /glade/campaign/mylab/myproj/results/ ->
-              /glade/campaign/mylab/myproj/COLD_STORAGE/results/
+     glade_hsm migrate [--single-copy] /glade/campaign/mylab/myproj/results/
 
-       Batch system processes then run at regular intervals and migrate all
-       large files (>=100MB) underneath "/COLD_STORAGE/" paths onto tape storage.
-       All files inside a "/COLD_STORAGE/" are marked immutable regardless of size,
-       which prevents modification of contents and metadata (permissions, etc.).
+       will relocate
+         /glade/campaign/mylab/myproj/results/ ->
+         /glade/campaign/mylab/myproj/COLD_STORAGE/results/
 
-       Name collisions are reported but must be resolved by the user.
+  Batch system processes then run at regular intervals and migrate all
+  large files (>=100MB) underneath "/COLD_STORAGE/" paths onto tape storage.
+  All files inside a "/COLD_STORAGE/" are marked immutable regardless of size,
+  which prevents modification of contents and metadata (permissions, etc.).
+
+  Name collisions are reported but must be resolved by the user.
 EOF
 }
 
@@ -74,21 +75,22 @@ EOF
 usage_recall ()
 {
     cat <<EOF
-    recall:
-      Submits a recall request for entire directory tree(s), or listed file(s).
+Usage: ${progname} recall <dirname(s)> <filename(s)>
 
-       Example:
+  Submits a recall request for entire directory tree(s), or listed file(s).
 
-          glade_hsm recall /glade/campaign/mylab/myproj/COLD_STORAGE/results/
+   Example:
 
-            requests that all previously migrated files inside
-              /glade/campaign/mylab/myproj/COLD_STORAGE/results/
-            be recalled from tape to disk in order to become readable.
-            All files have their "immutability" attribute removed, allowing for modification.
+      glade_hsm recall /glade/campaign/mylab/myproj/COLD_STORAGE/results/
 
-       NOTE: recalled files can be read from inside their "/COLD_STORAGE/" location
-       for 7 days, after which they will be re-migrated at the next scheduled interval.
-       To permanently extract a file/directory from HSM, manually mv outside of "/COLD_STORAGE/".
+        requests that all previously migrated files inside
+          /glade/campaign/mylab/myproj/COLD_STORAGE/results/
+        be recalled from tape to disk in order to become readable.
+        All files have their "immutability" attribute removed, allowing for modification.
+
+   NOTE: recalled files can be read from inside their "/COLD_STORAGE/" location
+   for 7 days, after which they will be re-migrated at the next scheduled interval.
+   To permanently extract a file/directory from HSM, manually mv outside of "/COLD_STORAGE/".
 EOF
 }
 
@@ -100,19 +102,53 @@ EOF
 usage_status ()
 {
     cat <<EOF
-    status:
-      Summarizes the on-disk and total volume consumed by <dirname(s)>.
-      Reports status of any outstanding recall requests for the specified <dirname(s)>, if any.
+Usage: ${progname} status <dirname(s)> <filename(s)>
 
-       Example:
+  Summarizes the on-disk and total volume consumed by <dirname(s)>.
+  Reports status of any outstanding recall requests for the specified <dirname(s)>, if any.
 
-          glade_hsm status /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/
+  Example:
+    glade_hsm status /glade/campaign/cisl/csg/hsm_data/COLD_STORAGE
+    '/glade/campaign/cisl/csg/hsm_data/COLD_STORAGE' HSM status:
+      Total Files: 19 / Offline: 15
+      Disk Volume:  7.62 KiB
+      Total Volume: 2.25 GiB
+    Recall status:
+    2025-08-22@08:36:44: benkirk initiated '/glade/campaign/cisl/csg/hsm_data/COLD_STORAGE' recall request
+    2025-08-22@08:36:44: requested file list: '/glade/u/CS_HSM/requests/recall-benkirk-d511eab5db280cc7-2025-08-22@08:36:41.filelist'
+    2025-08-22@08:53:07: status: recall in progress
+    2025-08-22@08:53:08: status: recall complete
+    2025-08-22@08:53:11: Recall file status...
+    2025-08-22@08:53:11: Total Files (disk/tape): 1 (1 / 0)
+    2025-08-22@08:53:11: Total Data  (disk/tape): 256.00 MiB (256.00 MiB / 0 b)
+EOF
+}
 
-            /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE
-            Disk Volume:  61T
-            Total Volume: 444T
-            Recall status from /glade/u/CS_HSM/requests/benkirk::glade\\campaign\\univ\\uiuc0017\\SouthAmerica_WRF4KM_PGW\\COLD_STORAGE\\2002::2023-08-04@12:54:55.log
-            # /glade/campaign/univ/uiuc0017/SouthAmerica_WRF4KM_PGW/COLD_STORAGE/2002 : recall requested on 2023-08-04@12:54:55 by benkirk
+
+
+#----------------------------------------------------------------------------
+# inspect subcommand help message
+#----------------------------------------------------------------------------
+usage_inspect ()
+{
+    cat <<EOF
+Usage: ${progname} inspect <dirname(s)>
+
+  Examines <dirname(s)> for HSM suitability.
+  Reports the number of files and total volume of potential HSM disk savings.
+
+  Example:
+    glade_hsm inspect /glade/campaign/cisl/csg
+    Inspecting '/glade/campaign/cisl/csg' HSM suitability:
+     ... found 100,000 files, 17 offline, 5.42 TiB currently on disk, 5.43 TiB total.
+     ... found 200,000 files, 17 offline, 6.38 TiB currently on disk, 6.38 TiB total.
+      Total Files: 222,299 / Offline: 17
+      Total Data:  6.65 TiB On Disk, 6.65 TiB True Size
+      HSM Candidates: 1,786 files, 4.56 TiB
+
+  In the example above a large directory tree is scanned, with incremental progress reported.
+  The final line identifies 1,786 files matching the HSM migration threshold, which would result in
+  4.56 TiB of data being migrated if placed under HSM.
 EOF
 }
 
@@ -124,11 +160,11 @@ EOF
 usage ()
 {
     cat <<EOF
-Usage: ${0} <migrate|recall|status> <subcommand options> <dirname(s)> <filename(s)>
+Usage: ${progname} <migrate|recall|status|inspect> <subcommand options> <dirname(s)> <filename(s)>
 EOF
-    usage_migrate && echo && echo
-    usage_recall && echo && echo
-    usage_status
+    #usage_migrate && echo && echo
+    #usage_recall && echo && echo
+    #usage_status
 }
 
 
@@ -137,7 +173,7 @@ EOF
 #----------------------------------------------------------------------------
 parse_args ()
 {
-    cmd=$(basename ${0})
+    progname=$(basename ${0})
 
     [[ ${#} -gt 0 ]] || { usage; exit 0; }
 
@@ -149,7 +185,7 @@ parse_args ()
             exit 0
             ;;
 
-        "migrate"|"recall"|"status")
+        "migrate"|"recall"|"status"|"inspect")
             mode=${1}
             shift
 
@@ -184,7 +220,7 @@ parse_args ()
                                     DIRLIST+=( ${fullpath} ) # save directory in an array for later
                                     ;;
                                 *)
-                                    echo "Invalid directory: ${fullpath} - ${cmd} only functions on Campaign Storage."
+                                    echo "Invalid directory: ${fullpath} - ${progname} only functions on Campaign Storage."
                                     exit 1
                                     ;;
                             esac
@@ -196,7 +232,7 @@ parse_args ()
                                     FILELIST+=( ${fullpath} ) # save file in an array for later
                                     ;;
                                 *)
-                                    echo "Invalid file: ${fullpath} - ${cmd} only functions on Campaign Storage."
+                                    echo "Invalid file: ${fullpath} - ${progname} only functions on Campaign Storage."
                                     exit 1
                                     ;;
                             esac
@@ -215,7 +251,7 @@ parse_args ()
 
             #  Check if both DIRLIST and FILELIST arrays are empty
             if [[ ${#DIRLIST[@]} -eq 0 ]] && [[ ${#FILELIST[@]} -eq 0 ]]; then
-                echo -e "${cmd} ${mode} : No arguments specified\n\n"
+                echo -e "${progname} ${mode} : No arguments specified\n\n"
                 usage
                 exit 1
             fi
@@ -605,12 +641,47 @@ do_status ()
 
 
 #----------------------------------------------------------------------------
+# glade_hsm inspect <dirname(s)> subcommand
+#----------------------------------------------------------------------------
+inspect_dirs ()
+{
+    # quick return for no directories
+    [[ ${#DIRLIST[@]} -eq 0 ]] && return
+
+    while read -r dir; do
+        cd ${dir} || { echo -e "cannot cd ${dir}\nls -ld ${dir}\nCheck Permissions?"; continue; }
+
+        curdir=$(realpath "${dir}") # full path to inspect directory
+
+        echo "Inspecting '${curdir}' HSM suitability:"
+
+	# echo "python version:"
+        unset GLADE_HSM_RECALL_FILE_LIST
+        find ${curdir} -readable -type f -print0 | ${SCRIPTDIR}/libexec/glade_hsm_scan_filelist.py
+
+        echo
+     done < <(echo "${DIRLIST[@]}" | tr " " "\n")
+}
+
+
+
+#----------------------------------------------------------------------------
+# glade_hsm status subcommand
+#----------------------------------------------------------------------------
+do_inspect ()
+{
+    inspect_dirs
+}
+
+
+
+#----------------------------------------------------------------------------
 # main program follows
 #----------------------------------------------------------------------------
 parse_args $@
 
 case ${mode} in
-    "migrate"|"recall"|"status")
+    "migrate"|"recall"|"status"|"inspect")
         do_${mode}
         ;;
 
