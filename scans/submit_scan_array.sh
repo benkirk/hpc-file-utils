@@ -1,6 +1,6 @@
 #!/bin/bash
 
-maxconcur=6 #12
+maxconcur=8 #12
 
 queue="${queue:-main}"
 walltime="${walltime:-36:00:00}"

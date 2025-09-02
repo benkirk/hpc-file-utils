@@ -1,6 +1,7 @@
 #!/bin/bash -l
 #PBS -A <project_code>
 #PBS -j oe
+#PBS -m n
 #PBS -r y
 #PBS -l walltime=12:00:00
 #PBS -l select=1:ncpus=128:mpiprocs=96:mem=235G
@@ -68,8 +69,8 @@ if [ -w "${srcdir}/.usage" ]; then
 
     rm -f ${destfile}
     cp summary-${projname} ${destfile}
-    mkdir -p "${srcdir}/.usage/userlists/"
-    rsync -axv --force --delete ./userlists/${projname}/ ${srcdir}/.usage/userlists/
+    mkdir -p "${srcdir}/.usage/users/"
+    rsync -axv --force --delete ./userlists/${projname}/ ${srcdir}/.usage/users/
 fi
 
 remove_lock
