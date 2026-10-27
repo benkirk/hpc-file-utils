@@ -1,0 +1,15 @@
+*~
+*.out.*
+*.err.*
+*.xz
+cgd_*.o*
+cold_storage.*.list
+root_commands.*.sh
+root_chown_commands.*.sh
+verify_*
+pairs.test.conf
+logs/
+__pycache__/
+pairs.*.split.conf
+mpibind.*.log
+stamps/
