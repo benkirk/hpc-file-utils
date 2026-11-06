@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.coverage
+*~
+
+# conda envs built by etc/config_env.sh / make conda-env (phase 1)
+conda-env
+conda-env-*
+
+# walkstat / walksync run output
+summary-*
+userlists/
+walksync-r*.list
+walksync-r*.err
+
+# sync/ run directories
+sync/stamps/
+sync/*.out.*
+sync/*.err.*
+sync/*.o[0-9]*
