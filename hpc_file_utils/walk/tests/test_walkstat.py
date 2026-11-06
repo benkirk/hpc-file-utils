@@ -1,9 +1,7 @@
-"""walkstat/walktar behaviour, pinned before phase 2 changes anything.
+"""walkstat/walktar behaviour on the fixture trees.
 
-Phase 1 note: every walk here is exposed to the termination race (see
-test_termination_race.py). Under load (pytest -n auto) the Manager can receive a
-worker's 'ready' before the 'dir_reply' it sent just before, and stop early, so an
-occasional run reports fewer items. The total-count checks make that failure obvious.
+Every walk checks walkstat's Total Count against the tree: before phase 2, the
+termination race could end a walk early under load and drop directories silently.
 """
 
 import os
@@ -21,7 +19,7 @@ def test_walkstat_golden_summary(walk, golden_tree, tmp_path):
     assert r.ok, r.report()
     assert r.total_count() == golden_tree.nitems, r.report()
     summary = walk.normalize(r.summary("golden"), golden_tree.root, golden_tree.dates)
-    walk.compare_golden("summary-golden.txt", summary)
+    walk.compare_golden("summary-golden.txt", summary, sort="ties")
     # rank 0 echoes the summary file to stdout
     assert r.summary("golden") in r.stdout
 
@@ -33,7 +31,8 @@ def test_walkstat_golden_userlist(walk, golden_tree, tmp_path):
     lists = r.userlists("golden")
     assert len(lists) == 1, sorted(lists)   # one owner: us
     (text,) = lists.values()
-    walk.compare_golden("userlist-golden.txt", walk.normalize(text, golden_tree.root, golden_tree.dates))
+    walk.compare_golden("userlist-golden.txt", walk.normalize(text, golden_tree.root, golden_tree.dates),
+                        sort="ties")
 
 
 def test_walkstat_default_prefix(walk, golden_tree, tmp_path):
@@ -45,16 +44,17 @@ def test_walkstat_default_prefix(walk, golden_tree, tmp_path):
     assert len(r.userlists("")) == 1
 
 
-@pytest.mark.xfail(reason="phase 2: termination race; under load the Manager can see a worker's "
-                          "ready before its dir_reply and drop those subdirectories", strict=False)
-def test_walkstat_rank_counts_do_not_matter(walk, golden_tree, tmp_path):
-    """2 ranks (one worker) and 6 ranks give the same normalized summary as 4."""
+@pytest.mark.parametrize("heap_size", [500, 3])
+def test_walkstat_rank_counts_do_not_matter(walk, golden_tree, tmp_path, heap_size):
+    """2 ranks (one worker) and 6 ranks give exactly the same summary, line for line,
+    also when --heap-size cuts the lists off among entries of equal size."""
     texts = []
     for n in (2, 6):
-        r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path / f"n{n}", nranks=n, args=GOLDEN_ARGS)
+        r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path / f"n{n}", nranks=n,
+                     args=GOLDEN_ARGS + ["--heap-size", heap_size])
         assert r.ok, r.report()
         assert r.total_count() == golden_tree.nitems, r.report()
-        texts.append(walk.blocks(walk.normalize(r.summary("golden"), golden_tree.root, golden_tree.dates)))
+        texts.append(walk.normalize(r.summary("golden"), golden_tree.root, golden_tree.dates))
     assert texts[0] == texts[1]
 
 
@@ -69,14 +69,27 @@ def test_walkstat_spreadsheet(walk, golden_tree, tmp_path):
     assert wb.sheetnames == ["golden - Directories", "golden - Files", "golden - Users & Groups"]
 
 
-def test_walkstat_unreadable_dir_is_not_an_error(walk, unreadable_tree, tmp_path):
-    """Today: 'Cannot scan' goes to stderr, nothing counts it, and the exit status is 0."""
+def test_walkstat_unreadable_dir_is_counted(walk, unreadable_tree, tmp_path):
+    """'Cannot scan' goes to stderr and is counted; by default the exit status stays 0."""
     if os.geteuid() == 0:
         pytest.skip("root can read a mode-000 directory")
     r = walk.run("walkstat", [unreadable_tree.root], cwd=tmp_path)
     assert r.ok, r.report()
     assert "Cannot scan" in r.stderr
     assert r.total_count() == 3   # ok/, ok/a.dat, locked/ ; nothing inside locked/
+    assert "Scan Errors: 1 entries could not be scanned" in r.summary()
+    assert "--> 1 entries could not be scanned" in r.stdout
+
+
+def test_walkstat_fail_on_errors(walk, unreadable_tree, golden_tree, tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root can read a mode-000 directory")
+    r = walk.run("walkstat", [unreadable_tree.root], cwd=tmp_path / "bad", args=["--fail-on-errors"])
+    assert not r.timed_out and r.returncode == 2, r.report()
+    assert (tmp_path / "bad" / "summary-output").is_file()   # the summary is still written
+    r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path / "good", args=["--fail-on-errors"])
+    assert r.ok, r.report()
+    assert "Scan Errors" not in r.summary()
 
 
 @pytest.mark.xfail(reason="non-UTF-8 names: the summary file is opened as strict UTF-8, "
@@ -88,13 +101,21 @@ def test_walkstat_non_utf8_names(walk, non_utf8_tree, tmp_path):
 
 
 @pytest.mark.timeout(120)
-@pytest.mark.xfail(reason="phase 2: parse_options() fails on rank 0 only, "
-                          "leaving the other ranks waiting (hang)", strict=True)
 def test_walkstat_bad_dir_exits_promptly(walk, tmp_path):
+    """parse_options() runs on rank 0 only; its failure must end every rank."""
     r = walk.run("walkstat", [tmp_path / "does-not-exist"], cwd=tmp_path, timeout=30)
     assert not r.timed_out, r.report()
-    assert r.returncode != 0
+    assert r.returncode == 1, r.report()
     assert "no such directory" in r.stdout + r.stderr
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("args,status", [(["--help"], 0), (["--no-such-option"], 2),
+                                         (["--max-dirs-per-send", "0"], 2)])
+def test_walkstat_option_exits_promptly(walk, golden_tree, tmp_path, args, status):
+    r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=args, timeout=30)
+    assert not r.timed_out, r.report()
+    assert r.returncode == status, r.report()
 
 
 def test_walktar_archives_the_tree(walk, private_golden_tree, tmp_path):
