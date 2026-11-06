@@ -131,7 +131,7 @@ pairs_list()
     local idx=0 name key
     echo "# ${pairs_conf}: $(pair_count) pairs"
     echo "# settings for ${NCAR_HOST:-(unknown host)}:"
-    for key in queue walltime nodes chunk maxconcur batch_files msrsync msrsync_procs; do
+    for key in queue walltime nodes chunk maxconcur batch_files msrsync msrsync_procs chmod; do
         echo "#   ${key}: $(conf_get ${key})"
     done
     for name in $(pair_names); do

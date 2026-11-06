@@ -186,6 +186,16 @@ echo "${cluster}: ${nnodes} nodes, ${nranks} MPI ranks (${ppn}/node)"
 #--------------------------------------------------------------
 rsync_opts=(-axAHX "--exclude=${hsm_pattern}")
 
+# chmod: rsync --chmod for every rsync pass, e.g. 'Du+w' for a read-only source. dsync copies
+# modes as they are, so it would create read-only directories it then can't fill - pairs with
+# chmod skip dsync, and msrsync (auto) does the bulk copy instead.
+rsync_chmod="$(pair_get "${pair}" chmod)"
+if [[ -n ${rsync_chmod} ]]; then
+    # no blanks: msrsync gets the rsync options as one string
+    [[ ${rsync_chmod} =~ ^[-+=,ugoaDFrwxXst0-7]+$ ]] || { echo "ERROR: invalid chmod '${rsync_chmod}'"; exit 1; }
+    rsync_opts+=("--chmod=${rsync_chmod}")
+fi
+
 
 # HSM preflight: find any COLD_STORAGE* entries (stat only, no recalls).
 # dfind prints absolute realpaths, mixed with '[timestamp] ...' progress lines and
@@ -235,7 +245,7 @@ fi
 
 # dryrun: what would dsync change? then quit.
 if [[ ${dryrun} == "yes" ]]; then
-    [[ ${hsm} == "yes" ]] && { echo "dsync --dryrun is not applicable to hsm pairs, exiting."; exit 0; }
+    [[ ${hsm} == "yes" || -n ${rsync_chmod} ]] && { echo "dsync --dryrun is not applicable to hsm/chmod pairs, exiting."; exit 0; }
     echo -n "...running dsync --dryrun ${srcdir} -> ${destdir} at $(date)... "
     sstart=$(date +%s)
     mpibind \
@@ -252,9 +262,11 @@ fi
 
 
 
-# mpifileutils / dsync for initial transfer - cannot exclude, so not for hsm pairs.
+# mpifileutils / dsync for initial transfer - cannot exclude or chmod, so not for hsm/chmod pairs.
 if [[ ${hsm} == "yes" ]]; then
     echo "...skipping dsync for hsm pair [${pair}]"
+elif [[ -n ${rsync_chmod} ]]; then
+    echo "...skipping dsync for [${pair}] (chmod: ${rsync_chmod})"
 else
     echo -n "...running dsync ${srcdir} -> ${destdir} at $(date)... "
     sstart=$(date +%s)
@@ -311,10 +323,10 @@ fi
 # a multi-stream rsync for secondary transfer, one rsync per usable CPU on this node.
 # needed for hsm pairs (dsync skipped); after a completed dsync it only re-crawls the tree.
 # hard links are restored by the serial rsync -H pass below either way (dsync and
-# msrsync both break them), so msrsync: auto = hsm pairs only; yes/no to force.
+# msrsync both break them), so msrsync: auto = hsm and chmod pairs only; yes/no to force.
 use_msrsync="$(setting msrsync auto)"
 case "${use_msrsync}" in
-    auto) [[ ${hsm} == "yes" ]] && use_msrsync=yes || use_msrsync=no ;;
+    auto) [[ ${hsm} == "yes" || -n ${rsync_chmod} ]] && use_msrsync=yes || use_msrsync=no ;;
     yes|no) ;;
     *) echo "ERROR: invalid msrsync setting '${use_msrsync}' (auto|yes|no)"; exit 1 ;;
 esac

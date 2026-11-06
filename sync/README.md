@@ -53,7 +53,8 @@ Tunables, per pair or global:
 | key | default | |
 |---|---|---|
 | `batch_files` | 250000 | dsync `--batch-files` |
-| `msrsync` | `auto` | `auto` = hsm pairs only, `yes`, `no` |
+| `msrsync` | `auto` | `auto` = hsm and chmod pairs only, `yes`, `no` |
+| `chmod` | - | rsync `--chmod` for every pass, e.g. `Du+w` for a read-only source: dsync copies modes as they are and can't fill the read-only dirs it creates, so chmod pairs skip dsync |
 | `msrsync_procs` | `nproc` | on the node left after the release |
 | `max_delete` | `1%` | rsync `--max-delete`: N, or N% of the source items (at least 1000) |
 | `verify_sample` | 200 | files compared with the source before stamping (0 = off) |

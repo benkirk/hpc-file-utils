@@ -10,7 +10,9 @@
 #            ${USER} and csgteam, access + default ACLs in one recursive pass (the default
 #            ACL covers what is added before the final sync). One setfacl per pair, so
 #            lines can be cherry-picked; pairs whose src already carries both ACLs at the
-#            top are commented out. Skips 'done: yes' pairs.
+#            top are commented out. Skips 'done: yes' pairs. -n keeps each file's existing
+#            mask: a recomputed mask would re-grant write to the owning group where the mask
+#            hid it (e.g. read-only trees with group::rwx, mask::r-x).
 #
 # After the final sync pass:
 #
@@ -65,8 +67,9 @@ q()
     case "${flavour}" in
         rsync) echo "# root rsync, no --delete: copies owner/group/mode from src onto the existing copy" ;;
         chown) echo "# chown -R -h -P: new owner:group; changes symlinks themselves, never follows them" ;;
-        acl)   echo "# setfacl -R -m: read access for ${USER} and csgteam to each source tree (access +"
-               echo "# default ACLs); one line per tree, so lines can be picked individually" ;;
+        acl)   echo "# setfacl -R -n -m: read access for ${USER} and csgteam to each source tree (access +"
+               echo "# default ACLs); one line per tree, so lines can be picked individually."
+               echo "# -n: keep existing masks - never widens what the owning group can do"  ;;
     esac
     echo
     [[ ${flavour} == acl ]] && echo "ACL='${acl}'"
@@ -88,9 +91,9 @@ q()
             chown) echo "chown -R -h -P $(q "${owner}") $(q "${destdir}")" ;;
             acl)   if acl_granted "${srcdir}"; then
                        echo "# already set at the top of the tree (remove the '#' to reapply):"
-                       echo "# setfacl -R -m \"\${ACL}\" $(q "${srcdir}")"
+                       echo "# setfacl -R -n -m \"\${ACL}\" $(q "${srcdir}")"
                    else
-                       echo "setfacl -R -m \"\${ACL}\" $(q "${srcdir}")"
+                       echo "setfacl -R -n -m \"\${ACL}\" $(q "${srcdir}")"
                    fi ;;
         esac
     done
