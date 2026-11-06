@@ -127,13 +127,24 @@ Each fix turns a phase-1 test from xfail to pass, or adds a failing test first.
 - **Split `MPIClass.summary()`** (300 lines) into collectives and reporting.
 - **Import mpi4py lazily**, so pure modules unit-test without MPI.
 - **Move `scans/` scripts** to `source <repo>/etc/config_env.sh` and the console scripts.
+- **Reporting** today there is some klugdy and crufty reporting at the end of a run with
+  aggregation to rank 0.  lets polish the output.  we can change the styling of reported files
+  so long as the content is similar.
 
 **Gate:** the published formats (`summary-<prefix>`, `userlists/`, and the copy-out to
-`<dir>/.usage/`, which end users read) are byte-identical to phase 2 on the golden tree.
+`<dir>/.usage/`, which end users read) need not be byte-identical to phase 2 on the golden tree.
+(format changes allowed, perhaps rich or other syling incoprorated.)
 
 ---
 
-## Phase 4: load balancing for tar
+## Phase 4: flitering
+Right now everything is all or nothing; consider some standard filtering options
+useful for the toolkit (date; owner/group; size; other filters??)
+
+
+---
+
+## Phase 5: load balancing for tar
 Problem: the unit of work is a directory, so one huge directory is one rank's tar (or rsync)
 stream for hours while the other ranks idle.
 - **File batches become units of work:**
@@ -144,6 +155,7 @@ stream for hours while the other ranks idle.
   - a worker given a batch calls the tool's `process_batch()`;
   - small directories still combine on the scanning rank, so tiny dirs don't each become a
     message.
+  - maybe lift (`| copied X (Y/s now, Z/s avg), queued Q`) here before phase 6
 - **walktar:** one tar per batch, replacing the per-rank `MAXSIZE_BYTES` roll-over.
 
 **Gate:** a tree with one directory of many large files is spread over all ranks (test by
@@ -151,7 +163,7 @@ counting each rank's share), and the union of the tars equals the tree.
 
 ---
 
-## Phase 5: adding sync
+## Phase 6: adding sync
 walksync on top of phases 3 and 4. Start from the prototype (`walksync_dev/walkstat/sync_worker.py`)
 and [walksync.md](walksync.md):
 - **`walk/sync/compare.py`:** a pure `needs_copy(src_stat, dest_entry)`. Copy when the file is
@@ -177,8 +189,8 @@ and [walksync.md](walksync.md):
 - **Shared install** at `/glade/work/csgteam/hpc-file-utils`: one env per host via
   `etc/config_env.sh`, and `make bytecode` after each pull.
 - **Move the scans cron and the `sync/` run dirs** to it.
-- **csg-utils:** a PR that replaces the moved directories with a pointer README. Also delete the
-  `walksync-handoff` branch and the prototype's uncommitted working-tree edits there.
+- **csg-utils:** a PR that replaces the moved directories with a pointer README and a submoule.
+  Also delete the `walksync-handoff` branch and the prototype's uncommitted working-tree edits there.
 
 ## References: copy these rather than reinventing them
 - `~/codes/project_samuel/devel/etc/config_env.sh`, and that repo's `Makefile` (`ENV_HASH`,

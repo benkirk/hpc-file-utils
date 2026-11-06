@@ -234,6 +234,10 @@ def _write(path, nbytes):
     with open(path, "wb") as f:
         for _ in range(nbytes // MiB):
             f.write(os.urandom(MiB))   # incompressible: real blocks on every filesystem
+        # walkstat counts min(st_size, st_blocks * 512); GPFS reports the blocks of
+        # freshly written data only once it is flushed, so flush it now
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def _count(root):
