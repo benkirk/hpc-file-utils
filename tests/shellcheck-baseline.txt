@@ -1,0 +1,32 @@
+# shellcheck warnings accepted in the imported scripts: <file> <code> <count>
+# regenerate with: bash tests/shellcheck_test.sh --update
+scans/all_cs.sh SC2034 2
+scans/scan_dir_job_array.sh SC2034 2
+scans/submit_scan_array.sh SC2034 1
+scans/test_scan_dir.sh SC2034 2
+tools/glade_hsm/common.sh SC2034 1
+tools/glade_hsm/common.sh SC2124 1
+tools/glade_hsm/common.sh SC2148 1
+tools/glade_hsm/glade_hsm SC2034 2
+tools/glade_hsm/glade_hsm SC2046 1
+tools/glade_hsm/glade_hsm SC2068 1
+tools/glade_hsm/glade_hsm SC2104 1
+tools/glade_hsm/glade_hsm SC2124 1
+tools/glade_hsm/glade_hsm SC2155 12
+tools/glade_hsm/glade_hsm SC2206 2
+tools/glade_hsm/test.sh SC2046 1
+tools/glade_hsm/test.sh SC2155 1
+tools/glade_purge/common.sh SC2148 1
+tools/glade_purge/glade_purge SC2046 1
+tools/glade_purge/glade_purge SC2068 3
+tools/glade_purge/glade_purge SC2124 1
+tools/glade_purge/glade_purge SC2145 3
+tools/glade_purge/glade_purge SC2155 5
+tools/glade_purge/glade_purge SC2174 1
+tools/glade_purge/glade_purge SC2207 1
+tools/glade_purge/test.sh SC2034 1
+tools/glade_purge/test.sh SC2046 1
+tools/glade_purge/test.sh SC2068 8
+tools/glade_purge/test.sh SC2145 1
+tools/glade_purge/test.sh SC2206 6
+tools/glade_purge/test.sh SC2207 1

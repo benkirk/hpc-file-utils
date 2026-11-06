@@ -1,0 +1,18 @@
+# Base environment for every host; see etc/config_env.sh and the Makefile.
+# HFU_MPI=conda adds conda-env-mpi.yaml on top; HFU_MPI=host builds mpi4py from
+# source against the host MPI modules (etc/modules-<host>).
+name: hpc-file-utils
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - pip
+  - bash          # sync/pairs.sh needs bash >= 4 (macOS ships 3.2)
+  - coreutils     # GNU date -d for sync/pairs.sh on macOS
+  - rsync         # the macOS rsync is too old for the phase-6 oracle
+  - shellcheck
+  - humanfriendly # walkstat's human-readable sizes
+  - pandas        # walkstat --spreadsheet
+  - openpyxl      # walkstat --spreadsheet
+  - pip:
+      - pipdeptree

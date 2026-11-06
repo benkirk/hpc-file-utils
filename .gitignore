@@ -8,10 +8,12 @@ __pycache__/
 # conda envs built by etc/config_env.sh / make conda-env (phase 1)
 conda-env
 conda-env-*
+!conda-env-mpi.yaml
 
 # walkstat / walksync run output
 summary-*
 userlists/
+!hpc_file_utils/walk/tests/golden/*
 walksync-r*.list
 walksync-r*.err
 
@@ -20,3 +22,4 @@ sync/stamps/
 sync/*.out.*
 sync/*.err.*
 sync/*.o[0-9]*
+logs/

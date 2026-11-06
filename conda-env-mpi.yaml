@@ -1,0 +1,7 @@
+# Added on top of conda-env.yaml when HFU_MPI=conda (laptops, CI): conda-forge MPI.
+name: hpc-file-utils
+channels:
+  - conda-forge
+dependencies:
+  - mpi4py
+  - openmpi
