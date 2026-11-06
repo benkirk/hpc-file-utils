@@ -61,6 +61,14 @@ def _mpiexec_base():
     return [exe]
 
 
+def exit_status_matches(returncode, wanted):
+    """Open MPI passes the ranks' exit status through; Cray PALS SIGTERMs the other
+    ranks once one exits non-zero and reports 143. So exact only under Open MPI."""
+    if wanted == 0 or "--oversubscribe" in _mpiexec_base():
+        return returncode == wanted
+    return returncode != 0
+
+
 def mpiexec(nranks):
     """mpiexec command prefix: HFU_MPIEXEC overrides, --oversubscribe for Open MPI."""
     return _mpiexec_base() + ["-n", str(nranks)]
@@ -227,6 +235,7 @@ def compare_golden(name, text, sort=True):
 class Walk:
     """Helpers handed to tests through the ``walk`` fixture."""
     run = staticmethod(run_walk)
+    exit_status_matches = staticmethod(exit_status_matches)
     normalize = staticmethod(normalize)
     compare_golden = staticmethod(compare_golden)
     blocks = staticmethod(blocks)

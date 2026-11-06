@@ -85,7 +85,7 @@ def test_walkstat_fail_on_errors(walk, unreadable_tree, golden_tree, tmp_path):
     if os.geteuid() == 0:
         pytest.skip("root can read a mode-000 directory")
     r = walk.run("walkstat", [unreadable_tree.root], cwd=tmp_path / "bad", args=["--fail-on-errors"])
-    assert not r.timed_out and r.returncode == 2, r.report()
+    assert not r.timed_out and walk.exit_status_matches(r.returncode, 2), r.report()
     assert (tmp_path / "bad" / "summary-output").is_file()   # the summary is still written
     r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path / "good", args=["--fail-on-errors"])
     assert r.ok, r.report()
@@ -105,7 +105,7 @@ def test_walkstat_bad_dir_exits_promptly(walk, tmp_path):
     """parse_options() runs on rank 0 only; its failure must end every rank."""
     r = walk.run("walkstat", [tmp_path / "does-not-exist"], cwd=tmp_path, timeout=30)
     assert not r.timed_out, r.report()
-    assert r.returncode == 1, r.report()
+    assert walk.exit_status_matches(r.returncode, 1), r.report()
     assert "no such directory" in r.stdout + r.stderr
 
 
@@ -115,7 +115,7 @@ def test_walkstat_bad_dir_exits_promptly(walk, tmp_path):
 def test_walkstat_option_exits_promptly(walk, golden_tree, tmp_path, args, status):
     r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=args, timeout=30)
     assert not r.timed_out, r.report()
-    assert r.returncode == status, r.report()
+    assert walk.exit_status_matches(r.returncode, status), r.report()
 
 
 def test_walktar_archives_the_tree(walk, private_golden_tree, tmp_path):
