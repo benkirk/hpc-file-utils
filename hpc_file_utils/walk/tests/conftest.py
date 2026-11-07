@@ -34,7 +34,6 @@ from pathlib import Path
 
 import pytest
 
-WALK_DIR = Path(__file__).resolve().parents[1]
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 MiB = 1024 * 1024
 DAY = 86400

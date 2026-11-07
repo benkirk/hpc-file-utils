@@ -92,12 +92,17 @@ def test_walkstat_fail_on_errors(walk, unreadable_tree, golden_tree, tmp_path):
     assert "Scan Errors" not in r.summary()
 
 
-@pytest.mark.xfail(reason="non-UTF-8 names: the summary file is opened as strict UTF-8, "
-                          "so rank 0 dies writing it (not fixed in phase 2)", strict=False)
 def test_walkstat_non_utf8_names(walk, non_utf8_tree, tmp_path):
-    r = walk.run("walkstat", [non_utf8_tree.root], cwd=tmp_path, timeout=60)
+    """Undecodable bytes are shown as \\xNN; the published files stay valid UTF-8."""
+    r = walk.run("walkstat", [non_utf8_tree.root], cwd=tmp_path, timeout=60,
+                 args=["--threshold-count", "1"])   # not size: GPFS may not show the blocks yet
     assert r.ok, r.report()
-    assert "bad-" in r.summary()
+    raw = (tmp_path / "summary-output").read_bytes()
+    raw.decode("utf-8")                                   # strict: no stray bytes
+    assert rb"dir/bad-\xff\xfe-name.dat" in raw
+    (userlist,) = (tmp_path / "userlists").iterdir()
+    userlist.read_bytes().decode("utf-8")
+    assert rb"bad-\xff\xfe-name.dat" in userlist.read_bytes()
 
 
 @pytest.mark.timeout(120)

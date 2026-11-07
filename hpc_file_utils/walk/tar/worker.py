@@ -109,7 +109,7 @@ class TarWorker(BaseWorker):
                              recursive=False)
 
             except Exception as error:
-                self.num_errors += 1
+                self.stats.num_errors += 1
                 print('[{:3d}] Cannot add to tar file: {}'.format(self.rank, error), file=sys.stderr)
                 #print('cannot scan {}'.format(dirname), file=sys.stderr)
 

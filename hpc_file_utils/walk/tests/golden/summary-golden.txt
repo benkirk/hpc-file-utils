@@ -1,6 +1,7 @@
 #-------------------------------------------------------------------------------
 # Summary as of <TIME>
 #-------------------------------------------------------------------------------
+Scanned: <ROOT>
 Total Count: 36 items
 Total Size: 29 MiB
 Type Counts:
@@ -11,23 +12,26 @@ fifo : 1
 #-------------------------------------------------------------------------------
 # Users:
 #-------------------------------------------------------------------------------
-<OWNER> : 29 MiB 36
+# user size items
+<OWNER> 29 MiB 36
 #-------------------------------------------------------------------------------
 # Groups:
 #-------------------------------------------------------------------------------
-<OWNER> : 29 MiB 36
+# group size items
+<OWNER> 29 MiB 36
 #-------------------------------------------------------------------------------
 # In the lists that follow
 # - For directories:
 # - The sizes shown include direct contents within the directory only,
 # and are not inclusive of any subdirectories (NOT recursive).
 # - The date shown is the most recent access time of any file content within
-# the directory (again, NOT recursive).
+# the directory (again, NOT recursive), or '-' if it holds no files.
 # - For files, the date shown corresponds to last access time.
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 # Largest Directories:
 #-------------------------------------------------------------------------------
+# size items last access path
 6 MiB 3 <RECENT> <ROOT>/special/
 6 MiB 4 <RECENT> <ROOT>/data/
 5 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE/run1/
@@ -38,23 +42,26 @@ fifo : 1
 1 MiB 3 <OLD> <ROOT>/project/
 1 MiB 4 <AGE6Y> <ROOT>/links/
 1 MiB 1 <RECENT> <ROOT>/data/nested/deeper/
-<small> 1 1969-12-31 <ROOT>/project/COLD_STORAGE/
-<small> 0 1969-12-31 <ROOT>/empty-parent/empty-child/
-<small> 1 1969-12-31 <ROOT>/empty-parent/
-<small> 0 1969-12-31 <ROOT>/empty/
-<small> 1 1969-12-31 <ROOT>/data/nested/
-<small> 8 1969-12-31 <ROOT>/
+<small> 1 - <ROOT>/project/COLD_STORAGE/
+<small> 0 - <ROOT>/empty-parent/empty-child/
+<small> 1 - <ROOT>/empty-parent/
+<small> 0 - <ROOT>/empty/
+<small> 1 - <ROOT>/data/nested/
+<small> 8 - <ROOT>/
 #-------------------------------------------------------------------------------
 # Largest Directories, last access [3-5yrs):
 #-------------------------------------------------------------------------------
+# size items last access path
 5 MiB 5 <AGE4Y> <ROOT>/odd names/
 #-------------------------------------------------------------------------------
 # Largest Directories, last access [5-7yrs):
 #-------------------------------------------------------------------------------
+# size items last access path
 1 MiB 4 <AGE6Y> <ROOT>/links/
 #-------------------------------------------------------------------------------
 # Largest Directories, last access [7yrs+):
 #-------------------------------------------------------------------------------
+# size items last access path
 5 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE/run1/
 2 MiB 2 <OLD> <ROOT>/readonly/
 1 MiB 1 <OLD> <ROOT>/readonly/sub/
@@ -63,7 +70,8 @@ fifo : 1
 #-------------------------------------------------------------------------------
 # Bloated Directories (file count):
 #-------------------------------------------------------------------------------
-<small> 8 1969-12-31 <ROOT>/
+# size items last access path
+<small> 8 - <ROOT>/
 5 MiB 5 <AGE4Y> <ROOT>/odd names/
 1 MiB 4 <AGE6Y> <ROOT>/links/
 6 MiB 4 <RECENT> <ROOT>/data/
@@ -73,15 +81,16 @@ fifo : 1
 1 MiB 1 <OLD> <ROOT>/readonly/sub/
 1 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE_2019/
 5 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE/run1/
-<small> 1 1969-12-31 <ROOT>/project/COLD_STORAGE/
-<small> 1 1969-12-31 <ROOT>/empty-parent/
+<small> 1 - <ROOT>/project/COLD_STORAGE/
+<small> 1 - <ROOT>/empty-parent/
 1 MiB 1 <RECENT> <ROOT>/data/nested/deeper/
-<small> 1 1969-12-31 <ROOT>/data/nested/
-<small> 0 1969-12-31 <ROOT>/empty-parent/empty-child/
-<small> 0 1969-12-31 <ROOT>/empty/
+<small> 1 - <ROOT>/data/nested/
+<small> 0 - <ROOT>/empty-parent/empty-child/
+<small> 0 - <ROOT>/empty/
 #-------------------------------------------------------------------------------
 # Largest Files:
 #-------------------------------------------------------------------------------
+# size last access path
 5 MiB <OLD> <ROOT>/project/COLD_STORAGE/run1/archive.dat
 4 MiB <RECENT> <ROOT>/data/big.dat
 3 MiB <RECENT> <ROOT>/special/hard-b.dat
@@ -94,8 +103,7 @@ fifo : 1
 1 MiB <AGE4Y> <ROOT>/odd names/ünïcödé.dat
 1 MiB <AGE4Y> <ROOT>/odd names/with space.dat
 1 MiB <AGE4Y> <ROOT>/odd names/quote'd "name".dat
-1 MiB <AGE4Y> <ROOT>/odd names/new
-line.dat
+1 MiB <AGE4Y> <ROOT>/odd names/new\nline.dat
 1 MiB <AGE4Y> <ROOT>/odd names/-leading-dash.dat
 1 MiB <AGE6Y> <ROOT>/links/target.dat
 1 MiB <RECENT> <ROOT>/data/nested/deeper/leaf.dat

@@ -4,7 +4,9 @@ Rank 0 runs the Manager, every other rank a worker of the requested tool.
 """
 
 import sys
+from datetime import datetime
 
+from hpc_file_utils.walk.common.formatting import format_number
 from hpc_file_utils.walk.common.options import parse_options
 
 
@@ -56,7 +58,10 @@ def main(app, argv=None):
     if exit_status:
         return exit_status
 
-    assert size > 1
+    if size < 2:
+        if 0 == rank:
+            print('ERROR: {} needs at least 2 MPI ranks (a manager and a worker)'.format(app), file=sys.stderr)
+        return 2
 
     comm.Barrier()
 
@@ -64,21 +69,50 @@ def main(app, argv=None):
     if rank:
         walker = make_worker(app)
         walker.run()
-        walker.summary()
 
     # manager on rank 0
     else:
         from hpc_file_utils.walk.common.manager import Manager
+        if args.verbose:
+            print('All Options: {}'.format(args))
+        else:
+            print('Processing Directories: {}'.format(args.dirs))
         print('Running {} on {} MPI ranks'.format(app, size))
         sys.stdout.flush()
         walker = Manager(options=args)
         walker.run()
-        walker.summary()
 
-    # exit-status policy: summary() summed the error counts on every rank
+    stats = walker.collect()     # collective; the combined stats on rank 0 only
+    if 0 == rank:
+        report(walker, stats)
+
+    # exit-status policy: collect() summed the error counts on every rank
     if walker.options.fail_on_errors and walker.total_errors:
         return 2
     return 0
+
+
+def report(manager, stats):
+    """Rank 0, after the walk: the reports, and a cross-check of the counts."""
+    from hpc_file_utils.walk.stat.report import rank_lines, write_reports
+
+    options = manager.options
+    # every worker's last 'ready' carried its final counts, so these must agree
+    if (manager.progress.total_items, manager.progress.total_bytes) != (stats.num_items, stats.total_size):
+        print('WARNING: the Manager counted {} items / {} bytes, the workers {} / {}'.format(
+            manager.progress.total_items, manager.progress.total_bytes, stats.num_items, stats.total_size),
+            file=sys.stderr)
+
+    if options.verbose:
+        print('\n'.join(rank_lines(stats)))
+    sys.stdout.flush()
+
+    write_reports(stats, options)
+
+    if stats.num_errors:
+        print('--> {} entries could not be scanned (see stderr)'.format(format_number(stats.num_errors)))
+    print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')))
+    sys.stdout.flush()
 
 
 def walkstat():
