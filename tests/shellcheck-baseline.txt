@@ -1,9 +1,5 @@
 # shellcheck warnings accepted in the imported scripts: <file> <code> <count>
 # regenerate with: bash tests/shellcheck_test.sh --update
-scans/all_cs.sh SC2034 2
-scans/scan_dir_job_array.sh SC2034 2
-scans/submit_scan_array.sh SC2034 1
-scans/test_scan_dir.sh SC2034 2
 tools/glade_hsm/common.sh SC2034 1
 tools/glade_hsm/common.sh SC2124 1
 tools/glade_hsm/common.sh SC2148 1

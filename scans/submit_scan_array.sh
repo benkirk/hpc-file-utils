@@ -5,8 +5,6 @@ maxconcur=8 #12
 queue="${queue:-main}"
 walltime="${walltime:-24:00:00}"
 
-topdir=$(pwd)
-
 . scan_dirs.cfg || exit 1
 
 nja=$((${n_dirs_to_scan}-1)); [ ${nja} -ge 1 ] || { echo "ERROR: job array too small?!: ${nja}"; exit 1; }

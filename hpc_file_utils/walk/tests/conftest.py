@@ -1,7 +1,7 @@
 """Fixtures for the walkstat/walktar tests.
 
-The walk code is not a package yet, so the tests run the CLIs the way the scans do:
-``mpiexec -n 4 python .../walkstat --dirs <tree>``, in a scratch working directory
+The tests run the console scripts the way the scans do:
+``mpiexec -n 4 walkstat --dirs <tree>``, in a scratch working directory
 (walkstat writes ``summary-<prefix>`` and ``userlists/`` into its cwd).
 
 Trees:
@@ -34,7 +34,6 @@ from pathlib import Path
 
 import pytest
 
-WALK_DIR = Path(__file__).resolve().parents[1]
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 MiB = 1024 * 1024
 DAY = 86400
@@ -121,11 +120,19 @@ class WalkResult:
         return {p.name: p.read_text(errors="surrogateescape") for p in sorted(d.iterdir())}
 
 
+def console_script(app):
+    """The installed walkstat/walktar ('pip install -e .' puts them beside python)."""
+    exe = Path(sys.executable).parent / app
+    if not exe.exists():
+        pytest.fail(f"{exe} is missing: reinstall the package (source etc/config_env.sh)")
+    return str(exe)
+
+
 def run_walk(app, dirs, cwd, nranks=4, args=(), timeout=120):
     """Run walkstat/walktar under mpiexec; never hangs longer than ``timeout``."""
     cwd = Path(cwd)
     cwd.mkdir(parents=True, exist_ok=True)
-    cmd = mpiexec(nranks) + [sys.executable, str(WALK_DIR / app), "--progress", "0",
+    cmd = mpiexec(nranks) + [console_script(app), "--progress", "0",
                              *map(str, args), "--dirs", *map(str, dirs)]
     env = dict(os.environ, TZ="UTC", PYTHONDONTWRITEBYTECODE="1")
     t0 = time.monotonic()

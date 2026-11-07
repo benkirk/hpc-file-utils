@@ -6,7 +6,10 @@
 #PBS -l walltime=12:00:00
 #PBS -l select=1:ncpus=128:mpiprocs=96:mem=235G
 
-. env/config_env.sh || exit 1
+# the hpc-file-utils checkout is the parent of scans/ unless HFU_ROOT names another
+cd "${PBS_O_WORKDIR:-.}" || exit 1
+# shellcheck source=../etc/config_env.sh
+source "${HFU_ROOT:-..}/etc/config_env.sh" || exit 1
 . scan_dirs.cfg || exit 1
 
 #--------------------------------------------------------------
@@ -37,17 +40,12 @@ trap remove_lock EXIT
 #--------------------------------------------------------------
 echo && echo "Beginning ${0} at $(date)"
 
-tstart=$(date +%s)
-timestamp=$(date +%F@%H:%M)
-[[ -z ${PBS_ARRAY_ID} ]] && suffix="${timestamp}" || suffix=${PBS_ARRAY_ID/"[]"/}.${timestamp}
-
-
 #--------------------------------------------------------------
 sstart=$(date +%s)
 rm -f ${projname}.DONE
 time \
 mpiexec --no-transfer \
-        ./walkstat/walkstat \
+        walkstat \
         --verbose \
         --summary-prefix "${projname}" \
         --progress $((10*60)) \
@@ -55,7 +53,7 @@ mpiexec --no-transfer \
         1> ${projname}.out \
         2> ${projname}.err
 
-#         --summary summary.xlsx \
+#         --spreadsheet summary.xlsx \
 
 sstop=$(date +%s)
 elapsed=$((${sstop} - ${sstart}))

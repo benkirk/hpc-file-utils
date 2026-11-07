@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from base_worker import BaseWorker
+from hpc_file_utils.walk.common.worker import BaseWorker
 
 
 
