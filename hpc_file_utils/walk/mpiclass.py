@@ -135,6 +135,8 @@ class MPIClass:
         self.num_dirs = 0
         self.num_items = 0
         self.total_size = 0
+        self.num_errors = 0   # entries we could not scan (or archive)
+        self.total_errors = 0 # sum over all ranks, set in summary()
 
         self.st_modes = defaultdict(int)
 
@@ -226,9 +228,9 @@ class MPIClass:
                 for k,v in part:
                     result[k] += v
 
-            # sort from largest-val-to-smallest
-            # https://stackoverflow.com/questions/613183/how-do-i-sort-a-dictionary-by-value
-            result = dict(sorted(result.items(), reverse=True, key=lambda item: item[1]))
+            # sort from largest-val-to-smallest; ties by key, so the order does not
+            # depend on which rank saw what first
+            result = dict(sorted(result.items(), key=lambda item: (-item[1], item[0])))
         return result
 
 
@@ -246,9 +248,10 @@ class MPIClass:
                     result[k].nbytes += obj.nbytes
                     result[k].nitems += obj.nitems
 
-            # sort from largest-val-to-smallest
-            # https://stackoverflow.com/questions/613183/how-do-i-sort-a-dictionary-by-value
-            result = dict(sorted(result.items(), reverse=True, key=lambda item: item[1].nbytes))
+            # sort from largest-to-smallest nbytes; ties by item count, then name and id,
+            # so the order does not depend on which rank saw what first
+            result = dict(sorted(result.items(), key=lambda item: (-item[1].nbytes, -item[1].nitems,
+                                                                    str(item[1].name), item[0])))
         return result
 
 
@@ -300,6 +303,8 @@ class MPIClass:
 
         self.uids = self.gather_and_sum_ids(self.uids)
         self.gids = self.gather_and_sum_ids(self.gids)
+
+        self.total_errors = self.comm.allreduce(self.num_errors)
 
         # per-user dir/file counts
         for k,v in self.uids.items():
@@ -355,6 +360,8 @@ class MPIClass:
             print('Type Counts:', file=ofile)
             for k,v in self.st_modes.items():
                 print('{:>8} : {:,}'.format(k, v), file=ofile)
+            if self.total_errors:
+                print('Scan Errors: {} entries could not be scanned, so these totals are incomplete'.format(format_number(self.total_errors)), file=ofile)
 
             # summarize by uid/gid
             print('\n' + sep + '\n# Users:\n' + sep, file=ofile)
@@ -513,5 +520,7 @@ class MPIClass:
             # Save the workbook
             wb.save(self.options.spreadsheet)
 
+        if self.total_errors:
+            print('--> {} entries could not be scanned (see stderr)'.format(format_number(self.total_errors)))
         print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')))
         return

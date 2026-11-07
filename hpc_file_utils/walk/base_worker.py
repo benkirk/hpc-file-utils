@@ -7,7 +7,6 @@ import shutil
 import queue
 from typing import NamedTuple
 
-MAXDIRS_BEFORE_SEND = 200
 PROGRESS_INCREMENT = 20000
 
 SECONDS_IN_YEAR = 60*60*24*365
@@ -64,7 +63,7 @@ class BaseWorker(MPIClass):
                 statinfo = di.stat(follow_symlinks=False)
 
                 # about statinfo.st_size: we can't always trust it.
-                # for sparse files, or files migrated to take via HSM,
+                # for sparse files, or files migrated to tape via HSM,
                 # the size is not what is occupied on disk.
                 # a better metric is (number of blocks * fs_block_size);
                 # however the block size is variable across filesystems / GPFS file sets
@@ -99,7 +98,7 @@ class BaseWorker(MPIClass):
 
                 if stat.S_ISDIR(fmode):
                     self.dirs.append(pathname)
-                    if len(self.dirs) == MAXDIRS_BEFORE_SEND: self.send_my_dirlist()
+                    if len(self.dirs) >= self.options.max_dirs_per_send: self.send_my_dirlist()
                 else:
                     self.num_files += 1
 
@@ -164,6 +163,7 @@ class BaseWorker(MPIClass):
                 if 0 < thisdir_max_atime: self.oldest_atime_dirs.add((-thisdir_max_atime, de)) # (-) to turn maxheap into a minheap
 
         except Exception as error:
+            self.num_errors += 1
             print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
 
         # if present, wait for our work queue to drain.

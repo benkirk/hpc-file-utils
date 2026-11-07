@@ -61,6 +61,14 @@ def _mpiexec_base():
     return [exe]
 
 
+def exit_status_matches(returncode, wanted):
+    """Open MPI passes the ranks' exit status through; Cray PALS SIGTERMs the other
+    ranks once one exits non-zero and reports 143. So exact only under Open MPI."""
+    if wanted == 0 or "--oversubscribe" in _mpiexec_base():
+        return returncode == wanted
+    return returncode != 0
+
+
 def mpiexec(nranks):
     """mpiexec command prefix: HFU_MPIEXEC overrides, --oversubscribe for Open MPI."""
     return _mpiexec_base() + ["-n", str(nranks)]
@@ -162,8 +170,37 @@ def normalize(text, root, dates=None):
     return "\n".join(lines) + "\n"
 
 
+LEAD_SIZE_RE = re.compile(r"^(<small>|\d+ (?:KiB|MiB|GiB|TiB|PiB))(?= )")
+
+
+def _sort_size_ties(block):
+    """Sort runs of consecutive lines that start with the same normalized size.
+
+    Directory sizes include each subdirectory's own st_size, which differs between
+    filesystems, so entries whose sizes normalize to the same value (e.g. '1 MiB',
+    '<small>') may legitimately come out in a different order elsewhere.
+    """
+    out, run, key = [], [], None
+    for line in block:
+        m = LEAD_SIZE_RE.match(line)
+        k = m.group(1) if m else None
+        if run and (k is None or k != key):
+            out += sorted(run)
+            run = []
+        if k is None:
+            out.append(line)
+        else:
+            run.append(line)
+        key = k
+    return out + sorted(run)
+
+
 def blocks(text, sort=True):
-    """Split normalized output on the '#----' separators; optionally sort each block."""
+    """Split normalized output on the '#----' separators.
+
+    sort=True sorts each block (tie-tolerant); sort="ties" keeps the order except
+    within runs of equal normalized sizes; sort=False keeps the order exactly.
+    """
     out, cur = [], []
     for line in text.splitlines():
         if SEP_RE.match(line):
@@ -172,14 +209,14 @@ def blocks(text, sort=True):
         else:
             cur.append(line)
     out.append(cur)
-    return [sorted(b) if sort else b for b in out if b]
+    order = {True: sorted, "ties": _sort_size_ties, False: list}[sort]
+    return [order(b) for b in out if b]
 
 
 def compare_golden(name, text, sort=True):
     """Compare normalized output with golden/<name>, block by block.
 
-    sort=True compares each block as a sorted multiset of lines (tie-tolerant).
-    HFU_UPDATE_GOLDEN=1 rewrites the golden file from this run instead.
+    sort: see blocks(). HFU_UPDATE_GOLDEN=1 rewrites the golden file from this run instead.
     """
     path = GOLDEN_DIR / name
     if os.environ.get("HFU_UPDATE_GOLDEN") == "1":
@@ -198,6 +235,7 @@ def compare_golden(name, text, sort=True):
 class Walk:
     """Helpers handed to tests through the ``walk`` fixture."""
     run = staticmethod(run_walk)
+    exit_status_matches = staticmethod(exit_status_matches)
     normalize = staticmethod(normalize)
     compare_golden = staticmethod(compare_golden)
     blocks = staticmethod(blocks)
