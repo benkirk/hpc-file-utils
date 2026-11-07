@@ -24,7 +24,7 @@ Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tu
     share        None              sent to a busy worker while the Manager holds idle
                                    'ready's and has no directories; answered with a
                                    share_reply at the worker's next look (every
-                                   directory, and every 1,000 entries of a big one), or
+                                   directory, and every 50 entries of a big one), or
                                    not at all if the worker goes idle first: its 'ready'
                                    cancels the request
 
