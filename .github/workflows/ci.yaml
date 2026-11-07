@@ -1,0 +1,75 @@
+name: hpc-file-utils CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:            # every PR, including stacked ones (phase N on phase N-1)
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    defaults:
+      run:
+        shell: bash -el {0}
+    name: Run Test Suite (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: List Source Tree
+        run: |
+          pwd
+          find * ! -type d
+
+      # conda only; the environment itself is built the same way as on a laptop,
+      # by etc/config_env.sh (HFU_MPI=auto -> conda-forge mpi4py + openmpi)
+      - uses: conda-incubator/setup-miniconda@v4
+        with:
+          miniforge-version: latest
+          auto-activate-base: false
+
+      # the Makefile needs GNU make >= 4; macOS runners ship 3.81 as 'make'
+      - name: GNU make (macOS)
+        if: runner.os == 'macOS'
+        run: brew install make
+
+      - name: Build Environment
+        run: |
+          source etc/config_env.sh
+
+      - name: Interrogate Environment
+        run: |
+          source etc/config_env.sh
+          conda list
+          echo
+          pipdeptree --depth 3
+          echo
+          df -h
+          cat /etc/os-release 2>/dev/null || sw_vers 2>/dev/null || true
+          uname -a
+          echo '----------------------------------------------------------------'
+          which python3 mpiexec bash date rsync shellcheck
+          echo "CONDA_PREFIX=${CONDA_PREFIX}"
+          python3 --version
+          mpiexec --version
+          python3 -c "from mpi4py import MPI; print(MPI.Get_library_version())"
+
+      - name: Run Test Suite
+        run: |
+          source etc/config_env.sh
+          pytest -v -rxXs
+
+      - name: Shell Tests Only, Capturing Output
+        run: |
+          source etc/config_env.sh
+          pytest -rA -n 0 $(git ls-files '*_test.sh')

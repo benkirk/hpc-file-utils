@@ -1,0 +1,80 @@
+#-------------------------------------------------------------------------------
+# Summary as of <TIME>
+#-------------------------------------------------------------------------------
+<OWNER> : 29 MiB 36 items
+#-------------------------------------------------------------------------------
+# In the lists that follow
+# - For directories:
+# - The sizes shown include direct contents within the directory only,
+# and are not inclusive of any subdirectories (NOT recursive).
+# - The date shown is the most recent access time of any file content within
+# the directory (again, NOT recursive).
+# - For files, the date shown corresponds to last access time.
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# <OWNER> - Largest Directories:
+#-------------------------------------------------------------------------------
+6 MiB 3 <RECENT> <ROOT>/special/
+6 MiB 4 <RECENT> <ROOT>/data/
+5 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE/run1/
+5 MiB 5 <AGE4Y> <ROOT>/odd names/
+2 MiB 2 <OLD> <ROOT>/readonly/
+1 MiB 1 <OLD> <ROOT>/readonly/sub/
+1 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE_2019/
+1 MiB 3 <OLD> <ROOT>/project/
+1 MiB 4 <AGE6Y> <ROOT>/links/
+1 MiB 1 <RECENT> <ROOT>/data/nested/deeper/
+#-------------------------------------------------------------------------------
+# <OWNER> - Largest Directories, last access [3-5yrs):
+#-------------------------------------------------------------------------------
+5 MiB 5 <AGE4Y> <ROOT>/odd names/
+#-------------------------------------------------------------------------------
+# <OWNER> - Largest Directories, last access [5-7yrs):
+#-------------------------------------------------------------------------------
+1 MiB 4 <AGE6Y> <ROOT>/links/
+#-------------------------------------------------------------------------------
+# <OWNER> - Largest Directories, last access [7yrs+):
+#-------------------------------------------------------------------------------
+5 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE/run1/
+2 MiB 2 <OLD> <ROOT>/readonly/
+1 MiB 1 <OLD> <ROOT>/readonly/sub/
+1 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE_2019/
+1 MiB 3 <OLD> <ROOT>/project/
+#-------------------------------------------------------------------------------
+# <OWNER> - Bloated Directories (file count):
+#-------------------------------------------------------------------------------
+5 MiB 5 <AGE4Y> <ROOT>/odd names/
+1 MiB 4 <AGE6Y> <ROOT>/links/
+6 MiB 4 <RECENT> <ROOT>/data/
+6 MiB 3 <RECENT> <ROOT>/special/
+1 MiB 3 <OLD> <ROOT>/project/
+2 MiB 2 <OLD> <ROOT>/readonly/
+1 MiB 1 <OLD> <ROOT>/readonly/sub/
+1 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE_2019/
+5 MiB 1 <OLD> <ROOT>/project/COLD_STORAGE/run1/
+1 MiB 1 <RECENT> <ROOT>/data/nested/deeper/
+#-------------------------------------------------------------------------------
+# <OWNER> - Largest Files:
+#-------------------------------------------------------------------------------
+5 MiB <OLD> <ROOT>/project/COLD_STORAGE/run1/archive.dat
+4 MiB <RECENT> <ROOT>/data/big.dat
+3 MiB <RECENT> <ROOT>/special/hard-b.dat
+3 MiB <RECENT> <ROOT>/special/hard-a.dat
+2 MiB <OLD> <ROOT>/readonly/ro.dat
+2 MiB <RECENT> <ROOT>/data/medium.dat
+1 MiB <OLD> <ROOT>/readonly/sub/ro2.dat
+1 MiB <OLD> <ROOT>/project/live.dat
+1 MiB <OLD> <ROOT>/project/COLD_STORAGE_2019/notes.dat
+1 MiB <AGE4Y> <ROOT>/odd names/ünïcödé.dat
+1 MiB <AGE4Y> <ROOT>/odd names/with space.dat
+1 MiB <AGE4Y> <ROOT>/odd names/quote'd "name".dat
+1 MiB <AGE4Y> <ROOT>/odd names/new
+line.dat
+1 MiB <AGE4Y> <ROOT>/odd names/-leading-dash.dat
+1 MiB <AGE6Y> <ROOT>/links/target.dat
+1 MiB <RECENT> <ROOT>/data/nested/deeper/leaf.dat
+<small> <RECENT> <ROOT>/special/fifo
+<small> <AGE6Y> <ROOT>/links/file-link
+<small> <AGE6Y> <ROOT>/links/dir-link
+<small> <AGE6Y> <ROOT>/links/dangling
+<small> <RECENT> <ROOT>/data/empty.txt

@@ -1,0 +1,44 @@
+[project]
+name = "hpc-file-utils"
+version = "0.1.0"
+description = "MPI tree walkers (walkstat, walktar) and file tools for NCAR HPC storage"
+requires-python = ">=3.10"
+dependencies = [
+    "humanfriendly",
+]
+
+[project.optional-dependencies]
+mpi = [
+    "mpi4py",
+]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-timeout",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# hpc_file_utils/walk is not a package yet (flat imports, run through the
+# walkstat/walktar symlinks); phase 3 adds the packages and console scripts.
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+    "hpc_file_utils/walk/tests",
+    "sync/tests",
+    "tools/glade_hsm/tests",
+    "tools/glade_purge/tests",
+]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short -n auto --timeout=300 --import-mode=importlib -p no:cacheprovider"
+markers = [
+    "mpi: needs mpiexec and mpi4py; runs the CLIs as mpiexec -n 4 (skipped on derecho outside PBS)",
+    "site: needs /glade or PBS",
+]
