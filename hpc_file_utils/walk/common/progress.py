@@ -6,15 +6,16 @@ from hpc_file_utils.walk.common.formatting import format_number, format_size, fo
 
 
 class ProgressTally:
-    """The latest (items, bytes, extra) payload from each rank (see protocol.py)."""
+    """The latest (items, bytes, queued, extra) payload from each rank (see protocol.py)."""
 
     def __init__(self, nranks):
         self.items = [0] * nranks
         self.nbytes = [0] * nranks
+        self.queued = [0] * nranks
         self.extra = [None] * nranks
 
     def update(self, rank, payload):
-        self.items[rank], self.nbytes[rank], self.extra[rank] = payload
+        self.items[rank], self.nbytes[rank], self.queued[rank], self.extra[rank] = payload
 
     @property
     def total_items(self):
@@ -23,6 +24,10 @@ class ProgressTally:
     @property
     def total_bytes(self):
         return sum(self.nbytes)
+
+    @property
+    def total_queued(self):
+        return sum(self.queued)
 
 
 def progress_line(items, nbytes, elapsed, now=None):

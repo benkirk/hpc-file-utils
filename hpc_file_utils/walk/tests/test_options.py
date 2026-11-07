@@ -8,7 +8,9 @@ from hpc_file_utils.walk.common.options import parse_options
 def test_defaults(tmp_path):
     a = parse_options("walkstat", ["--dirs", str(tmp_path)])
     assert a.dirs == [str(tmp_path)]
-    assert (a.progress, a.heap_size, a.threshold_count, a.max_dirs_per_send) == (5, 500, 10000, 200)
+    assert (a.progress, a.heap_size, a.threshold_count) == (5, 500, 10000)
+    assert (a.local_queue_max, a.dirs_per_dispatch) == (1000, 8)
+    assert not hasattr(a, "max_dirs_per_send")       # replaced in phase 3.5
     assert a.threshold_size == 10 * 1024 * 1024      # '10MB', binary
     assert not a.verbose and not a.fail_on_errors
     assert a.spreadsheet is None and a.summary_prefix is None
@@ -32,7 +34,7 @@ def test_walktar_extras(tmp_path):
         parse_options("walkstat", ["--dirs", str(tmp_path), "--tar-queue-depth", "5"])
 
 
-@pytest.mark.parametrize("args", [["--max-dirs-per-send", "0"], ["--heap-size", "0"],
+@pytest.mark.parametrize("args", [["--local-queue-max", "1"], ["--dirs-per-dispatch", "0"], ["--heap-size", "0"],
                                   ["--threshold-size", "lots"], ["--no-such-option"],
                                   ["--summary", "summary.xlsx"]])   # no abbreviations
 def test_usage_errors_exit_2(tmp_path, args, capsys):

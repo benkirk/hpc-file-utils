@@ -14,6 +14,7 @@ class MPIClass:
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self, options=None):
         from mpi4py import MPI
+        self.MPI = MPI
         # initialization, get 'options' data structure from rank 0
         self.comm = MPI.COMM_WORLD
         self.rank   = self.comm.Get_rank()
@@ -38,7 +39,8 @@ class MPIClass:
         than two ranks' worth, unlike gathering every rank's per-user lists at once.
         """
         self.stats.ranks = [RankInfo(self.rank, platform.node(), self.stats.num_dirs,
-                                     self.stats.num_files, self.stats.total_size)]
+                                     self.stats.num_files, self.stats.total_size,
+                                     getattr(self, 'wait_time', 0.0), getattr(self, 'max_local_dirs', 0))]
         self.total_errors = self.comm.allreduce(self.stats.num_errors)
         result = self.comm.reduce(self.stats, op=WalkStats.merged, root=0)
         if result is not None:

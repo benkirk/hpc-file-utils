@@ -37,7 +37,7 @@ Outputs (in the working directory, written by rank 0):
 - **Deterministic ordering.** Type, user and group lists break ties by name, so the summary no
   longer depends on which rank saw what first. (The size heaps already broke ties by path.)
 - **`--max-dirs-per-send N`** [200]: subdirectories a worker collects before sending them to
-  the Manager.
+  the Manager (replaced by `--local-queue-max` in phase 3.5).
 
 ### Phase 3
 
@@ -87,3 +87,26 @@ Outputs (in the working directory, written by rank 0):
 - **walktar closes its last tar file.** Its end-of-archive blocks were left to interpreter
   shutdown.
 - Dropped the oldest-mtime/atime heaps, which were collected but never reported.
+
+### Phase 3.5
+
+- **Workers walk their own queue (phase 3.5).** A worker pushes the subdirectories it finds
+  onto a local stack and walks them itself, depth-first, and asks the Manager for work only
+  when that stack is empty. Directories reach the Manager only to fix imbalance: as
+  *overflow* (the oldest half of a stack that grew past `--local-queue-max`) or as the
+  answer to a *share* request, which the Manager sends to the busiest workers whenever it
+  has idle workers and nothing to give them. The termination argument is unchanged (see
+  `manager.py`); the design and its alternatives are in
+  [docs/walk-load-balancing.md](../../docs/walk-load-balancing.md).
+  - **`--local-queue-max N`** [1000]: subdirectories a worker keeps before it ships the
+    oldest half to the Manager (replaces `--max-dirs-per-send`).
+  - **`--dirs-per-dispatch K`** [8]: directories the Manager hands an idle worker at once.
+  - The progress line shows `queued` (directories on the workers' local stacks), `idle`
+    and `shares`. The end of the run reports where the Manager's directories came from,
+    the directories walked per rank, and the fraction of the walk the workers spent
+    waiting for the Manager to answer a `ready` with work. `--verbose` adds each worker's
+    wait and stack high-water mark to the per-rank table. With the Manager mostly blocked
+    in `recv`, a large waiting fraction means starvation (too little shared work), not a
+    slow Manager.
+  - The progress payload gains the stack length: `(items, bytes, queued, extra)`;
+    `execute` carries a list of directories.

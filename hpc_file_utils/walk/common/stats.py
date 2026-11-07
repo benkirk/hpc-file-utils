@@ -80,6 +80,8 @@ class RankInfo(NamedTuple):
     num_dirs  : int
     num_files : int
     nbytes    : int
+    wait_time : float   # waiting for the Manager to answer 'ready' with work
+    max_local_dirs : int  # high-water mark of its local stack
 
 
 class WalkStats:

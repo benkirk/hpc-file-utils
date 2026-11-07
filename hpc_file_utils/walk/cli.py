@@ -94,7 +94,7 @@ def main(app, argv=None):
 
 def report(manager, stats):
     """Rank 0, after the walk: the reports, and a cross-check of the counts."""
-    from hpc_file_utils.walk.stat.report import rank_lines, write_reports
+    from hpc_file_utils.walk.stat.report import balance_lines, rank_lines, write_reports
 
     options = manager.options
     # every worker's last 'ready' carried its final counts, so these must agree
@@ -103,6 +103,7 @@ def report(manager, stats):
             manager.progress.total_items, manager.progress.total_bytes, stats.num_items, stats.total_size),
             file=sys.stderr)
 
+    print('\n'.join(balance_lines(stats, manager.walk_elapsed)))
     if options.verbose:
         print('\n'.join(rank_lines(stats)))
     sys.stdout.flush()

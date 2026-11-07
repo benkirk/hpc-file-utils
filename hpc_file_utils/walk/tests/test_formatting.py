@@ -42,10 +42,10 @@ def test_printable(path, shown):
 
 def test_progress_tally_and_line():
     p = ProgressTally(4)
-    p.update(1, (10, 1024, None))
-    p.update(2, (5, 2048, {"copied": 1}))
-    p.update(1, (12, 4096, None))        # the latest payload replaces the last one
-    assert (p.total_items, p.total_bytes) == (17, 6144)
+    p.update(1, (10, 1024, 7, None))
+    p.update(2, (5, 2048, 3, {"copied": 1}))
+    p.update(1, (12, 4096, 0, None))     # the latest payload replaces the last one
+    assert (p.total_items, p.total_bytes, p.total_queued) == (17, 6144, 3)
     assert p.extra == [None, None, {"copied": 1}, None]
     line = progress_line(100, 2 * 1024 ** 3, 4.0, now=datetime(2026, 1, 2, 3, 4, 5))
     assert line == "[2026-01-02 03:04:05] Walked 100 items / 2 GiB in 4 seconds (25 items/sec)"
