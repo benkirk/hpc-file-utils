@@ -27,7 +27,8 @@ git history was carried over with `git filter-repo`:
 | `tools/glade_purge/` | `filesystem/glade_purge/` |
 
 The phased plan is in [docs/HANDOFF.md](docs/HANDOFF.md); the walksync (sync-via-walk) design
-and prototype results are in [docs/walksync.md](docs/walksync.md).
+and prototype results are in [docs/walksync.md](docs/walksync.md); the load-balancing research note
+(manager dispatch vs libcircle-style work stealing) is [docs/walk-load-balancing.md](docs/walk-load-balancing.md).
 
 ## Development
 
