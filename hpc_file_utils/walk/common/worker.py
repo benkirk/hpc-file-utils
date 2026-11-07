@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
-from mpi4py import MPI
-from mpiclass import MPIClass, DirEntry, FileEntry, format_number, UIDCounts, GIDCounts
+"""BaseWorker: scans the directories the Manager hands it (see manager.py for the protocol)."""
+
+from hpc_file_utils.walk.common.mpiclass import MPIClass
+from hpc_file_utils.walk.common.stats import DirEntry, FileEntry
 import os, sys, stat, time
-import shutil
-import queue
-from typing import NamedTuple
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
 SHARE_CHECK_INCREMENT = 1000 # entries of one directory between looks for a 'share'
@@ -26,19 +25,12 @@ class BaseWorker(MPIClass):
     def __init__(self):
         MPIClass.__init__(self)
 
-        self.queue = None
-        self.q = []                   # local work queue: directories still to walk (a stack)
-        self.maxlocalq = 0            # its high-water mark
-        self.wait_time = 0.0          # seconds spent waiting for the Manager to answer 'ready' with work
-        self.last_progress_time = MPI.Wtime()
+        self.queue = None             # derived tools' work queue (walktar's tar thread)
+        self.local_dirs = []          # directories still to walk, a stack (phase 3.5)
+        self.max_local_dirs = 0       # its high-water mark
+        self.wait_time = 0.0          # waiting for the Manager to answer 'ready' with work
+        self.last_progress_time = self.MPI.Wtime()
         return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def counts(self):
-        """The (items, bytes, local queue length) sent with every message to the Manager."""
-        return (self.num_items, self.total_size, len(self.q))
 
 
 
@@ -50,8 +42,12 @@ class BaseWorker(MPIClass):
             print('[{:3d}] directory \'{}\' vanished'.format(self.rank, dirname), file=sys.stderr)
             return
 
-        self.num_dirs += 1
-        self.st_modes['dir'] += 1
+        st = self.stats
+        heaps = st.heaps
+        user_heaps = st.user_heaps
+
+        st.num_dirs += 1
+        st.st_modes['dir'] += 1
 
         #print('[{:3d}](d) {}'.format(self.rank, dirname))
 
@@ -84,18 +80,20 @@ class BaseWorker(MPIClass):
 
                 thisdir_nitems += 1
                 thisdir_nbytes += item_size
-                self.num_items += 1
-                self.total_size += item_size
+                st.num_items += 1
+                st.total_size += item_size
 
                 thisdir_uids.add(statinfo.st_uid)
 
-                self.uids[statinfo.st_uid].set_id(statinfo.st_uid)
-                self.uids[statinfo.st_uid].nitems += 1
-                self.uids[statinfo.st_uid].nbytes += item_size
+                u = st.uids[statinfo.st_uid]
+                u.set_id(statinfo.st_uid)
+                u.nitems += 1
+                u.nbytes += item_size
 
-                self.gids[statinfo.st_gid].set_id(statinfo.st_gid)
-                self.gids[statinfo.st_gid].nitems += 1
-                self.gids[statinfo.st_gid].nbytes += item_size
+                g = st.gids[statinfo.st_gid]
+                g.set_id(statinfo.st_gid)
+                g.nitems += 1
+                g.nbytes += item_size
 
                 # send a progress update periodically
                 # (in production we have many directories with 1M+ files, this ensures some progress is
@@ -111,17 +109,17 @@ class BaseWorker(MPIClass):
                 fmode = statinfo.st_mode
 
                 if stat.S_ISDIR(fmode):
-                    self.q.append(pathname)
-                    if len(self.q) >= self.options.local_queue_max: self.ship_overflow()
+                    self.local_dirs.append(pathname)
+                    if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
                 else:
-                    self.num_files += 1
+                    st.num_files += 1
 
-                    if   stat.S_ISREG(fmode):  self.st_modes['reg']   += 1
-                    elif stat.S_ISLNK(fmode):  self.st_modes['link']  += 1
-                    elif stat.S_ISBLK(fmode):  self.st_modes['block'] += 1
-                    elif stat.S_ISCHR(fmode):  self.st_modes['char']  += 1
-                    elif stat.S_ISFIFO(fmode): self.st_modes['fifo']  += 1
-                    elif stat.S_ISSOCK(fmode): self.st_modes['sock']  += 1
+                    if   stat.S_ISREG(fmode):  st.st_modes['reg']   += 1
+                    elif stat.S_ISLNK(fmode):  st.st_modes['link']  += 1
+                    elif stat.S_ISBLK(fmode):  st.st_modes['block'] += 1
+                    elif stat.S_ISCHR(fmode):  st.st_modes['char']  += 1
+                    elif stat.S_ISFIFO(fmode): st.st_modes['fifo']  += 1
+                    elif stat.S_ISSOCK(fmode): st.st_modes['sock']  += 1
 
                     # track the *maximum mtime/ctime/atime for this directories contents (not the dir itself though)
                     thisdir_max_mtime = max(thisdir_max_mtime, statinfo.st_mtime)
@@ -131,8 +129,8 @@ class BaseWorker(MPIClass):
                     fe = FileEntry(pathname, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
 
                     # track the size & count of this file in our top heap
-                    self.top_nbytes_files.add((item_size, fe))
-                    self.user_top_nbytes_files[statinfo.st_uid].add((item_size, fe))
+                    heaps['nbytes_files'].add((item_size, fe))
+                    user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
 
                     # --------------------------------------------------------------------------
                     # additional file processing - simply a placeholder stub for derived classes
@@ -144,8 +142,8 @@ class BaseWorker(MPIClass):
             # track the size & count of this directory in our top heaps
             de = DirEntry(dirname, thisdir_nbytes, thisdir_nitems, thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime)
 
-            self.top_nitems_dirs.add((thisdir_nitems, de))
-            self.top_nbytes_dirs.add((thisdir_nbytes, de))
+            heaps['nitems_dirs'].add((thisdir_nitems, de))
+            heaps['nbytes_dirs'].add((thisdir_nbytes, de))
 
             # are the contents owned by a single user id?  If so, track per-user info as well
             single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else False
@@ -156,28 +154,25 @@ class BaseWorker(MPIClass):
             if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
 
                 if single_owner:
-                    self.user_top_nitems_dirs[single_owner].add((thisdir_nitems, de))
-                    self.user_top_nbytes_dirs[single_owner].add((thisdir_nbytes, de))
+                    user_heaps['nitems_dirs'][single_owner].add((thisdir_nitems, de))
+                    user_heaps['nbytes_dirs'][single_owner].add((thisdir_nbytes, de))
 
                 # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
                 if 10 < thisdir_max_atime:
                     if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
-                        self.top_nbytes_dirs_7yrs.add((thisdir_nbytes, de))
-                        if single_owner: self.user_top_nbytes_dirs_7yrs[single_owner].add((thisdir_nbytes, de))
+                        heaps['nbytes_dirs_7yrs'].add((thisdir_nbytes, de))
+                        if single_owner: user_heaps['nbytes_dirs_7yrs'][single_owner].add((thisdir_nbytes, de))
 
                     elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime):
-                        self.top_nbytes_dirs_5yrs.add((thisdir_nbytes, de))
-                        if single_owner: self.user_top_nbytes_dirs_5yrs[single_owner].add((thisdir_nbytes, de))
+                        heaps['nbytes_dirs_5yrs'].add((thisdir_nbytes, de))
+                        if single_owner: user_heaps['nbytes_dirs_5yrs'][single_owner].add((thisdir_nbytes, de))
 
                     elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
-                        self.top_nbytes_dirs_3yrs.add((thisdir_nbytes, de))
-                        if single_owner: self.user_top_nbytes_dirs_3yrs[single_owner].add((thisdir_nbytes, de))
-
-                if 0 < thisdir_max_mtime: self.oldest_mtime_dirs.add((-thisdir_max_mtime, de)) # (-) to turn maxheap into a minheap
-                if 0 < thisdir_max_atime: self.oldest_atime_dirs.add((-thisdir_max_atime, de)) # (-) to turn maxheap into a minheap
+                        heaps['nbytes_dirs_3yrs'].add((thisdir_nbytes, de))
+                        if single_owner: user_heaps['nbytes_dirs_3yrs'][single_owner].add((thisdir_nbytes, de))
 
         except Exception as error:
-            self.num_errors += 1
+            st.num_errors += 1
             print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
 
         # if present, wait for our work queue to drain.
@@ -202,24 +197,38 @@ class BaseWorker(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def progress_extra(self):
+        """Derived tools' own progress info for the Manager (e.g. walksync: bytes copied)."""
+        return None
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def progress_payload(self):
+        """(items, bytes, queued, extra), carried by every message to the Manager (protocol.py)."""
+        return (self.stats.num_items, self.stats.total_size, len(self.local_dirs), self.progress_extra())
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def oldest_half(self):
-        """Remove and return the oldest half of the local queue.
+        """Remove and return the oldest half of the local stack.
 
         The oldest entries are the shallowest, so the ones most likely to hold big
         subtrees: one shipment carries real work, and we keep walking depth-first.
         """
-        n = len(self.q) // 2
-        give, self.q = self.q[:n], self.q[n:]
+        n = len(self.local_dirs) // 2
+        give, self.local_dirs = self.local_dirs[:n], self.local_dirs[n:]
         return give
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def ship_overflow(self):
-        """The local queue is full: send the oldest half to the Manager."""
-        self.maxlocalq = max(self.maxlocalq, len(self.q))
+        """The local stack is full: send its oldest half to the Manager."""
+        self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
         give = self.oldest_half()
-        self.comm.send((self.counts(), give), dest=0, tag=self.tags['dir_reply'])
+        self.comm.send((give, self.progress_payload()), dest=0, tag=self.tags['dir_reply'])
         return
 
 
@@ -227,11 +236,11 @@ class BaseWorker(MPIClass):
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def check_share(self):
         """Answer a 'share' from the Manager, if one is waiting, with the oldest half of
-        the local queue (which may be nothing)."""
+        the local stack (which may be nothing)."""
         if self.comm.iprobe(source=0, tag=self.tags['share']):
             self.comm.recv(source=0, tag=self.tags['share'])
             give = self.oldest_half()
-            self.comm.send((self.counts(), give), dest=0, tag=self.tags['share_reply'])
+            self.comm.send((give, self.progress_payload()), dest=0, tag=self.tags['share_reply'])
         return
 
 
@@ -239,24 +248,24 @@ class BaseWorker(MPIClass):
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def report_progress(self, only_if_due=False):
         """Send our counts. With only_if_due, only when --progress seconds have passed
-        since the Manager last heard from us: a worker walking many small directories
+        since the last time: a worker walking many small directories from its own stack
         otherwise sends nothing between PROGRESS_INCREMENT entries."""
-        now = MPI.Wtime()
+        now = self.MPI.Wtime()
         if only_if_due and (now - self.last_progress_time) < self.options.progress:
             return
         self.last_progress_time = now
-        self.comm.send((self.counts(), None), dest=0, tag=self.tags['progress'])
+        self.comm.send(self.progress_payload(), dest=0, tag=self.tags['progress'])
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def drain_queue(self):
-        """Walk the local queue, newest directory first, until it is empty."""
-        while self.q:
+    def drain_local_dirs(self):
+        """Walk the local stack, newest directory first, until it is empty."""
+        while self.local_dirs:
             self.check_share()
-            self.maxlocalq = max(self.maxlocalq, len(self.q))
-            self.process_directory(self.q.pop())
+            self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
+            self.process_directory(self.local_dirs.pop())
             self.report_progress(only_if_due=True)
         return
 
@@ -264,27 +273,29 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def run(self):
+        MPI = self.MPI
         self.comm.Barrier()
         status = MPI.Status()
         while True:
-            assert not self.q
+            assert not self.local_dirs
 
-            # our local queue is empty: ask the Manager for work, and wait for its
-            # answer. A 'share' that arrives meanwhile is ignored: we have nothing to
-            # give, and the Manager forgets the request when it receives our 'ready'.
+            # our stack is empty: ask the Manager for work, and wait for its answer.
+            # A 'share' that arrives meanwhile is ignored: we have nothing to give, and
+            # the Manager forgets the request when it receives our 'ready'.
             t0 = MPI.Wtime()
-            self.comm.send((self.counts(), None), dest=0, tag=self.tags['ready'])
+            self.comm.send(self.progress_payload(), dest=0, tag=self.tags['ready'])
             while True:
                 msg = self.comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
                 if status.Get_tag() != self.tags['share']:
                     break
+
             if status.Get_tag() == self.tags['terminate']:
-                assert (msg == None)
+                assert msg is None
                 break
 
-            assert (status.Get_tag() == self.tags['execute'])
+            assert status.Get_tag() == self.tags['execute']
             self.wait_time += MPI.Wtime() - t0   # only waits that got work: dispatch latency
-            self.q.extend(msg)
-            self.drain_queue()
+            self.local_dirs.extend(msg)
+            self.drain_local_dirs()
 
         return

@@ -144,8 +144,9 @@ small directories. Now workers keep the subdirectories they find on a local stac
 depth-first, sending `ready` only when it is empty; the Manager sees directories only as overflow
 past `--local-queue-max` or as answers to its `share` requests, which it sends to the busiest
 workers whenever it holds idle `ready`s and has nothing to give. The termination argument from
-phase 2 is unchanged. The run reports the Manager's occupancy, where its directories came from,
-directories per rank, and the fraction of the walk the workers spent waiting for it, which is
+phase 2 is unchanged (ported onto phase 3's blocking ANY_SOURCE Manager). The run reports where
+the Manager's directories came from, directories per rank, and the fraction of the walk the
+workers spent waiting for it, which is
 the signal for whether the next step (fully decentralised stealing, section 3 of the note) is
 ever needed. Phase 5's file batches become a second item type on the same local queue.
 

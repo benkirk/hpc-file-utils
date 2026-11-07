@@ -6,7 +6,10 @@
 #PBS -l select=8:ncpus=128:mpiprocs=32:mem=235G
 #PBS -q main
 
-. env/config_env.sh || exit 1
+# the hpc-file-utils checkout is the parent of scans/ unless HFU_ROOT names another
+cd "${PBS_O_WORKDIR:-.}" || exit 1
+# shellcheck source=../etc/config_env.sh
+source "${HFU_ROOT:-..}/etc/config_env.sh" || exit 1
 module load peak-memusage
 
 #--------------------------------------------------------------
@@ -37,19 +40,15 @@ trap remove_lock EXIT
 #--------------------------------------------------------------
 echo && echo "Beginning ${0} at $(date)"
 
-tstart=$(date +%s)
-timestamp=$(date +%F@%H:%M)
-
-
 #--------------------------------------------------------------
 sstart=$(date +%s)
 rm -f ${projname}.DONE
 time \
     mpiexec --no-transfer \
         peak_memusage \
-          ./walkstat/walkstat \
+          walkstat \
             --verbose \
-            --summary summary.xlsx \
+            --spreadsheet summary.xlsx \
             --summary-prefix "${projname}" \
             --progress $((10*60)) \
             --dirs ${srcdir} \

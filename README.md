@@ -53,6 +53,16 @@ derecho outside PBS) and `site`. The walkstat golden output lives in
 The glade tools' own `test.sh` scripts write to campaign storage and only run with
 `HFU_SITE_WRITE_TESTS=1`.
 
-Until phase 3, `scans/*.sh` still expect the old csg-utils layout (`./walkstat/walkstat`,
-`env/config_env.sh`), so run them from csg-utils. The `sync/` scripts are self-contained and
-work as they are.
+## Running the walkers
+
+`pip install -e .` (done by `etc/config_env.sh`) installs the console scripts `walkstat` and
+`walktar`; run them under MPI with at least 2 ranks (rank 0 is the Manager):
+
+```bash
+mpiexec -n 96 walkstat --summary-prefix PROJ --dirs /glade/campaign/proj/*/
+```
+
+`scans/*.sh` source `<checkout>/etc/config_env.sh` (the parent of `scans/`, or `$HFU_ROOT`)
+and call `walkstat`. See [hpc_file_utils/walk/README.md](hpc_file_utils/walk/README.md) for the
+outputs and the changes since the import. The `sync/` scripts are self-contained and work as
+they are.

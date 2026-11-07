@@ -22,10 +22,13 @@ dev = [
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-# hpc_file_utils/walk is not a package yet (flat imports, run through the
-# walkstat/walktar symlinks); phase 3 adds the packages and console scripts.
-[tool.setuptools]
-packages = []
+[project.scripts]
+walkstat = "hpc_file_utils.walk.cli:walkstat"
+walktar = "hpc_file_utils.walk.cli:walktar"
+
+[tool.setuptools.packages.find]
+include = ["hpc_file_utils*"]
+exclude = ["*.tests", "*.tests.*"]
 
 [tool.pytest.ini_options]
 testpaths = [
