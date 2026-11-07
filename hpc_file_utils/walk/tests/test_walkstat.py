@@ -111,7 +111,7 @@ def test_walkstat_bad_dir_exits_promptly(walk, tmp_path):
 
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("args,status", [(["--help"], 0), (["--no-such-option"], 2),
-                                         (["--max-dirs-per-send", "0"], 2)])
+                                         (["--local-queue-max", "1"], 2), (["--dirs-per-dispatch", "0"], 2)])
 def test_walkstat_option_exits_promptly(walk, golden_tree, tmp_path, args, status):
     r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=args, timeout=30)
     assert not r.timed_out, r.report()

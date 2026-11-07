@@ -137,6 +137,20 @@ Each fix turns a phase-1 test from xfail to pass, or adds a failing test first.
 
 ---
 
+## Phase 3.5: local work queues (done)
+Research: [walk-load-balancing.md](walk-load-balancing.md). The Manager's message rate (three
+pickled messages per directory plus a probe sweep per pass) was the scaling ceiling on trees of
+small directories. Now workers keep the subdirectories they find on a local stack and walk them
+depth-first, sending `ready` only when it is empty; the Manager sees directories only as overflow
+past `--local-queue-max` or as answers to its `share` requests, which it sends to the busiest
+workers whenever it holds idle `ready`s and has nothing to give. The termination argument from
+phase 2 is unchanged. The run reports the Manager's occupancy, where its directories came from,
+directories per rank, and the fraction of the walk the workers spent waiting for it, which is
+the signal for whether the next step (fully decentralised stealing, section 3 of the note) is
+ever needed. Phase 5's file batches become a second item type on the same local queue.
+
+---
+
 ## Phase 4: flitering
 Right now everything is all or nothing; consider some standard filtering options
 useful for the toolkit (date; owner/group; size; other filters??)

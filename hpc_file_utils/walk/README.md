@@ -17,5 +17,19 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
   exit status 2 in that case (non-zero, 143, under PALS); the default stays 0.
 - **Deterministic ordering.** Type, user and group lists break ties by name, so the summary no
   longer depends on which rank saw what first. (The size heaps already broke ties by path.)
-- **`--max-dirs-per-send N`** [200]: subdirectories a worker collects before sending them to
-  the Manager.
+- **Workers walk their own queue (phase 3.5).** A worker pushes the subdirectories it finds
+  onto a local stack and walks them itself, depth-first, and asks the Manager for work only
+  when that stack is empty. Directories reach the Manager only to fix imbalance: as
+  *overflow* (the oldest half of a stack that grew past `--local-queue-max`) or as the
+  answer to a *share* request, which the Manager sends to the busiest workers whenever it
+  has idle workers and nothing to give them. The termination argument is unchanged (see
+  `manager.py`); the design and its alternatives are in
+  [docs/walk-load-balancing.md](../../docs/walk-load-balancing.md).
+  - **`--local-queue-max N`** [1000]: subdirectories a worker keeps before it ships the
+    oldest half to the Manager (replaces `--max-dirs-per-send`).
+  - **`--dirs-per-dispatch K`** [8]: directories the Manager hands an idle worker at once.
+  - The progress line shows `queued` (directories on the workers' local queues), `idle`
+    and `shares`; the end of the run reports where the Manager's directories came from,
+    its occupancy, the directories walked per rank and the fraction of the walk the workers
+    spent waiting for it. Occupancy near 100% with a large waiting fraction means the
+    Manager is the bottleneck.

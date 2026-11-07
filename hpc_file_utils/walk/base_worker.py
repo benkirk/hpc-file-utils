@@ -7,7 +7,8 @@ import shutil
 import queue
 from typing import NamedTuple
 
-PROGRESS_INCREMENT = 20000
+PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
+SHARE_CHECK_INCREMENT = 1000 # entries of one directory between looks for a 'share'
 
 SECONDS_IN_YEAR = 60*60*24*365
 THREE_YEARS = 3*SECONDS_IN_YEAR
@@ -26,14 +27,23 @@ class BaseWorker(MPIClass):
         MPIClass.__init__(self)
 
         self.queue = None
+        self.q = []                   # local work queue: directories still to walk (a stack)
+        self.maxlocalq = 0            # its high-water mark
+        self.wait_time = 0.0          # seconds spent waiting for the Manager to answer 'ready' with work
+        self.last_progress_time = MPI.Wtime()
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_directory(self, dirname):
+    def counts(self):
+        """The (items, bytes, local queue length) sent with every message to the Manager."""
+        return (self.num_items, self.total_size, len(self.q))
 
-        self.dirs = []
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def process_directory(self, dirname):
 
         # last-minute check for a race condition:
         if not os.path.exists(dirname):
@@ -92,13 +102,17 @@ class BaseWorker(MPIClass):
                 # detected and reported by Manager even for huge dirs)
                 if 0 == thisdir_nitems%PROGRESS_INCREMENT:
                     self.report_progress()
+                # and look for a 'share' from the Manager, so a huge directory does not
+                # keep the subdirectories we have already queued from the idle ranks
+                if 0 == thisdir_nitems%SHARE_CHECK_INCREMENT:
+                    self.check_share()
 
                 # decode file type
                 fmode = statinfo.st_mode
 
                 if stat.S_ISDIR(fmode):
-                    self.dirs.append(pathname)
-                    if len(self.dirs) >= self.options.max_dirs_per_send: self.send_my_dirlist()
+                    self.q.append(pathname)
+                    if len(self.q) >= self.options.local_queue_max: self.ship_overflow()
                 else:
                     self.num_files += 1
 
@@ -188,23 +202,62 @@ class BaseWorker(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def send_my_dirlist(self):
-        # option 1: send dirs in batch
-        if self.dirs:
-            self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
-            # abuse self.dirs - append our current counts, this allows manager
-            # to summarize collective progress while only sending a single message
-            self.dirs.append(self.num_items)
-            self.dirs.append(self.total_size)
-            self.comm.send(self.dirs, dest=0, tag=self.tags['dir_reply'])
-            self.dirs = []
+    def oldest_half(self):
+        """Remove and return the oldest half of the local queue.
+
+        The oldest entries are the shallowest, so the ones most likely to hold big
+        subtrees: one shipment carries real work, and we keep walking depth-first.
+        """
+        n = len(self.q) // 2
+        give, self.q = self.q[:n], self.q[n:]
+        return give
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def ship_overflow(self):
+        """The local queue is full: send the oldest half to the Manager."""
+        self.maxlocalq = max(self.maxlocalq, len(self.q))
+        give = self.oldest_half()
+        self.comm.send((self.counts(), give), dest=0, tag=self.tags['dir_reply'])
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def report_progress(self):
-        self.comm.send([self.num_items, self.total_size], dest=0, tag=self.tags['progress'])
+    def check_share(self):
+        """Answer a 'share' from the Manager, if one is waiting, with the oldest half of
+        the local queue (which may be nothing)."""
+        if self.comm.iprobe(source=0, tag=self.tags['share']):
+            self.comm.recv(source=0, tag=self.tags['share'])
+            give = self.oldest_half()
+            self.comm.send((self.counts(), give), dest=0, tag=self.tags['share_reply'])
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def report_progress(self, only_if_due=False):
+        """Send our counts. With only_if_due, only when --progress seconds have passed
+        since the Manager last heard from us: a worker walking many small directories
+        otherwise sends nothing between PROGRESS_INCREMENT entries."""
+        now = MPI.Wtime()
+        if only_if_due and (now - self.last_progress_time) < self.options.progress:
+            return
+        self.last_progress_time = now
+        self.comm.send((self.counts(), None), dest=0, tag=self.tags['progress'])
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def drain_queue(self):
+        """Walk the local queue, newest directory first, until it is empty."""
+        while self.q:
+            self.check_share()
+            self.maxlocalq = max(self.maxlocalq, len(self.q))
+            self.process_directory(self.q.pop())
+            self.report_progress(only_if_due=True)
         return
 
 
@@ -214,24 +267,24 @@ class BaseWorker(MPIClass):
         self.comm.Barrier()
         status = MPI.Status()
         while True:
+            assert not self.q
 
-            # send our dir list to manager (if any)
-            self.send_my_dirlist()
-
-            # # receive instructions from Manager
-            next_dir = self.comm.sendrecv([self.num_items, self.total_size],
-                                          dest=0,  sendtag=self.tags['ready'],
-                                          source=0, recvtag=MPI.ANY_TAG,
-                                          status=status)
-
+            # our local queue is empty: ask the Manager for work, and wait for its
+            # answer. A 'share' that arrives meanwhile is ignored: we have nothing to
+            # give, and the Manager forgets the request when it receives our 'ready'.
+            t0 = MPI.Wtime()
+            self.comm.send((self.counts(), None), dest=0, tag=self.tags['ready'])
+            while True:
+                msg = self.comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
+                if status.Get_tag() != self.tags['share']:
+                    break
             if status.Get_tag() == self.tags['terminate']:
-                assert (next_dir == None)
+                assert (msg == None)
                 break
 
-            if next_dir:
-                assert (status.Get_tag() == self.tags['execute'])
-                self.process_directory(next_dir)
+            assert (status.Get_tag() == self.tags['execute'])
+            self.wait_time += MPI.Wtime() - t0   # only waits that got work: dispatch latency
+            self.q.extend(msg)
+            self.drain_queue()
 
-        #print('[{:3d}] *** Finished, maximum # of dirs at once: {}'.format(self.rank,
-        #                                                                   format_number(self.maxnumdirs)))
         return

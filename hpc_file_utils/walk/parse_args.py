@@ -19,7 +19,8 @@ def parse_options(appname=None):
     parser.add_argument('--heap-size', default=500, type=int, required=False, help='Per-rank heap size used for tracking large files / directories')
     parser.add_argument('--threshold-size', default='10MB', type=str, required=False, help='Only consider directories larger than this threshold when tracking mtimes/atimes (string')
     parser.add_argument('--threshold-count', default=10000, type=int, required=False, help='Only consider directories larger than this threshold when tracking mtimes/atimes (count)')
-    parser.add_argument('--max-dirs-per-send', default=200, type=int, required=False, help='Subdirectories a worker collects before sending them to the manager (default: 200)')
+    parser.add_argument('--local-queue-max', default=1000, type=int, required=False, help='Subdirectories a worker keeps for itself; past this it sends the oldest half to the manager (default: 1000)')
+    parser.add_argument('--dirs-per-dispatch', default=8, type=int, required=False, help='Directories the manager hands an idle worker at once (default: 8)')
     parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be scanned (default: exit 0, errors are only counted)')
 
     # tool-specific arguments follow
@@ -29,8 +30,10 @@ def parse_options(appname=None):
     args = parser.parse_args()
 
     # consistency checks
-    if args.max_dirs_per_send < 1:
-        parser.error('--max-dirs-per-send must be at least 1')
+    if args.local_queue_max < 2:
+        parser.error('--local-queue-max must be at least 2')
+    if args.dirs_per_dispatch < 1:
+        parser.error('--dirs-per-dispatch must be at least 1')
 
     if 0 >= args.progress:
         args.progress = float('inf')

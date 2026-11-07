@@ -117,6 +117,8 @@ class MPIClass:
             'work_deny'       : 22,
             'dir_request'     : 30,
             'dir_reply'       : 31,
+            'share'           : 32,
+            'share_reply'     : 33,
             'progress'        : 40,
             'collect_results' : 50,
             'terminate'       : 1000 }
@@ -305,6 +307,22 @@ class MPIClass:
         self.gids = self.gather_and_sum_ids(self.gids)
 
         self.total_errors = self.comm.allreduce(self.num_errors)
+
+        # load-balance statistics (docs/walk-load-balancing.md, section 1.4): how evenly
+        # the directories were spread, and how long the workers waited for the Manager
+        ndirs = self.comm.gather(self.num_dirs, root=0)
+        waits = self.comm.gather(getattr(self, 'wait_time', 0.0), root=0)
+        localq = self.comm.reduce(getattr(self, 'maxlocalq', 0), op=MPI.MAX, root=0)
+        if self.i_am_root:
+            w = ndirs[1:]   # the workers
+            lo, hi = min(range(len(w)), key=w.__getitem__), max(range(len(w)), key=w.__getitem__)
+            print('--> Directories per rank: min {} (rank {}) / mean {} / max {} (rank {}); local queue high-water mark: {}'.format(
+                format_number(w[lo]), lo + 1, format_number(int(sum(w) / len(w))), format_number(w[hi]), hi + 1,
+                format_number(localq)))
+            rank_seconds = getattr(self, 'walk_elapsed', 0.0) * len(w)
+            print('--> Workers waited for the Manager {:.1%} of the walk ({} of {} rank-seconds)'.format(
+                sum(waits) / rank_seconds if rank_seconds else 0.0,
+                format_number(int(sum(waits))), format_number(int(rank_seconds))))
 
         # per-user dir/file counts
         for k,v in self.uids.items():

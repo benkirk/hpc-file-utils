@@ -372,6 +372,12 @@ to get most of that gain:
 
 ## 5. The middle option: local queues with Manager-brokered sharing
 
+> Implemented as phase 3.5 (see `manager.py`'s module docstring for the protocol as built,
+> and `tests/test_load_balance.py`). The one detail that differs from the sketch below: the
+> worker's `ready` is a separate send and receive loop rather than a `sendrecv`, so a `share`
+> that crosses a `ready` is received and ignored by the worker, and the Manager drops the
+> request when the `ready` arrives.
+
 Keep the Manager and the termination argument, but stop routing every directory through
 rank 0.
 

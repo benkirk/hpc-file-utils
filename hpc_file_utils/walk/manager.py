@@ -2,37 +2,52 @@
 
 """The Manager (rank 0) hands directories to the workers until the walk is done.
 
+Workers walk their own local queue and talk to the Manager only when it fills up,
+when it runs dry, or when the Manager asks them to share (docs/walk-load-balancing.md,
+section 5). Every worker -> manager message is a tuple (counts, dirs), where counts is
+(items, bytes, local queue length) and dirs is a list of directories or None.
+
 Messages (tags in MPIClass.tags):
 
   worker -> manager
-    ready      [items, bytes]          "I am idle, give me work". Sent with sendrecv, so
-                                       the worker then blocks until the Manager answers.
-    dir_reply  [dir, ..., items, bytes] subdirectories found while scanning: every
-                                       --max-dirs-per-send of them mid-directory, and
-                                       the rest when the directory is done.
-    progress   [items, bytes]          running counts, every PROGRESS_INCREMENT entries
-                                       of a huge directory.
-  manager -> worker (the answer to a 'ready')
-    execute    dirname                 scan this directory
-    terminate  None                    the walk is done
+    ready        (counts, None)   "My local queue is empty, give me work". The worker
+                                  then blocks in recv until the Manager answers.
+    dir_reply    (counts, dirs)   overflow: the oldest half of a local queue that grew
+                                  past --local-queue-max.
+    share_reply  (counts, dirs)   the answer to a 'share': the oldest half of the local
+                                  queue, possibly empty.
+    progress     (counts, None)   running counts, every PROGRESS_INCREMENT entries of a
+                                  huge directory or --progress seconds between ones.
+  manager -> worker
+    execute      [dir, ...]       the answer to a 'ready': walk these (--dirs-per-dispatch
+                                  at most)
+    terminate    None             the answer to a 'ready': the walk is done
+    share        None             sent to a busy worker when the Manager has idle workers
+                                  and no directories; answered with share_reply at the
+                                  worker's next poll point, or not at all if the worker
+                                  goes idle first (its 'ready' then cancels the request)
 
 How the Manager decides the walk is done:
 
   1. A worker is idle only while the Manager holds its 'ready' unanswered. A worker
-     that sent 'ready' is blocked in sendrecv, so it cannot send anything else.
+     sends 'ready' only when its local queue is empty and its last directory is
+     finished, and it then blocks in recv, so it cannot send anything else.
   2. The Manager receives from one worker with ANY_TAG, so it gets that worker's
      messages in the order they were sent (MPI's non-overtaking rule applies to
      messages that match the same receive). When it gets a worker's 'ready', it has
-     already received every dir_reply that worker sent before it. (The old loop
-     probed each tag separately, so it could see a 'ready' before the dir_reply sent
-     just ahead of it, decide everyone was idle, and lose or hang on that dir_reply.)
+     already received every dir_reply and share_reply that worker sent before it.
   3. So: no directories queued here and every worker idle means no directory is
      queued, in flight, or being scanned anywhere. The Manager answers each held
      'ready' with 'terminate'.
 
+A 'share' never carries work, so it cannot upset this: a worker that receives one
+while it waits for the answer to its 'ready' just ignores it, and the Manager forgets
+the request when that 'ready' arrives. The Manager sends at most one unanswered
+'share' per worker.
+
 Fairness: each pass of the loop probes every worker in turn and receives at most one
 message from each, so every rank is heard from on every pass and a busy worker's
-stream of dir_reply/progress messages cannot crowd out the others.
+stream of messages cannot crowd out the others.
 """
 
 from mpi4py import MPI
@@ -54,12 +69,23 @@ class Manager(MPIClass):
         MPIClass.__init__(self,options)
         self.nsends = 0
         self.nrecvs = 0
-        self.dirs = self.options.dirs                 # directories waiting for a worker
+        self.dirs = list(self.options.dirs)           # directories waiting for a worker
         self.workers = list(range(1, self.nranks))
         self.idle = deque()                            # workers whose 'ready' we hold, unanswered
+        self.idle_set = set()
+        self.share_pending = set()                     # workers with an unanswered 'share'
+        self.queue_lengths = [0 for p in range(0,self.nranks)]   # last reported local queue length
         self.progress_sizes = [0 for p in range(0,self.nranks)]
         self.progress_counts = [0 for p in range(0,self.nranks)]
         self.progress_time = self.start_time = MPI.Wtime()
+        # statistics: where the Manager's directories came from, and how busy it was
+        self.nshares = 0                 # 'share' requests sent
+        self.nshares_empty = 0           # ... answered with no directories
+        self.ndirs_overflow = 0          # directories received as overflow (dir_reply)
+        self.ndirs_shared = 0            # directories received in share_reply
+        self.ndispatches = 0             # 'execute' messages
+        self.npasses = 0                 # passes over the workers
+        self.npasses_heard = 0           # ... that received at least one message
         return
 
 
@@ -73,9 +99,8 @@ class Manager(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def update_progress(self, rank, counts):
-        """counts: the [items, bytes] a worker appends to every message."""
-        self.progress_sizes[rank] = counts.pop()
-        self.progress_counts[rank] = counts.pop()
+        """counts: the (items, bytes, queue length) a worker sends with every message."""
+        self.progress_counts[rank], self.progress_sizes[rank], self.queue_lengths[rank] = counts
         return
 
 
@@ -103,9 +128,13 @@ class Manager(MPIClass):
                                                                                           format_number(int(float(total_count)/elapsed)))
 
         if not forceprint:
-            status += ' [dirlen={}, sends={}, recvs={}]'.format(format_number(len(self.dirs)),
-                                                                format_number(self.nsends),
-                                                                format_number(self.nrecvs))
+            status += ' [dirlen={}, queued={}, idle={}, sends={}, recvs={}, shares={}]'.format(
+                format_number(len(self.dirs)),
+                format_number(sum(self.queue_lengths)),
+                len(self.idle),
+                format_number(self.nsends),
+                format_number(self.nrecvs),
+                format_number(self.nshares))
 
         print(status)
 
@@ -126,38 +155,78 @@ class Manager(MPIClass):
             return False
 
         tag = status.Get_tag()
-        msg = self.comm.recv(source=rank, tag=tag); self.nrecvs += 1
+        counts, dirs = self.comm.recv(source=rank, tag=tag); self.nrecvs += 1
+        self.update_progress(rank, counts)
 
         if tag == self.tags['dir_reply']:
-            # subdirectories to hand out; the worker is still busy
-            assert len(msg) >= 2
-            self.update_progress(rank, msg)
-            self.dirs.extend(msg)
-            self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
+            # overflow from a full local queue; the worker is still busy
+            self.dirs.extend(dirs)
+            self.ndirs_overflow += len(dirs)
+
+        elif tag == self.tags['share_reply']:
+            # the answer to our 'share'; the worker is still busy
+            self.share_pending.discard(rank)
+            self.dirs.extend(dirs)
+            self.ndirs_shared += len(dirs)
+            if not dirs: self.nshares_empty += 1
 
         elif tag == self.tags['progress']:
-            assert len(msg) == 2
-            self.update_progress(rank, msg)
+            pass
 
         elif tag == self.tags['ready']:
-            # the worker is now blocked in sendrecv, waiting for our answer
-            assert len(msg) == 2
-            self.update_progress(rank, msg)
+            # the worker's local queue is empty and it is blocked in recv, waiting for us.
+            # a 'share' we sent it will be ignored there, so forget it.
+            self.share_pending.discard(rank)
+            self.queue_lengths[rank] = 0
             self.idle.append(rank)
+            self.idle_set.add(rank)
 
         else:
             raise RuntimeError('Manager: unexpected tag {} from rank {}'.format(tag, rank))
 
+        self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
         return True
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def dispatch(self):
-        """Answer idle workers' 'ready' with a directory, while we have both."""
+        """Answer idle workers' 'ready' with directories, while we have both.
+
+        Each gets up to --dirs-per-dispatch, fewer when there are not enough to go
+        round the idle workers.
+        """
         while self.dirs and self.idle:
+            n = max(1, min(self.options.dirs_per_dispatch, len(self.dirs) // len(self.idle)))
+            give = self.dirs[-n:]
+            del self.dirs[-n:]
             rank = self.idle.popleft()
-            self.comm.send(self.dirs.pop(), dest=rank, tag=self.tags['execute']); self.nsends += 1
+            self.idle_set.discard(rank)
+            self.comm.send(give, dest=rank, tag=self.tags['execute']); self.nsends += 1
+            self.ndispatches += 1
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def request_shares(self):
+        """Idle workers and nothing to give them: ask busy workers to share their queues.
+
+        One unanswered 'share' per worker, to the workers that last reported the
+        longest local queues, at most as many as there are idle workers. Workers whose
+        last report was an empty queue are asked too (their queue may have grown since),
+        but after the others.
+        """
+        if not self.idle or self.dirs:
+            return
+        candidates = [r for r in self.workers if r not in self.idle_set and r not in self.share_pending]
+        if not candidates:
+            return
+        candidates.sort(key=lambda r: self.queue_lengths[r], reverse=True)
+        for rank in candidates[:len(self.idle)]:
+            self.comm.send(None, dest=rank, tag=self.tags['share']); self.nsends += 1
+            self.share_pending.add(rank)
+            self.nshares += 1
         return
 
 
@@ -166,6 +235,7 @@ class Manager(MPIClass):
     def run(self):
 
         self.comm.Barrier()
+        self.progress_time = self.start_time = MPI.Wtime()
 
         # one pass = one look at every worker, in rank order
         while not self.finished():
@@ -177,16 +247,30 @@ class Manager(MPIClass):
                     heard += 1
                     self.dispatch()
 
-            if not heard:
+            self.request_shares()
+
+            self.npasses += 1
+            if heard:
+                self.npasses_heard += 1
+            else:
                 time.sleep(IDLE_SLEEP)
+
+        self.walk_elapsed = MPI.Wtime() - self.start_time
 
         # every worker is waiting on its 'ready': answer each with 'terminate'
         print('  --> Progress loop completed ({} sends / {} recvs)'.format(format_number(self.nsends),
                                                                            format_number(self.nrecvs)))
         print('  --> Maximum # of dirs at once on manager: {}'.format(format_number(self.maxnumdirs)))
+        print('  --> Dispatches: {}; directories received as overflow: {}, shared: {} ({} share requests, {} answered empty)'.format(
+            format_number(self.ndispatches), format_number(self.ndirs_overflow), format_number(self.ndirs_shared),
+            format_number(self.nshares), format_number(self.nshares_empty)))
+        print('  --> Manager occupancy: {:.1%} of {} passes received a message'.format(
+            self.npasses_heard / max(1, self.npasses), format_number(self.npasses)))
         print('  --> Finished dispatch, Terminating ranks')
         while self.idle:
-            self.comm.send(None, dest=self.idle.popleft(), tag=self.tags['terminate']); self.nsends += 1
+            rank = self.idle.popleft()
+            self.idle_set.discard(rank)
+            self.comm.send(None, dest=rank, tag=self.tags['terminate']); self.nsends += 1
 
         # OK, messages sent, report final progress
         self.report_progress(forceprint=True)
