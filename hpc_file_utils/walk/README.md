@@ -110,3 +110,22 @@ Outputs (in the working directory, written by rank 0):
     slow Manager.
   - The progress payload gains the stack length: `(items, bytes, queued, extra)`;
     `execute` carries a list of directories.
+  - A worker sends its counts at least every 10 s (`WORKER_UPDATE_SECONDS` in
+    `common/worker.py`), whatever `--progress` says. `--progress` is only how often the
+    Manager prints its progress line. Before, workers walking their own stacks sent counts
+    only every `--progress` seconds, so with the scans' 600 the progress line lagged.
+  - **Measured on derecho** ([docs/phase3.5-results.md](../../docs/phase3.5-results.md)), with
+    the CGD-ppc and CMIP6 filesets:
+    - **1 node × 96:** 13–19% faster than phase 3 and 13–24% faster than the deployed
+      scanner.
+    - **4 nodes × 384:** 25–43% faster than phase 3 and 30–50% faster than the deployed
+      scanner.
+    - **The Manager:** blocked in `recv` 98–100% of the time at every rank count, handling
+      5–21% of phase 3's messages.
+    - **The ceiling is the filesystem client on each node.** On one node, 32 ranks walk
+      faster than 96. On 4 nodes, 4 × 32 beats 4 × 96 by 21–44%.
+    - **The defaults (`--local-queue-max` 1000, `--dirs-per-dispatch` 8) measured best.**
+      Moving work between ranks sooner cuts the waiting, but costs more in lost locality
+      than it saves.
+- **Walks run as root keep uid 0's per-user directory lists.** A directory owned only by
+  uid 0 was skipped, because the single-owner test was a truth test on the uid.
