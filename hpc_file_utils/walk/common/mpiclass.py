@@ -9,9 +9,8 @@ import shutil
 import platform
 from collections import defaultdict
 from typing import NamedTuple
-from maxheap import MaxHeap
+from hpc_file_utils.walk.common.heaps import MaxHeap
 from datetime import datetime, timezone
-from parse_args import parse_options
 from pathlib import Path
 have_humanfriendly = False
 try:

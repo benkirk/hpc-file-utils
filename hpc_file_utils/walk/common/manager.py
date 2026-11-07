@@ -36,7 +36,7 @@ stream of dir_reply/progress messages cannot crowd out the others.
 """
 
 from mpi4py import MPI
-from mpiclass import MPIClass, format_size, format_number, format_timespan
+from hpc_file_utils.walk.common.mpiclass import MPIClass, format_size, format_number, format_timespan
 import sys
 import time
 from collections import deque

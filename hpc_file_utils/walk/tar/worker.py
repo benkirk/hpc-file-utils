@@ -4,7 +4,7 @@ import os, sys, stat
 import threading
 import queue
 import tarfile
-from base_worker import BaseWorker
+from hpc_file_utils.walk.common.worker import BaseWorker
 from typing import NamedTuple
 
 
@@ -131,4 +131,10 @@ class TarWorker(BaseWorker):
         # Done with MPI bits, tell our thread
         self.queue.put(None)
         self.t.join()
+
+        # finish the last tar file (its end-of-archive blocks); this was left to
+        # interpreter shutdown, which does not reliably flush it
+        if self.tar is not None:
+            self.tar.close()
+            self.tar = None
         return

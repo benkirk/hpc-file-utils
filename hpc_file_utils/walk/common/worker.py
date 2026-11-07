@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from mpi4py import MPI
-from mpiclass import MPIClass, DirEntry, FileEntry, format_number, UIDCounts, GIDCounts
+from hpc_file_utils.walk.common.mpiclass import MPIClass, DirEntry, FileEntry, format_number, UIDCounts, GIDCounts
 import os, sys, stat, time
 import shutil
 import queue

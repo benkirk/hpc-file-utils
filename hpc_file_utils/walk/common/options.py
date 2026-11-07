@@ -5,7 +5,7 @@ import os
 
 
 
-def parse_options(appname=None):
+def parse_options(appname=None, argv=None):
 
     parser = argparse.ArgumentParser(description='List Defaults CLI')
 
@@ -26,7 +26,7 @@ def parse_options(appname=None):
     if 'walktar' == appname:
         parser.add_argument('--tar-queue-depth', default=50000, help='Execution thread queue depth.', type=int, required=False)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # consistency checks
     if args.max_dirs_per_send < 1:
@@ -43,8 +43,7 @@ def parse_options(appname=None):
 
     for d in args.dirs:
         if not os.path.isdir(d):
-            print('ERROR: no such directory: {}'.format(d))
-            assert(False)
+            raise FileNotFoundError('no such directory: {}'.format(d))
 
     # report options
     if args.verbose:
