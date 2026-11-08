@@ -4,12 +4,13 @@
 #PBS -m n
 #PBS -r y
 #PBS -l walltime=12:00:00
-#PBS -l select=1:ncpus=128:mpiprocs=96:mem=235G
+#PBS -l select=1:ncpus=128:mpiprocs=32:mem=235G
 
 # the hpc-file-utils checkout is the parent of scans/ unless HFU_ROOT names another
 cd "${PBS_O_WORKDIR:-.}" || exit 1
 # shellcheck source=../etc/config_env.sh
 source "${HFU_ROOT:-..}/etc/config_env.sh" || exit 1
+# SCAN_SET (from submit_scan_array.sh's -v) picks the main or the large filesets
 . scan_dirs.cfg || exit 1
 
 #--------------------------------------------------------------

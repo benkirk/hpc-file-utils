@@ -240,6 +240,18 @@ estimates from the CGD-ppc and CMIP6 rates, not measurements:
 
 Across all four trees, 4 × 32 took 11–63% less time than 4 × 96 (HAO-radmhd 11%, CGD-ppc 21%, CMIP6 44%,
 CDG-cdg 63%).
+
+**The production configuration changes with this phase:**
+- `scans/scan_dir_job_array.sh` runs 32 ranks per node, not 96.
+- `scans/submit_scan_array.sh` submits two job arrays:
+  - `scan_dirs`: the main array, one node per fileset.
+  - `scan_dirs_large`: the six filesets above (CGD-cas, CGD-tss, MMM-parc,
+    NCAR-USGS_Water, RAL-hap, UWYO-wyom0169), 4 nodes each and at most 3 at once.
+- `scans/scan_dirs.cfg` names the large filesets, and `SCAN_SET=large` selects them.
+- `ppn`, `large_nodes` and `large_maxconcur` override the defaults.
+
+`all_cs.sh` and `test_scan_dir.sh` already ran 32 ranks per node. The deployed scanner was
+not measured at 32 ranks; these settings are for this code.
 16 per node was best for the large-directory tree.
 
 ## Changes in this close-out
