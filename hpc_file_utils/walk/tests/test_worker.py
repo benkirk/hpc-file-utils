@@ -26,7 +26,8 @@ class _Entry:
 
 def _worker():
     w = object.__new__(StatWorker)   # skip MPIClass.__init__: no MPI here
-    w.rank, w.queue, w.local_dirs = 1, None, []
+    w.rank, w.local_dirs, w.local_batches, w.batch, w.batch_bytes = 1, [], [], [], 0
+    w.max_local_dirs = 0
     w.options = types.SimpleNamespace(threshold_count=1, threshold_size=0, local_queue_max=1000)
     w.stats = WalkStats(heap_size=10)
     w.check_share = w.report_progress = lambda *a, **k: None
@@ -161,3 +162,99 @@ def test_excluded_entries_are_never_stated(tmp_path, monkeypatch):
     assert st.num_errors == 0
     assert (st.num_items, st.num_excluded, st.num_dirs) == (1, 1, 1)
     assert dict(st.st_modes) == {"dir": 1, "reg": 1}   # pruning alone keeps the root in 'dir'
+
+
+# ---------------------------------------------------------------------------
+# phase 5 batches
+# ---------------------------------------------------------------------------
+
+class _Batcher(StatWorker):
+    """walkstat's worker plus walktar's process_file: files go into batches."""
+
+    def process_file(self, filename, statinfo):
+        self.add_to_batch(filename, statinfo.st_size)
+
+
+def _batch_worker(batch_files, batch_size):
+    w = _worker()
+    w.__class__ = _Batcher
+    w.options.batch_files, w.options.batch_size = batch_files, batch_size
+    return w
+
+
+def test_batches_close_at_n_files_or_b_bytes():
+    w = _batch_worker(3, 100)
+    for i in range(7):
+        w.add_to_batch(f"f{i}", 1)
+    assert [p for p, _ in w.local_batches] == [["f0", "f1", "f2"], ["f3", "f4", "f5"]]
+    assert (w.batch, w.batch_bytes) == (["f6"], 1)
+    w.add_to_batch("big", 500)                 # over --batch-size: closes at once
+    assert w.local_batches[-1] == (["f6", "big"], 501)
+    w.add_to_batch("huge", 10**6)              # a file bigger than a batch is one alone
+    assert w.local_batches[-1] == (["huge"], 10**6) and w.batch == []
+    w.close_batch()                            # nothing open: no empty batch
+    assert len(w.local_batches) == 4
+
+
+def test_small_directories_combine_into_one_batch(tmp_path):
+    for d in ("a", "b", "c"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "x.dat").write_bytes(b"x" * 10)
+    w = _batch_worker(5000, 1 << 30)
+    _walk(w, tmp_path)
+    assert w.local_batches == []               # still open, across the three directories
+    assert sorted(os.path.basename(os.path.dirname(p)) for p in w.batch) == ["a", "b", "c"]
+    assert w.batch_bytes == 30
+
+
+def test_walkstat_collects_nothing(tmp_path):
+    for i in range(5):
+        (tmp_path / f"f{i}").write_bytes(b"x")
+    w = _worker()
+    _walk(w, tmp_path)
+    assert (w.local_batches, w.batch, w.batch_bytes) == ([], [], 0)
+    assert w.progress_payload()[2:] == (0, None)
+
+
+def _share_worker(dirs, batches):
+    w = _worker()
+    del w.check_share                          # the real method
+    sent = []
+    w.tags = {"share": 32, "share_reply": 33}
+    w.comm = types.SimpleNamespace(iprobe=lambda source, tag: True, recv=lambda source, tag: None,
+                                   send=lambda msg, dest, tag: sent.append((msg, tag)))
+    w.local_dirs, w.local_batches = list(dirs), list(batches)
+    w.progress_extra = lambda: None
+    return w, sent
+
+
+@pytest.mark.parametrize("ndirs, nbatches, gave_dirs, gave_batches", [
+    (0, 0, 0, 0), (1, 1, 0, 1), (4, 3, 2, 2), (5, 4, 2, 2), (0, 5, 0, 3)])
+def test_share_gives_oldest_half_of_dirs_and_batches_rounded_up(ndirs, nbatches, gave_dirs, gave_batches):
+    dirs = [f"d{i}" for i in range(ndirs)]
+    batches = [([f"b{i}"], 1) for i in range(nbatches)]
+    w, sent = _share_worker(dirs, batches)
+    w.check_share()
+    (gdirs, gbatches, payload), tag = sent[0]
+    assert tag == 33
+    assert gdirs == dirs[:gave_dirs] and gbatches == batches[:gave_batches]   # the oldest
+    assert w.local_dirs == dirs[gave_dirs:] and w.local_batches == batches[gave_batches:]
+    assert payload[2] == len(w.local_dirs) + len(w.local_batches)
+
+
+def test_drain_processes_batches_first_then_the_open_batch(tmp_path):
+    (tmp_path / "sub").mkdir()
+    for name in ("a", "b", "c", "sub/d"):
+        (tmp_path / name).write_bytes(b"x")
+    w = _batch_worker(2, 1 << 30)
+    order = []
+    w.process_batch = lambda batch: order.append(sorted(os.path.basename(p) for p in batch[0]))
+    real = w.process_directory
+    w.process_directory = lambda d: (order.append(os.path.basename(d)), real(d))
+    w.local_dirs.append(str(tmp_path))
+    w.drain_local_work()
+    # the root's first two files close a batch, done before the subdirectory; the
+    # rest (one root file, sub/d) combine in the open batch, closed and done last
+    assert order[0] == tmp_path.name and order[2] == "sub"
+    assert len(order[1]) == 2 and sorted(order[1] + order[3]) == ["a", "b", "c", "d"]
+    assert (w.local_dirs, w.local_batches, w.batch) == ([], [], [])

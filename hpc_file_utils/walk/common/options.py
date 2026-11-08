@@ -7,7 +7,7 @@ from hpc_file_utils.walk.common.filters import add_filter_options, compile_filte
 
 DESCRIPTIONS = {
     'walkstat': 'Walk directory trees in parallel (MPI) and summarize their usage.',
-    'walktar':  'Walk directory trees in parallel (MPI) and archive them into per-rank tar files.',
+    'walktar':  'Walk directory trees in parallel (MPI) and archive them: one tar file per batch of files, plus one per rank for the directories.',
 }
 
 
@@ -38,7 +38,8 @@ def parse_options(appname=None, argv=None):
 
     # tool-specific arguments follow
     if 'walktar' == appname:
-        parser.add_argument('--tar-queue-depth', default=50000, help='Execution thread queue depth.', type=int, required=False)
+        parser.add_argument('--batch-files', default=1000, type=int, required=False, help='Files per batch: a batch is one tar file, and the unit of work idle ranks can take (default: 1000)')
+        parser.add_argument('--batch-size', default='16GiB', type=str, required=False, help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own (default: 16GiB)')
 
     args = parser.parse_args(argv)
 
@@ -49,6 +50,17 @@ def parse_options(appname=None, argv=None):
         parser.error('--dirs-per-dispatch must be at least 1')
     if args.heap_size < 1:
         parser.error('--heap-size must be at least 1')
+
+    if 'walktar' == appname:
+        if args.batch_files < 1:
+            parser.error('--batch-files must be at least 1')
+        from humanfriendly import InvalidSize, parse_size
+        try:
+            args.batch_size = parse_size(args.batch_size, binary=True)
+        except InvalidSize as e:
+            parser.error('--batch-size: {}'.format(e))
+        if args.batch_size < 1:
+            parser.error('--batch-size must be at least 1 byte')
 
     if 0 >= args.progress:
         args.progress = float('inf')

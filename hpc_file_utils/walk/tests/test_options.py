@@ -29,9 +29,22 @@ def test_values(tmp_path):
 
 
 def test_walktar_extras(tmp_path):
-    assert parse_options("walktar", ["--dirs", str(tmp_path)]).tar_queue_depth == 50000
-    with pytest.raises(SystemExit):
-        parse_options("walkstat", ["--dirs", str(tmp_path), "--tar-queue-depth", "5"])
+    a = parse_options("walktar", ["--dirs", str(tmp_path)])
+    assert (a.batch_files, a.batch_size) == (1000, 16 * 1024 ** 3)
+    assert not hasattr(a, "tar_queue_depth")         # the tar thread is gone (phase 5)
+    a = parse_options("walktar", ["--dirs", str(tmp_path), "--batch-files", "7", "--batch-size", "2MB"])
+    assert (a.batch_files, a.batch_size) == (7, 2 * 1024 ** 2)
+    for opt in (["--batch-files", "5"], ["--batch-size", "1GB"], ["--tar-queue-depth", "5"]):
+        with pytest.raises(SystemExit):
+            parse_options("walkstat", ["--dirs", str(tmp_path), *opt])
+
+
+@pytest.mark.parametrize("args", [["--batch-files", "0"], ["--batch-size", "lots"], ["--batch-size", "0"],
+                                  ["--tar-queue-depth", "5"]])
+def test_walktar_usage_errors(tmp_path, args, capsys):
+    with pytest.raises(SystemExit) as e:
+        parse_options("walktar", ["--dirs", str(tmp_path)] + args)
+    assert e.value.code == 2
 
 
 @pytest.mark.parametrize("args", [["--local-queue-max", "1"], ["--dirs-per-dispatch", "0"], ["--heap-size", "0"],

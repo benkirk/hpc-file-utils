@@ -5,7 +5,6 @@ termination race could end a walk early under load and drop directories silently
 """
 
 import os
-import tarfile
 
 import pytest
 
@@ -123,20 +122,12 @@ def test_walkstat_option_exits_promptly(walk, golden_tree, tmp_path, args, statu
     assert walk.exit_status_matches(r.returncode, status), r.report()
 
 
-def test_walktar_archives_the_tree(walk, private_golden_tree, tmp_path):
-    r = walk.run("walktar", [private_golden_tree.root], cwd=tmp_path)
+@pytest.mark.parametrize("args", [[], ["--batch-files", "2"]])
+def test_walktar_archives_the_tree(walk, private_golden_tree, tmp_path, args):
+    r = walk.run("walktar", [private_golden_tree.root], cwd=tmp_path, args=args)
     assert r.ok, r.report()
     assert r.total_count() == private_golden_tree.nitems, r.report()
-    tars = sorted(tmp_path.glob("output-r*-f*.tar"))
-    assert tars, r.report()
-    names = []
-    for t in tars:
-        with tarfile.open(t) as tf:
-            names += tf.getnames()
-    rel = str(private_golden_tree.root).lstrip("/")
-    expected = {rel}
-    for dirpath, dirnames, filenames in os.walk(private_golden_tree.root):
-        for n in dirnames + filenames:
-            expected.add(os.path.join(dirpath, n).lstrip("/"))
+    names = walk.tar_names(tmp_path)
+    assert names, r.report()
     assert len(names) == len(set(names)), "an entry was archived twice"
-    assert set(names) == expected
+    assert set(names) == walk.tree_names(private_golden_tree.root)

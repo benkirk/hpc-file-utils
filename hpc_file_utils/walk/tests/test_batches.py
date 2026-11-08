@@ -1,0 +1,104 @@
+"""File batches as units of work (phase 5): one big directory of files, spread over all ranks.
+
+walktar's scanning rank closes a batch every --batch-files files and keeps it; the
+Manager's 'share' moves the batches to idle ranks. Each batch is one tar file named by
+the rank that archived it (output-r{rank}-b{n}.tar), so the tars show each rank's share.
+"""
+
+import collections
+import os
+import re
+import tarfile
+
+import pytest
+
+pytestmark = pytest.mark.mpi
+
+NFILES = 400
+FILE_BYTES = 64 * 1024
+BATCHES_RE = re.compile(r"--> Batches: ([\d,]+) received in share replies, ([\d,]+) handed out; "
+                        r"wrote ([\d,]+) files, .+ \(([\d,]+) bytes\) in ([\d,]+) archives")
+TAR_RE = re.compile(r"^output-r(\d+)-(b\d+|dirs)\.tar$")
+
+
+def _int(s):
+    return int(s.replace(",", ""))
+
+
+@pytest.fixture(scope="session")
+def big_dir_tree(tmp_path_factory):
+    """One directory of 400 x 64 KiB files, plus a few small directories beside it."""
+    root = tmp_path_factory.mktemp("bigdir") / "tree"
+    big = root / "big"
+    big.mkdir(parents=True)
+    data = os.urandom(FILE_BYTES)
+    for i in range(NFILES):
+        (big / f"file-{i:04d}.dat").write_bytes(data)
+    for d in ("a", "a/b", "c"):
+        (root / d).mkdir()
+        (root / d / "small.dat").write_bytes(b"x")
+    return root
+
+
+def per_rank(cwd):
+    """{rank: (files, bytes)} archived in batch tars; {rank: names} in -dirs tars."""
+    files, dirs = collections.defaultdict(lambda: [0, 0]), collections.defaultdict(list)
+    for t in sorted(os.listdir(cwd)):
+        m = TAR_RE.match(t)
+        if not m:
+            continue
+        with tarfile.open(os.path.join(cwd, t)) as tf:
+            members = tf.getmembers()
+        if m.group(2) == "dirs":
+            assert all(x.isdir() for x in members), t
+            dirs[int(m.group(1))] += [x.name for x in members]
+        else:
+            assert members and not any(x.isdir() for x in members), t
+            files[int(m.group(1))][0] += len(members)
+            files[int(m.group(1))][1] += sum(x.size for x in members)
+    return files, dirs
+
+
+def test_big_directory_is_spread_over_every_rank(walk, big_dir_tree, tmp_path):
+    r = walk.run("walktar", [big_dir_tree], cwd=tmp_path, nranks=4, args=["--batch-files", "10"])
+    assert r.ok, r.report()
+    names = walk.tar_names(tmp_path)
+    assert len(names) == len(set(names)), "an entry was archived twice"
+    assert set(names) == walk.tree_names(big_dir_tree)
+
+    files, dirs = per_rank(tmp_path)
+    nfiles = NFILES + 3
+    assert sum(n for n, _ in files.values()) == nfiles
+    assert sorted(files) == [1, 2, 3], f"a worker archived nothing: {dict(files)}\n{r.report()}"
+    # every worker took at least one batch, and the scanning rank did not keep most of
+    # them (how many each takes depends on timing: CI runners are slow)
+    assert min(n for n, _ in files.values()) >= 10, f"{dict(files)}\n{r.report()}"
+    assert max(n for n, _ in files.values()) <= 2 * nfiles // 3, f"{dict(files)}\n{r.report()}"
+    assert sum(len(v) for v in dirs.values()) == 5     # tree, big, a, a/b, c: one -dirs tar each walker
+
+    m = BATCHES_RE.search(r.stdout)
+    assert m, r.report()
+    shared, handed, written_files, written_bytes, archives = map(_int, m.groups())
+    assert shared > 0 and handed > 0, r.report()      # the work moved by sharing batches
+    assert written_files == nfiles
+    batch_tars = [t for t in tmp_path.glob("output-r*-b*.tar")]
+    assert archives == len(batch_tars)
+    assert written_bytes == sum(t.stat().st_size for t in batch_tars)
+    final = [line for line in r.stdout.splitlines() if " | wrote " in line]
+    assert final and "/s avg)" in final[-1], r.report()
+
+
+def test_one_batch_per_directory_tree_without_limits(walk, big_dir_tree, tmp_path):
+    """With limits above the tree, one worker's files make one batch: small and big
+    directories combine on the scanning rank instead of each becoming a tar."""
+    r = walk.run("walktar", [big_dir_tree], cwd=tmp_path, nranks=2, args=["--batch-files", "100000"])
+    assert r.ok, r.report()
+    assert sorted(t.name for t in tmp_path.glob("output-r*.tar")) == ["output-r001-b00000.tar",
+                                                                       "output-r001-dirs.tar"]
+    assert set(walk.tar_names(tmp_path)) == walk.tree_names(big_dir_tree)
+
+
+def test_walkstat_reports_no_batches(walk, big_dir_tree, tmp_path):
+    r = walk.run("walkstat", [big_dir_tree], cwd=tmp_path)
+    assert r.ok, r.report()
+    assert "Batches:" not in r.stdout and " | wrote " not in r.stdout

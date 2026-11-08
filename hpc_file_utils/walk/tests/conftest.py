@@ -239,9 +239,30 @@ def compare_golden(name, text, sort=True):
                     f"(HFU_UPDATE_GOLDEN=1 regenerates it):\n" + "\n".join(diff), pytrace=False)
 
 
+def tar_names(cwd):
+    """Every member name in walktar's outputs in cwd (batch tars and -dirs tars), duplicates kept."""
+    import tarfile
+    names = []
+    for t in sorted(Path(cwd).glob("output-r*.tar")):
+        with tarfile.open(t) as tf:
+            names += tf.getnames()
+    return names
+
+
+def tree_names(root):
+    """What an unfiltered walktar of root must archive: root and everything below, as tar names."""
+    expected = {str(root).lstrip("/")}
+    for dirpath, dirnames, filenames in os.walk(root):
+        for n in dirnames + filenames:
+            expected.add(os.path.join(dirpath, n).lstrip("/"))
+    return expected
+
+
 class Walk:
     """Helpers handed to tests through the ``walk`` fixture."""
     run = staticmethod(run_walk)
+    tar_names = staticmethod(tar_names)
+    tree_names = staticmethod(tree_names)
     exit_status_matches = staticmethod(exit_status_matches)
     normalize = staticmethod(normalize)
     compare_golden = staticmethod(compare_golden)

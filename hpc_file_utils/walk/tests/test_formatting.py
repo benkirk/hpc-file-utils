@@ -9,7 +9,7 @@ import pytest
 
 from hpc_file_utils.walk.common.formatting import (format_date, format_number, format_size,
                                                    printable)
-from hpc_file_utils.walk.common.progress import ProgressTally, progress_line
+from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
 
 
 def test_sizes_and_numbers():
@@ -61,3 +61,11 @@ def test_pure_modules_do_not_import_mpi4py():
             + "import hpc_file_utils.walk.cli\n"
             + "assert 'mpi4py' not in sys.modules, sorted(m for m in sys.modules if 'mpi' in m)\n")
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_written_status():
+    MiB = 1024 * 1024
+    assert written_status(100 * MiB, 10) == " | wrote 100 MiB (10 MiB/s avg)"   # the final line
+    assert written_status(100 * MiB, 10, 40 * MiB, 2, 3) == \
+        " | wrote 100 MiB (20 MiB/s now, 10 MiB/s avg), batches waiting 3"
+    assert written_status(0, 0, 0, 0, 0) == " | wrote 0 bytes (0 bytes/s now, 0 bytes/s avg), batches waiting 0"

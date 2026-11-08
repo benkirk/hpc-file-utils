@@ -31,8 +31,10 @@ class BaseWorker(MPIClass):
     def __init__(self):
         MPIClass.__init__(self)
 
-        self.queue = None             # derived tools' work queue (walktar's tar thread)
         self.local_dirs = []          # directories still to walk, a stack (phase 3.5)
+        self.local_batches = []       # closed batches still to process, (paths, nbytes) (phase 5)
+        self.batch = []               # the open batch: paths of selected files, across directories
+        self.batch_bytes = 0          # ... and their st_size total
         self.max_local_dirs = 0       # its high-water mark
         self.wait_time = 0.0          # waiting for the Manager to answer 'ready' with work
         self.last_progress_time = self.MPI.Wtime()
@@ -179,15 +181,6 @@ class BaseWorker(MPIClass):
             st.num_errors += 1
             print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
 
-        # if present, wait for our work queue to drain.
-        # note that since each rank is wholly responsible for a given directory,
-        # and our queue is populated by item count, we have not accounted yet for
-        # different item sizes and their impact on queue processing time.  By
-        # waiting here for our queue to drain we can more effectively load balance,
-        # rather than filling up the queue with items that may take a long time to
-        # process later.
-        if self.queue: self.queue.join()
-
         return
 
 
@@ -244,6 +237,40 @@ class BaseWorker(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def add_to_batch(self, path, size):
+        """Tools with a process_batch() (walktar): put a selected file in the open batch.
+
+        Past --batch-files files or --batch-size bytes the batch closes onto our list of
+        batches to process, which a 'share' can hand to idle ranks. The open batch carries
+        over between directories, so small directories combine. walkstat never calls
+        this, so it collects nothing.
+        """
+        self.batch.append(path)
+        self.batch_bytes += size
+        if len(self.batch) >= self.options.batch_files or self.batch_bytes >= self.options.batch_size:
+            self.close_batch()
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def close_batch(self):
+        """Move the open batch, if it holds anything, onto our list of batches."""
+        if self.batch:
+            self.local_batches.append((self.batch, self.batch_bytes))
+            self.batch, self.batch_bytes = [], 0
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def process_batch(self, batch):
+        """Tools that call add_to_batch(): process one (paths, nbytes) batch, ours or shared."""
+        raise NotImplementedError
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def progress_extra(self):
         """Derived tools' own progress info for the Manager (e.g. walksync: bytes copied)."""
         return None
@@ -253,7 +280,8 @@ class BaseWorker(MPIClass):
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def progress_payload(self):
         """(items, bytes, queued, extra), carried by every message to the Manager (protocol.py)."""
-        return (self.stats.num_items, self.stats.total_size, len(self.local_dirs), self.progress_extra())
+        return (self.stats.num_items, self.stats.total_size, len(self.local_dirs) + len(self.local_batches),
+                self.progress_extra())
 
 
 
@@ -271,6 +299,16 @@ class BaseWorker(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def oldest_batches(self):
+        """Remove and return the oldest half of our closed batches, rounded up: a rank
+        busy with one batch gives away the only other it holds."""
+        n = len(self.local_batches) - len(self.local_batches) // 2
+        give, self.local_batches = self.local_batches[:n], self.local_batches[n:]
+        return give
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def ship_overflow(self):
         """The local stack is full: send its oldest half to the Manager."""
         self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
@@ -283,11 +321,13 @@ class BaseWorker(MPIClass):
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def check_share(self):
         """Answer a 'share' from the Manager, if one is waiting, with the oldest half of
-        the local stack (which may be nothing)."""
+        the local stack and of our closed batches (either may be nothing). Never the open
+        batch: it is still filling."""
         if self.comm.iprobe(source=0, tag=self.tags['share']):
             self.comm.recv(source=0, tag=self.tags['share'])
-            give = self.oldest_half()
-            self.comm.send((give, self.progress_payload()), dest=0, tag=self.tags['share_reply'])
+            dirs = self.oldest_half()
+            batches = self.oldest_batches()
+            self.comm.send((dirs, batches, self.progress_payload()), dest=0, tag=self.tags['share_reply'])
         return
 
 
@@ -309,14 +349,26 @@ class BaseWorker(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def drain_local_dirs(self):
-        """Walk the local stack, newest directory first, until it is empty."""
-        while self.local_dirs:
+    def drain_local_work(self):
+        """Process our batches and walk our stack, batches first, until both are empty;
+        then close the open batch (the last, partial one) and process it too.
+
+        The 'share' check comes before each pick, since it may give away what we would
+        have picked. On return we hold nothing: no directory, no batch, open or closed.
+        """
+        while True:
             self.check_share()
-            self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
-            self.process_directory(self.local_dirs.pop())
+            if self.local_batches:
+                self.process_batch(self.local_batches.pop())
+            elif self.local_dirs:
+                self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
+                self.process_directory(self.local_dirs.pop())
+            else:
+                self.close_batch()
+                if not self.local_batches:
+                    return
+                continue
             self.report_progress(only_if_due=True)
-        return
 
 
 
@@ -326,9 +378,9 @@ class BaseWorker(MPIClass):
         self.comm.Barrier()
         status = MPI.Status()
         while True:
-            assert not self.local_dirs
+            assert not self.local_dirs and not self.local_batches and not self.batch
 
-            # our stack is empty: ask the Manager for work, and wait for its answer.
+            # we hold nothing (manager.py, point 1): ask the Manager for work, and wait for its answer.
             # A 'share' that arrives meanwhile is ignored: we have nothing to give, and
             # the Manager forgets the request when it receives our 'ready'.
             t0 = MPI.Wtime()
@@ -344,7 +396,9 @@ class BaseWorker(MPIClass):
 
             assert status.Get_tag() == self.tags['execute']
             self.wait_time += MPI.Wtime() - t0   # only waits that got work: dispatch latency
-            self.local_dirs.extend(msg)
-            self.drain_local_dirs()
+            dirs, batches = msg
+            self.local_dirs.extend(dirs)
+            self.local_batches.extend(batches)
+            self.drain_local_work()
 
         return

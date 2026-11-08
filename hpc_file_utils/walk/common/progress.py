@@ -39,3 +39,17 @@ def progress_line(items, nbytes, elapsed, now=None):
                                                                   format_size(nbytes),
                                                                   format_timespan(elapsed),
                                                                   format_number(rate))
+
+
+def written_status(nbytes, elapsed, delta=None, interval=None, waiting=None):
+    """' | wrote S (R/s now, A/s avg), batches waiting B', appended to the progress line by
+    tools that write (walktar). 'now' is 'delta' bytes over 'interval' seconds, the time
+    since the last line; without them (the final line) only the average."""
+    avg = nbytes / elapsed if elapsed > 0 else 0
+    if delta is None or interval is None:
+        return ' | wrote {} ({}/s avg)'.format(format_size(nbytes), format_size(avg))
+    now = delta / interval if interval > 0 else 0
+    status = ' | wrote {} ({}/s now, {}/s avg)'.format(format_size(nbytes), format_size(now), format_size(avg))
+    if waiting is not None:
+        status += ', batches waiting {}'.format(format_number(waiting))
+    return status
