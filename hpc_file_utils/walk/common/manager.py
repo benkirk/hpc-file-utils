@@ -60,7 +60,9 @@ How the Manager decides the walk is done:
      directory or batch is queued, in flight, being scanned or being processed
      anywhere. The Manager answers each held 'ready' with 'terminate'.
 
-Processing a batch creates no work: no directories, no batches. A 'share' never
+Processing a batch creates no directories. It may create batches (walksync's compare
+batches close copy batches), but only on the worker processing it, which keeps them on
+its own list and processes them (point 1) before its next 'ready'. A 'share' never
 carries work, so it cannot upset this either. A worker that receives one while
 it waits for the answer to its 'ready' ignores it (its wait is a receive from rank 0
 with ANY_TAG, so it also gets the share before any execute or terminate sent after
@@ -164,9 +166,10 @@ class Manager(MPIClass):
         if written is None:
             return ''
         nbytes = written[0]
+        verb = getattr(self.options, 'written_verb', 'wrote')
         if interval is None:
-            return written_status(nbytes, elapsed)
-        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches))
+            return written_status(nbytes, elapsed, verb=verb)
+        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches), verb)
         self.last_written = nbytes
         return status
 
@@ -327,9 +330,10 @@ class Manager(MPIClass):
             line = '  --> Batches: {} received in share replies, {} handed out'.format(
                 format_number(self.nbatches_shared), format_number(self.nbatch_dispatches))
             if written is not None:
-                line += '; wrote {} files, {} ({} bytes) in {} archives'.format(
+                line += '; {} {} files, {} ({} bytes) in {} {}'.format(
+                    getattr(self.options, 'written_verb', 'wrote'),
                     format_number(written[1]), format_size(written[0]), format_number(written[0]),
-                    format_number(written[2]))
+                    format_number(written[2]), getattr(self.options, 'written_units', 'archives'))
             print(line)
         if self.options.verbose:
             self.print_counters()
