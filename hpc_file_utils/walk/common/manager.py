@@ -6,11 +6,12 @@ Workers walk their own local stack of directories, depth-first, and talk to the 
 only when it overflows, when it runs dry, or when the Manager asks them to share
 (phase 3.5; docs/walk-load-balancing.md, section 5).
 
-Phase 5: tools with a process_batch() (walktar) also turn the files they select into
-batches, (paths, nbytes) closed past --batch-files files or --batch-size bytes, kept on
-the scanning worker's own list and processed there, batches before directories. A batch
-leaves its worker only in a share_reply, and the Manager hands batches out before
-directories. walkstat makes no batches, so for it every batch list below is empty.
+Phase 5: the workers also turn a directory's files into batches, kept on the scanning
+worker's own list and processed there, batches before directories: walktar's are
+(paths, nbytes), archived into one tar each; walkstat's are (dirname, names, tail), the
+names still to stat (stat/worker.py). A batch leaves its worker only in a share_reply,
+and the Manager hands batches out before directories. To the Manager and to this
+argument, a batch is opaque: one unit of work.
 
 Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tuple):
 

@@ -1,4 +1,5 @@
-"""File batches as units of work (phase 5): one big directory of files, spread over all ranks.
+"""File batches as units of work (phase 5): one big directory of files, spread over all ranks
+(walktar's tars, and walkstat's stats).
 
 walktar's scanning rank closes a batch every --batch-files files and keeps it; the
 Manager's 'share' moves the batches to idle ranks. Each batch is one tar file named by
@@ -98,7 +99,20 @@ def test_one_batch_per_directory_tree_without_limits(walk, big_dir_tree, tmp_pat
     assert set(walk.tar_names(tmp_path)) == walk.tree_names(big_dir_tree)
 
 
-def test_walkstat_reports_no_batches(walk, big_dir_tree, tmp_path):
-    r = walk.run("walkstat", [big_dir_tree], cwd=tmp_path)
+RANK_ROW_RE = re.compile(r"^\s+(\d+)\s+\S+\s+[\d,]+\s+([\d,]+)\s", re.M)
+
+
+def test_walkstat_stats_a_big_directory_on_every_rank(walk, big_dir_tree, tmp_path):
+    """walkstat's stat batches: the big directory's stats are spread over the ranks too,
+    and nothing is written."""
+    r = walk.run("walkstat", [big_dir_tree], cwd=tmp_path, nranks=4, args=["--batch-files", "10", "--verbose"])
     assert r.ok, r.report()
-    assert "Batches:" not in r.stdout and " | wrote " not in r.stdout
+    assert r.total_count() == NFILES + 3 + 4, r.report()       # files, and big, a, a/b, c
+    # local stats take microseconds, so how many ranks take part depends on timing: at
+    # least the scanning rank and one that took a shared batch
+    files = {int(rank): _int(n) for rank, n in RANK_ROW_RE.findall(r.stdout)}
+    assert sorted(files) == [1, 2, 3], f"{files}\n{r.report()}"
+    assert sum(1 for n in files.values() if n) >= 2, f"{files}\n{r.report()}"
+    m = re.search(r"--> Batches: ([\d,]+) received in share replies", r.stdout)
+    assert m and _int(m.group(1)) > 0, r.report()
+    assert " | wrote " not in r.stdout

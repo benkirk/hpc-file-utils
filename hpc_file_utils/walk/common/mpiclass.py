@@ -45,4 +45,7 @@ class MPIClass:
         result = self.comm.reduce(self.stats, op=WalkStats.merged, root=0)
         if result is not None:
             result.ranks.sort()
+            # walkstat's directories split over stat batches: their parts are all here now
+            result.finish_directories(self.options.threshold_count, self.options.threshold_size,
+                                      getattr(self.options, 'filters', None) is not None)
         return result

@@ -20,7 +20,7 @@ Outputs (in the working directory, written by rank 0):
 - `--spreadsheet FILE.xlsx`: three sheets per prefix (four when filtered), added to (or
   replaced in) FILE.
 - walktar: `output-r{rank}-b{n}.tar` (one per batch) and `output-r{rank}-dirs.tar`, written
-  by the workers (see [walktar: file batches](#walktar-file-batches-phase-5)).
+  by the workers (see [File batches](#file-batches-phase-5)).
 
 ## Filtering (phase 4)
 
@@ -65,7 +65,9 @@ What a filter changes:
   reports add up `min(st_size, st_blocks × 512)`, which is smaller for sparse or HSM-migrated
   files.
 
-## walktar: file batches (phase 5)
+## File batches (phase 5)
+
+### walktar
 
 The scanning rank turns the files it selects into **batches**: a batch closes after
 `--batch-files` files [1000] or `--batch-size` bytes of `st_size` [16GiB], whichever comes
@@ -79,7 +81,7 @@ just as directories are, so one huge directory no longer ties up one rank for ho
     the rank's closed batches, rounded up, plus the oldest half of its stack.
   - The Manager hands out one batch per `execute`, and hands batches out before directories.
   - The termination argument covers batches (see `manager.py`).
-- **walkstat makes no batches.** Its walk is unchanged.
+- **walkstat batches too**, but its batches are names still to stat (below).
 - **Outputs**, in the working directory:
   - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
     selected files.
@@ -102,6 +104,30 @@ just as directories are, so one huge directory no longer ties up one rank for ho
   `share` and sends its counts when they are due. The tar thread and `--tar-queue-depth` are
   gone. The thread overlapped scanning a directory with archiving it, but only within that
   directory: the worker waited for its queue to drain after every directory.
+
+### walkstat: stat batches
+
+A stat costs about 6 ms per rank on campaign GPFS, so one rank used to take an hour over a
+1M-entry directory while the others waited. Now the scanning rank reads a directory's names
+and types from `scandir` (`d_type`, no stat). It stats only the subdirectories, which it must
+count and walk. The other names go into batches of `--batch-files` [1000] per directory,
+`(dirname, names, tail)`, and the stats happen wherever the batch is processed: on this rank,
+or on an idle one the Manager's `share` hands it to. Batches move exactly as walktar's do.
+- **The directory lists don't change.**
+  - A directory that fits in one batch is listed, whole, by the rank that stats it. Its last
+    batch carries the subdirectories' totals (`tail`).
+  - A directory split over several batches adds each part to a table keyed by path
+    (`WalkStats.partial_dirs`). The table merges in the reduction, and rank 0 lists those
+    directories after it. Only big directories go there.
+  - Tested by the golden summary and userlists, and by the find-oracle filter tests, with
+    `--batch-files 1`, which splits every directory.
+- **Filters:** `--exclude` still prunes by name in the scan. The selecting filters are
+  applied after the stat, wherever that happens.
+- **Errors:** a file that fails its stat (it vanished, or its directory can be listed but not
+  entered) counts one error, and the walk goes on. Before, the first failure abandoned the
+  rest of its directory.
+- **Messages:** a batch of 1,000 names is about 20 KB. Pickling it costs about 30 µs, against
+  ~6 s of stats.
 
 ## Behaviour changes since the csg-utils import
 
@@ -238,7 +264,7 @@ just as directories are, so one huge directory no longer ties up one rank for ho
 
 ### Phase 5
 
-- **walktar archives file batches** (see [walktar: file batches](#walktar-file-batches-phase-5)
+- **walktar archives file batches** (see [File batches](#file-batches-phase-5)
   above): `--batch-files` and `--batch-size` replace `--tar-queue-depth`. There is one tar per
   batch, plus one `-dirs` tar per rank.
 - **Protocol:**

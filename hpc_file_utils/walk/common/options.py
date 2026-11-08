@@ -32,13 +32,13 @@ def parse_options(appname=None, argv=None):
     parser.add_argument('--threshold-count', default=10000, type=int, required=False, help='Only consider directories larger than this threshold when tracking mtimes/atimes (count)')
     parser.add_argument('--local-queue-max', default=1000, type=int, required=False, help='Subdirectories a worker keeps for itself; past this it sends the oldest half to the manager (default: 1000)')
     parser.add_argument('--dirs-per-dispatch', default=8, type=int, required=False, help='Directories the manager hands an idle worker at once (default: 8)')
+    parser.add_argument('--batch-files', default=1000, type=int, required=False, help='Files per batch, the unit of work idle ranks can take: walkstat stats a batch, walktar writes it as one tar (default: 1000)')
     parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be scanned (default: exit 0, errors are only counted)')
 
     add_filter_options(parser)
 
     # tool-specific arguments follow
     if 'walktar' == appname:
-        parser.add_argument('--batch-files', default=1000, type=int, required=False, help='Files per batch: a batch is one tar file, and the unit of work idle ranks can take (default: 1000)')
         parser.add_argument('--batch-size', default='16GiB', type=str, required=False, help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own (default: 16GiB)')
 
     args = parser.parse_args(argv)
@@ -51,9 +51,9 @@ def parse_options(appname=None, argv=None):
     if args.heap_size < 1:
         parser.error('--heap-size must be at least 1')
 
+    if args.batch_files < 1:
+        parser.error('--batch-files must be at least 1')
     if 'walktar' == appname:
-        if args.batch_files < 1:
-            parser.error('--batch-files must be at least 1')
         from humanfriendly import InvalidSize, parse_size
         try:
             args.batch_size = parse_size(args.batch_size, binary=True)

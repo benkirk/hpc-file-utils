@@ -3,21 +3,14 @@
 """BaseWorker: scans the directories the Manager hands it (see manager.py for the protocol)."""
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
-from hpc_file_utils.walk.common.stats import DirEntry, FileEntry
-import os, sys, stat, time
+from hpc_file_utils.walk.common.stats import DirTotals, FileEntry
+import os, sys, stat
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
 SHARE_CHECK_INCREMENT = 1000 # entries of one directory between looks for a 'share'
 WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages, whatever --progress
                              # (that is the screen's interval): the Manager's progress line and its
                              # choice of whom to ask for a 'share' use the stack lengths they carry
-
-SECONDS_IN_YEAR = 60*60*24*365
-THREE_YEARS = 3*SECONDS_IN_YEAR
-FIVE_YEARS  = 5*SECONDS_IN_YEAR
-SEVEN_YEARS = 7*SECONDS_IN_YEAR
-
-NOW_TIMESTAMP = time.time()
 
 
 
@@ -189,49 +182,11 @@ class BaseWorker(MPIClass):
     def record_directory(self, dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
                          thisdir_max_ctime, thisdir_max_atime, thisdir_uids):
         """A walked directory's own (non-recursive) totals, into the directory lists."""
-        heaps = self.stats.heaps
-        user_heaps = self.stats.user_heaps
-
-        # track the size & count of this directory in our top heaps
-        de = DirEntry(dirname, thisdir_nbytes, thisdir_nitems, thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime)
-
-        heaps['nitems_dirs'].add((thisdir_nitems, de))
-        heaps['nbytes_dirs'].add((thisdir_nbytes, de))
-
-        # are the contents owned by a single user id?  If so, track per-user info as well
-        # (None if not: uid 0 is a valid owner, and root runs the scans)
-        single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else None
-
-        # granular directory tracking by timestamp thresholds.
-        # check against thresholds to avoid tracking users that only have
-        # tiny residual data
-        if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
-
-            if single_owner is not None:
-                user_heaps['nitems_dirs'][single_owner].add((thisdir_nitems, de))
-                user_heaps['nbytes_dirs'][single_owner].add((thisdir_nbytes, de))
-
-            # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
-            if 10 < thisdir_max_atime:
-                if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
-                    heaps['nbytes_dirs_7yrs'].add((thisdir_nbytes, de))
-                    if single_owner is not None: user_heaps['nbytes_dirs_7yrs'][single_owner].add((thisdir_nbytes, de))
-
-                elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime):
-                    heaps['nbytes_dirs_5yrs'].add((thisdir_nbytes, de))
-                    if single_owner is not None: user_heaps['nbytes_dirs_5yrs'][single_owner].add((thisdir_nbytes, de))
-
-                elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
-                    heaps['nbytes_dirs_3yrs'].add((thisdir_nbytes, de))
-                    if single_owner is not None: user_heaps['nbytes_dirs_3yrs'][single_owner].add((thisdir_nbytes, de))
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_file(self, filename, statinfo):
-        print('Not implemented!')
-        raise NotImplementedError
+        totals = DirTotals()
+        totals.nitems, totals.nbytes = thisdir_nitems, thisdir_nbytes
+        totals.max_mtime, totals.max_ctime, totals.max_atime = thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime
+        totals.uids = thisdir_uids
+        self.stats.record_directory(dirname, totals, self.options.threshold_count, self.options.threshold_size)
         return
 
 
@@ -242,8 +197,8 @@ class BaseWorker(MPIClass):
 
         Past --batch-files files or --batch-size bytes the batch closes onto our list of
         batches to process, which a 'share' can hand to idle ranks. The open batch carries
-        over between directories, so small directories combine. walkstat never calls
-        this, so it collects nothing.
+        over between directories, so small directories combine. (walkstat makes its
+        own batches, of names still to stat: see stat/worker.py.)
         """
         self.batch.append(path)
         self.batch_bytes += size

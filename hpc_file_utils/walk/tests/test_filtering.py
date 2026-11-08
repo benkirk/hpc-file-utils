@@ -120,10 +120,14 @@ def check_against_find(walk, tree, tmp_path, excludes, args, preds):
     return r
 
 
+@pytest.mark.parametrize("batches", [[], ["--batch-files", "1"]], ids=["default", "split"])
 @pytest.mark.parametrize("case", CASES)
-def test_selecting_matches_find(walk, golden_tree, tmp_path, case):
+def test_selecting_matches_find(walk, golden_tree, tmp_path, case, batches):
+    """Also with every directory split over stat batches (phase 5): the selecting
+    filters are applied after the stat, wherever the batch is processed."""
     args, preds = CASES[case]
-    check_against_find(walk, golden_tree, tmp_path, [], _fill(args, golden_tree), _fill(preds, golden_tree))
+    check_against_find(walk, golden_tree, tmp_path, [], _fill(args, golden_tree) + batches,
+                       _fill(preds, golden_tree))
 
 
 @pytest.mark.parametrize("case", EXCLUDE_CASES)

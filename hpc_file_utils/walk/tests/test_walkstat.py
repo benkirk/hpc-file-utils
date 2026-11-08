@@ -13,8 +13,14 @@ pytestmark = pytest.mark.mpi
 GOLDEN_ARGS = ["--summary-prefix", "golden", "--threshold-size", "1MB"]
 
 
-def test_walkstat_golden_summary(walk, golden_tree, tmp_path):
-    r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=GOLDEN_ARGS)
+# --batch-files 1 splits every directory over stat batches (phase 5): the directory lists
+# must still come out the same, from the parts added up after the reduction
+BATCHES = pytest.mark.parametrize("batches", [[], ["--batch-files", "1"]], ids=["default", "split"])
+
+
+@BATCHES
+def test_walkstat_golden_summary(walk, golden_tree, tmp_path, batches):
+    r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=GOLDEN_ARGS + batches)
     assert r.ok, r.report()
     assert r.total_count() == golden_tree.nitems, r.report()
     summary = walk.normalize(r.summary("golden"), golden_tree.root, golden_tree.dates)
@@ -23,8 +29,9 @@ def test_walkstat_golden_summary(walk, golden_tree, tmp_path):
     assert r.summary("golden") in r.stdout
 
 
-def test_walkstat_golden_userlist(walk, golden_tree, tmp_path):
-    r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=GOLDEN_ARGS)
+@BATCHES
+def test_walkstat_golden_userlist(walk, golden_tree, tmp_path, batches):
+    r = walk.run("walkstat", [golden_tree.root], cwd=tmp_path, args=GOLDEN_ARGS + batches)
     assert r.ok, r.report()
     assert r.total_count() == golden_tree.nitems, r.report()
     lists = r.userlists("golden")
