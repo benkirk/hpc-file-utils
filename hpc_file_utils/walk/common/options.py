@@ -3,6 +3,8 @@
 import argparse
 import os
 
+from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters
+
 DESCRIPTIONS = {
     'walkstat': 'Walk directory trees in parallel (MPI) and summarize their usage.',
     'walktar':  'Walk directory trees in parallel (MPI) and archive them into per-rank tar files.',
@@ -32,6 +34,8 @@ def parse_options(appname=None, argv=None):
     parser.add_argument('--dirs-per-dispatch', default=8, type=int, required=False, help='Directories the manager hands an idle worker at once (default: 8)')
     parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be scanned (default: exit 0, errors are only counted)')
 
+    add_filter_options(parser)
+
     # tool-specific arguments follow
     if 'walktar' == appname:
         parser.add_argument('--tar-queue-depth', default=50000, help='Execution thread queue depth.', type=int, required=False)
@@ -57,6 +61,11 @@ def parse_options(appname=None, argv=None):
             args.threshold_size = parse_size(args.threshold_size, binary=True)
         except InvalidSize as e:
             parser.error('--threshold-size: {}'.format(e))
+
+    try:
+        args.filters = compile_filters(args)   # None without a filter
+    except ValueError as e:
+        parser.error(str(e))
 
     for d in args.dirs:
         if not os.path.isdir(d):

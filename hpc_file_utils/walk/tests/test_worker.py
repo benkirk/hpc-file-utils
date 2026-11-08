@@ -71,3 +71,93 @@ def test_worker_updates_have_their_own_timer(progress, interval):
         clock[0] = float(t)
         w.report_progress(only_if_due=True)
     assert sent == [float(t) for t in range(interval, 31, interval)]
+
+
+# ---------------------------------------------------------------------------
+# phase 4 filters
+# ---------------------------------------------------------------------------
+
+def _filtered_worker(tmp_path, *args):
+    from hpc_file_utils.walk.common.options import parse_options
+    f = parse_options("walkstat", ["--dirs", str(tmp_path), *args]).filters
+    w = _worker()
+    w.exclude, w.select = f.exclude_matcher(), f.predicate()
+    return w
+
+
+def _walk(w, root):
+    w.local_dirs.append(str(root))
+    while w.local_dirs:
+        w.process_directory(w.local_dirs.pop())
+
+
+def test_failing_directories_are_still_walked(tmp_path):
+    """--type f: no directory is counted, but every one is walked, and only the
+    directories that hold a matching entry go on the lists."""
+    (tmp_path / "only-dirs/sub").mkdir(parents=True)
+    (tmp_path / "only-dirs/sub/a.dat").write_bytes(b"x" * 4096)
+    (tmp_path / "top.dat").write_bytes(b"x" * 4096)
+    w = _filtered_worker(tmp_path, "--type", "f")
+    _walk(w, tmp_path)
+    st = w.stats
+    assert st.num_errors == 0
+    assert st.num_dirs == 3                          # walked: the root, only-dirs, sub
+    assert (st.num_items, dict(st.st_modes)) == (2, {"reg": 2})
+    assert st.num_unmatched == 2                     # only-dirs, sub
+    listed = {e.path for _, e in st.heaps["nitems_dirs"].top()}
+    assert listed == {str(tmp_path), str(tmp_path / "only-dirs/sub")}
+
+
+def test_unfiltered_lists_every_directory(tmp_path):
+    (tmp_path / "empty").mkdir()
+    w = _worker()
+    _walk(w, tmp_path)
+    assert {e.path for _, e in w.stats.heaps["nitems_dirs"].top()} == {str(tmp_path), str(tmp_path / "empty")}
+    assert dict(w.stats.st_modes) == {"dir": 2}      # the root too, as before phase 4
+
+
+def test_matching_directories_count_as_dirs(tmp_path):
+    (tmp_path / "d1").mkdir()
+    (tmp_path / "f1").touch()
+    w = _filtered_worker(tmp_path, "--type", "d,f")
+    _walk(w, tmp_path)
+    assert dict(w.stats.st_modes) == {"dir": 1, "reg": 1}   # not the root: find's -mindepth 1
+    assert w.stats.num_items == 2
+
+
+def test_share_checks_count_entries_scanned(tmp_path, monkeypatch):
+    """A huge directory with few matches must still answer the Manager's 'share'."""
+    for i in range(7):
+        (tmp_path / f"f{i}").touch()
+    monkeypatch.setattr(worker_mod, "SHARE_CHECK_INCREMENT", 3)
+    monkeypatch.setattr(worker_mod, "PROGRESS_INCREMENT", 2)
+    w = _filtered_worker(tmp_path, "--type", "d", "--exclude", "f0")
+    shares, updates = [], []
+    w.check_share = lambda: shares.append(1)
+    w.report_progress = lambda *a, **k: updates.append(1)
+    w.process_directory(str(tmp_path))
+    assert w.stats.num_items == 0 and w.stats.num_excluded == 1 and w.stats.num_unmatched == 6
+    assert (len(shares), len(updates)) == (2, 3)
+
+
+class _Unstattable:
+    def __init__(self, entry):
+        self.path, self.name = entry.path, entry.name
+
+    def stat(self, follow_symlinks=True):
+        raise AssertionError(f"stat() of excluded {self.name}")
+
+
+def test_excluded_entries_are_never_stated(tmp_path, monkeypatch):
+    (tmp_path / "COLD_STORAGE").mkdir()
+    (tmp_path / "COLD_STORAGE/x.dat").touch()
+    (tmp_path / "keep.dat").touch()
+    real_scandir = os.scandir
+    monkeypatch.setattr(worker_mod.os, "scandir",
+                        lambda d: (_Unstattable(e) if e.name.startswith("COLD") else e for e in real_scandir(d)))
+    w = _filtered_worker(tmp_path, "--exclude", "COLD*")
+    _walk(w, tmp_path)
+    st = w.stats
+    assert st.num_errors == 0
+    assert (st.num_items, st.num_excluded, st.num_dirs) == (1, 1, 1)
+    assert dict(st.st_modes) == {"dir": 1, "reg": 1}   # pruning alone keeps the root in 'dir'

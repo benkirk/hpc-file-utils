@@ -1,13 +1,15 @@
 """walkstat --spreadsheet: the summary's lists as an .xlsx workbook (pandas + openpyxl, no MPI).
 
-Three sheets, '<prefix> - Directories', '<prefix> - Files' and '<prefix> - Users & Groups',
-added to (or replaced in) an existing workbook, so several scans can share one file.
+Three sheets, '<prefix> - Directories', '<prefix> - Files' and '<prefix> - Users & Groups'
+(and '<prefix> - Filters' for a filtered walk), added to (or replaced in) an existing
+workbook, so several scans can share one file.
 """
 
 import os
 
 from hpc_file_utils.walk.common.formatting import format_size, printable
 from hpc_file_utils.walk.common.stats import sorted_ids
+from hpc_file_utils.walk.stat.report import filter_items
 
 
 def write_spreadsheet(stats, options):
@@ -50,15 +52,25 @@ def write_spreadsheet(stats, options):
         df = pd.DataFrame(rows, columns=['username', 'groupname', 'size', 'nbytes', 'nitems'])
         df.to_excel(writer, sheet_name=sheet_prefix + 'Users & Groups', index=False)
 
-    _format_workbook(path)
+        # a filtered walk names its filters (phase 4)
+        items = filter_items(stats, options)
+        if items:
+            df = pd.DataFrame(items, columns=['filter', 'value'])
+            df.to_excel(writer, sheet_name=sheet_prefix + 'Filters', index=False)
+
+    # an unfiltered walk drops the Filters sheet an earlier, filtered one left for this prefix
+    _format_workbook(path, drop=None if items else sheet_prefix + 'Filters')
 
 
-def _format_workbook(path):
-    """Fixed-width font, column widths and number formats; hide the raw byte counts."""
+def _format_workbook(path, drop=None):
+    """Fixed-width font, column widths and number formats; hide the raw byte counts.
+    drop: a sheet to remove, if present."""
     from openpyxl import load_workbook
     from openpyxl.styles import Alignment, Font
 
     wb = load_workbook(path)
+    if drop in wb.sheetnames:
+        del wb[drop]
     for ws in wb.worksheets:
         ws.freeze_panes = 'A2'
         for column in ws.columns:

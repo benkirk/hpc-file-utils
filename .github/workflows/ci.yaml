@@ -17,6 +17,12 @@ jobs:
         shell: bash -el {0}
     name: Run Test Suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      # ubuntu runners now carry a verbs NIC (mana_0) that Open MPI's UCX picks and then fails
+      # to open ("Failed to create UCP worker"), killing every rank at its first collective.
+      # The tests run on one host, so shared memory (ob1) is all they need.
+      OMPI_MCA_pml: ob1
+      OMPI_MCA_osc: ^ucx
     strategy:
       fail-fast: false
       matrix:
