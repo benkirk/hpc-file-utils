@@ -70,7 +70,10 @@ def test_big_directory_is_spread_over_every_rank(walk, big_dir_tree, tmp_path):
     nfiles = NFILES + 3
     assert sum(n for n, _ in files.values()) == nfiles
     assert sorted(files) == [1, 2, 3], f"a worker archived nothing: {dict(files)}\n{r.report()}"
-    assert min(n for n, _ in files.values()) >= nfiles // 10, f"{dict(files)}\n{r.report()}"
+    # every worker took at least one batch, and the scanning rank did not keep most of
+    # them (how many each takes depends on timing: CI runners are slow)
+    assert min(n for n, _ in files.values()) >= 10, f"{dict(files)}\n{r.report()}"
+    assert max(n for n, _ in files.values()) <= 2 * nfiles // 3, f"{dict(files)}\n{r.report()}"
     assert sum(len(v) for v in dirs.values()) == 5     # tree, big, a, a/b, c: one -dirs tar each walker
 
     m = BATCHES_RE.search(r.stdout)
