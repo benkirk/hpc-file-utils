@@ -179,7 +179,17 @@ counting each rank's share), and the union of the tars equals the tree.
 ---
 
 ## Phase 6: adding sync
-walksync on top of phases 3 and 4. Start from the prototype (`walksync_dev/walkstat/sync_worker.py`)
+**Status (2026-11-08): implemented, gate passing on laptop/CI-style runs; derecho smoke run and
+benchmarks to do.** See [walk/README.md, walksync](../hpc_file_utils/walk/README.md#walksync-phase-6).
+Rebuilt on the phase 3–5 walk rather than ported (the prototype's copy thread and back-pressure
+are replaced by batches + `share`). Decisions taken along the way:
+- the src/dest compare happens in **compare batches** (like walkstat's stat batches), so a huge
+  directory's lstats spread over ranks; changed files go into cross-directory **copy batches**;
+- `--dry-run` lists to per-rank `walksync-dryrun-r*.txt` (ranks' stdout lines got spliced);
+- time/user/group/type filters select which files are copied; size filters are refused;
+- rsync's exit 24 (vanished source files) is a warning; any other failure exits 1.
+
+Original plan: walksync on top of phases 3 and 4. Start from the prototype (`walksync_dev/walkstat/sync_worker.py`)
 and [walksync.md](walksync.md):
 - **`walk/sync/compare.py`:** a pure `needs_copy(src_stat, dest_entry)`. Copy when the file is
   missing, a different type, a different size or whole-second mtime, or a symlink with a

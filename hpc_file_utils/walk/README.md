@@ -4,10 +4,11 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 
 | | |
 |---|---|
-| `cli.py` | the `walkstat` and `walktar` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports |
+| `cli.py` | the `walkstat`, `walktar` and `walksync` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports |
 | `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, and how two ranks' combine), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
 | `stat/` | walkstat: `worker.py` (StatWorker), `report.py` (summary and userlists), `spreadsheet.py` |
 | `tar/` | walktar: `worker.py` (TarWorker) |
+| `sync/` | walksync: `worker.py` (SyncWorker), `compare.py` (the copy decision, pure), `report.py` |
 
 Only `manager.py`, `worker.py`, `mpiclass.py` and `cli.py` touch MPI, and they import mpi4py when
 called rather than when imported, so the rest unit-tests without it.
@@ -21,6 +22,8 @@ Outputs (in the working directory, written by rank 0):
   replaced in) FILE.
 - walktar: `output-r{rank}-b{n}.tar` (one per batch) and `output-r{rank}-dirs.tar`, written
   by the workers (see [File batches](#file-batches-phase-5)).
+- walksync: `walksync-dryrun-r{rank}.txt` with `--dry-run`, one per worker. No summary or
+  userlists unless `--summary-prefix` or `--spreadsheet` is given.
 
 ## Filtering (phase 4)
 
@@ -141,6 +144,65 @@ or on an idle one the Manager's `share` hands it to. Batches move exactly as wal
   rest of its directory.
 - **Messages:** a batch of 1,000 names is about 20 KB. Pickling it costs about 30 µs, against
   ~6 s of stats.
+
+## walksync (phase 6)
+
+```
+mpiexec -n 33 walksync --dirs SRC --dest DEST [--exclude 'COLD_STORAGE*'] [--dry-run]
+rsync -aHAX --delete [--exclude 'COLD_STORAGE*'] SRC/ DEST/     # the final, authoritative pass
+```
+
+Copies every entry of SRC that DEST lacks, or has in a different version, with batched
+`rsync -aAX --numeric-ids --chmod=Du+w --files-from=- --from0 SRC/ DEST/`, spread over the ranks
+by the walk's batches. It **never deletes**. Deletions, hard links (copied as separate files),
+and the directories' real modes and times are left to a final serial `rsync -aHAX --delete`. A
+rerun with nothing changed copies nothing: it costs only the walk.
+
+- **Scan** (one directory): one `scandir` of the source (names and `d_type`, no stat for
+  files) and one `scandir` of the matching destination directory, the lookup for the whole
+  directory. Subdirectories are walked. One the destination lacks goes on the copy list
+  itself, so empty directories get created. The other names go into **compare batches** of
+  `--batch-files`. Destination names the source lacks are counted as "only in the
+  destination" and kept.
+- **Compare batch:** lstat each source name (and the destination's, when the scan saw one),
+  then `compare.needs_copy()`, rsync's quick check:
+  - regular files: missing, a different type, size or whole-second mtime;
+  - symlinks: a different target (not times: not every system can set a symlink's);
+  - directories: only missing or a different type;
+  - devices: a different `st_rdev`.
+
+  Ownership, modes, ACLs and xattrs are not compared, which matches rsync's quick check.
+  Like walkstat's stat batches, a big directory's compares spread over the ranks.
+- **Copy batch:** what must be copied goes into the open copy batch. That batch carries over
+  between directories, so changes spread over many small directories still make one rsync.
+  It closes at `--batch-files` [1000] entries or `--batch-size` [16GiB] bytes and becomes one
+  rsync, on this rank or on an idle one that takes it through a `share`. While rsync runs,
+  the worker polls it every 0.5 s and still answers `share` requests and sends progress.
+  `--chmod=Du+w` is needed for two reasons: ranks' batches create the same parent
+  directories, and a read-only source's directories would refuse the next batch's files.
+- **Termination:** a compare batch creates copy batches. They stay on the rank that
+  processed it, which handles them before its next `ready`, so the Manager's argument
+  (manager.py, point 1) is unchanged.
+- **Filters:** `--exclude` prunes by name (never compared, copied or descended; for
+  `COLD_STORAGE*`). The time, `--user`, `--group` and `--type` filters choose which files are
+  copied, a partial copy (the banner says so). Every directory is still walked and created.
+  `--min-size`/`--max-size` are refused.
+- **Progress:** `| copied S (R/s now, A/s avg)`. Bytes count when a batch's rsync returns, so
+  the rate is lumpy. **Summary:** new / changed / unchanged / only in the destination, the
+  excluded and unselected counts, and the files, bytes, rsync batches and rsync-seconds
+  copied. `--verbose`'s per-rank `files` column is what each rank copied.
+- **`--dry-run`:** copies nothing. Each rank lists `N path` (new), `C path` (changed) and
+  `X path` (only in the destination) in its own `walksync-dryrun-r{rank}.txt`. Lines from
+  several ranks on one stdout got spliced together mid-line under mpiexec.
+- **Exit status:** 1 on any error: a failed stat or scan, or an rsync failure. rsync's exit
+  24 (source files vanished) is counted and reported, but it is not an error.
+- **Tested** (`tests/test_walksync.py`, as root and non-root):
+  - the oracle `rsync -naxAX --delete -i --chmod=Du+w` lists only directory-time lines on the
+    golden tree (read-only subtree with ACLs included), and a rerun copies nothing;
+  - `--exclude COLD_STORAGE*`, a selecting filter, changed and extraneous destination
+    entries, and `--dry-run` on the 2,000-subdirectory tree;
+  - a big directory is copied by several ranks;
+  - a failing rsync fails the run.
 
 ## Behaviour changes since the csg-utils import
 
