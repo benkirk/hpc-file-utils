@@ -13,6 +13,10 @@ number of runs per --local-queue-max value (default 50: the phase 2 gate).
 Since phase 3.5 the workers keep a local queue and ship its oldest half as overflow
 past --local-queue-max, so 2 is the equivalent stress: a dir_reply every other
 subdirectory, while the Manager also asks the busy rank to share with the idle ones.
+
+Phase 5 adds the batch variant: walktar with tiny batches, so the busy rank's share
+replies carry batches as well as directories. A lost batch would not show in the Total
+Count (the scan counted it), only in the tars, so it checks that their union is the tree.
 """
 
 import os
@@ -33,3 +37,17 @@ def test_wide_directory_terminates_and_counts_everything(walk, wide_tree, tmp_pa
     assert not r.timed_out, f"run {run} hung:\n{r.report()}"
     assert r.returncode == 0, r.report()
     assert r.total_count() == wide_tree.nitems, f"run {run} lost entries:\n{r.report()}"
+
+
+@pytest.mark.mpi
+@pytest.mark.timeout(RUN_TIMEOUT + 60)
+@pytest.mark.parametrize("run", range(RUNS))
+def test_batch_storm_terminates_and_archives_everything(walk, wide_tree, tmp_path, run):
+    r = walk.run("walktar", [wide_tree.root], cwd=tmp_path, timeout=RUN_TIMEOUT,
+                 args=["--batch-files", "20", "--local-queue-max", "2"])
+    assert not r.timed_out, f"run {run} hung:\n{r.report()}"
+    assert r.returncode == 0, r.report()
+    assert r.total_count() == wide_tree.nitems, f"run {run} lost entries:\n{r.report()}"
+    names = walk.tar_names(tmp_path)
+    assert len(names) == len(set(names)), f"run {run} archived an entry twice"
+    assert set(names) == walk.tree_names(wide_tree.root), f"run {run} lost a batch:\n{r.report()}"

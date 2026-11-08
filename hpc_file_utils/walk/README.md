@@ -19,6 +19,8 @@ Outputs (in the working directory, written by rank 0):
   published as `<dir>/.usage/users/`.
 - `--spreadsheet FILE.xlsx`: three sheets per prefix (four when filtered), added to (or
   replaced in) FILE.
+- walktar: `output-r{rank}-b{n}.tar` (one per batch) and `output-r{rank}-dirs.tar`, written
+  by the workers (see [walktar: file batches](#walktar-file-batches-phase-5)).
 
 ## Filtering (phase 4)
 
@@ -62,6 +64,44 @@ What a filter changes:
 - **Sizes:** `--min-size`/`--max-size` test `st_size`, the apparent size, as find does. The
   reports add up `min(st_size, st_blocks × 512)`, which is smaller for sparse or HSM-migrated
   files.
+
+## walktar: file batches (phase 5)
+
+The scanning rank turns the files it selects into **batches**: a batch closes after
+`--batch-files` files [1000] or `--batch-size` bytes of `st_size` [16GiB], whichever comes
+first. A file bigger than `--batch-size` makes a batch on its own. Batches are units of work,
+just as directories are, so one huge directory no longer ties up one rank for hours.
+- **Where batches go:**
+  - The scanning rank keeps its batches and archives them itself, batches before
+    directories. The open batch carries over from one directory to the next, so small
+    directories combine.
+  - A batch leaves its rank only in the answer to the Manager's `share`: the oldest half of
+    the rank's closed batches, rounded up, plus the oldest half of its stack.
+  - The Manager hands out one batch per `execute`, and hands batches out before directories.
+  - The termination argument covers batches (see `manager.py`).
+- **walkstat makes no batches.** Its walk is unchanged.
+- **Outputs**, in the working directory:
+  - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
+    selected files.
+  - `output-r{rank}-dirs.tar`: every directory `rank` walked, the roots included, with its
+    mode, owner and times.
+  - These replace the per-rank `output-r{rank}-f{n}.tar`, which rolled over at 2 TiB.
+- **Restoring:**
+  1. Extract the batch tars, in any order or in parallel.
+  2. Then extract the `-dirs` tars. This sets each directory's mode and times after its
+     files are in place; a read-only directory would otherwise refuse files from another
+     tar.
+- **Hard links:** two names of one inode that land in different tars are stored as two full
+  copies. They were already, across ranks.
+- **Progress:** the progress line adds `| wrote S (R/s now, A/s avg), batches waiting B`.
+  The end of the walk prints a `--> Batches:` line with the batches shared and handed out,
+  and the files, bytes and tars written.
+- **Each tar copies its members in 16 MiB chunks** (`copybufsize`; `tarfile`'s default is
+  16 KiB). This was 2–5% faster on scratch.
+- **The archiving runs on the worker's own thread**, file by file. Between files it answers a
+  `share` and sends its counts when they are due. The tar thread and `--tar-queue-depth` are
+  gone. The thread overlapped scanning a directory with archiving it, but only within that
+  directory: the worker waited for its queue to drain after every directory.
 
 ## Behaviour changes since the csg-utils import
 
@@ -195,3 +235,36 @@ What a filter changes:
   - A filtered walk (`--atime-older 3y --exclude 'COLD_STORAGE*'`, counting 1.2M of 3.6M
     entries) took 114.0 s, the same as an unfiltered one. The walk is bound by the `stat`
     calls, and a filter adds none.
+
+### Phase 5
+
+- **walktar archives file batches** (see [walktar: file batches](#walktar-file-batches-phase-5)
+  above): `--batch-files` and `--batch-size` replace `--tar-queue-depth`. There is one tar per
+  batch, plus one `-dirs` tar per rank.
+- **Protocol:**
+  - `share_reply` carries `(dirs, batches, payload)`;
+  - `execute` carries `(dirs, batches)`;
+  - the payload's `queued` counts a worker's closed batches as well as its stack.
+- **Measured on derecho**, 1 node × 32 ranks, on synthetic trees on scratch (Lustre), with the
+  tars on scratch:
+
+  | tree | `main` (one tar stream per directory) | phase 5, 1,000 files / 16 GiB per batch |
+  |---|---|---|
+  | `bigdir`: 1,024 × 1 GiB, one directory | 2,433 s, 0.42 GiB/s, 1 rank | 416–423 s, 2.4–2.5 GiB/s, 31 ranks (5.8×) |
+  | `manyfiles`: 200,000 × 1 MiB, one directory | ~8,400 s (extrapolated), 0.024 GiB/s | 270–282 s, 0.7 GiB/s, 31 ranks (~30×) |
+
+  - **Batch size:**
+    - 100 GiB batches reached only 11 ranks on `bigdir` (1,077 s); 32 GiB took 480 s and 8 GiB
+      436 s.
+    - 5,000-file batches left `manyfiles`' busiest rank with 9.8 GiB against a mean of 6.3
+      (423–466 s).
+    - Hence the defaults of 1,000 files and 16 GiB.
+  - **Balanced, the limit is the node.** On scratch, 31 streams together reached about
+    2.5–3 GiB/s.
+    - One stream reading GDEX on GPFS (campaign) and writing to GPFS (campaign) managed 2.59
+      GiB/s on its own, against 0.42 GiB/s on scratch.
+    - Small files cost about 40 ms each per stream on both filesystems. That is worth a
+      profile later (`tarfile` looks up owner and group names for every member).
+  - **walkstat** (CGD-ppc, 1 × 32, 5 rounds, the mean of rounds 2–5): 105.3 s against
+    `main`'s 102.7 s, best runs 102.6 against 102.1 s. This is within the noise; the walk
+    itself is unchanged.

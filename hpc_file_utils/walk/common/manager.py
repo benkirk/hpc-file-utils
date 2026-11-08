@@ -1,53 +1,70 @@
 #!/usr/bin/env python3
 
-"""The Manager (rank 0) hands directories to the workers until the walk is done.
+"""The Manager (rank 0) hands directories and file batches to the workers until the walk is done.
 
 Workers walk their own local stack of directories, depth-first, and talk to the Manager
 only when it overflows, when it runs dry, or when the Manager asks them to share
 (phase 3.5; docs/walk-load-balancing.md, section 5).
 
+Phase 5: tools with a process_batch() (walktar) also turn the files they select into
+batches, (paths, nbytes) closed past --batch-files files or --batch-size bytes, kept on
+the scanning worker's own list and processed there, batches before directories. A batch
+leaves its worker only in a share_reply, and the Manager hands batches out before
+directories. walkstat makes no batches, so for it every batch list below is empty.
+
 Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tuple):
 
   worker -> manager
-    ready        payload           "My stack is empty and my last directory is done,
-                                   give me work". The worker then waits for the answer.
+    ready        payload           "I hold nothing (no directory, no batch) and my last
+                                   directory or batch is done, give me work". The worker
+                                   then waits for the answer.
     dir_reply    (dirs, payload)   overflow: the oldest half of a stack that grew past
                                    --local-queue-max.
-    share_reply  (dirs, payload)   the answer to a 'share': the oldest half of the
-                                   stack, possibly empty.
+    share_reply  (dirs, batches, payload)
+                                   the answer to a 'share': the oldest half of the
+                                   stack and of the closed batches (rounded up), either
+                                   possibly empty.
     progress     payload           running counts, every PROGRESS_INCREMENT entries of
                                    a huge directory, or --progress seconds between ones.
   manager -> worker
-    execute      [dir, ...]        the answer to a 'ready': walk these (at most
+    execute      (dirs, batches)   the answer to a 'ready': one batch if the Manager
+                                   holds any, otherwise directories to walk (at most
                                    --dirs-per-dispatch)
     terminate    None              the answer to a 'ready': the walk is done
     share        None              sent to a busy worker while the Manager holds idle
-                                   'ready's and has no directories; answered with a
+                                   'ready's and no work; answered with a
                                    share_reply at the worker's next look (every
-                                   directory, and every 1,000 entries of a big one), or
+                                   directory or batch, every 1,000 entries of a big
+                                   directory and between a batch's files), or
                                    not at all if the worker goes idle first: its 'ready'
                                    cancels the request
 
 How the Manager decides the walk is done:
 
   1. A worker is idle only while the Manager holds its 'ready' unanswered. A worker
-     sends 'ready' only when its local stack is empty and its last directory is done,
-     and it then waits for the answer, so it cannot send anything else.
+     sends 'ready' only when its local stack is empty, it holds no batch (none closed,
+     and the open one, if any, has been closed and processed), and its last directory
+     or batch is done; process_batch() runs on the worker's only thread, so done means
+     returned. It then waits for the answer, so it cannot send anything else.
   2. The Manager receives with ANY_SOURCE and ANY_TAG, so every message matches the
      same receive and it gets each worker's messages in the order they were sent
      (MPI's non-overtaking rule applies to messages from one sender that match the
      same receive). When it gets a worker's 'ready', it has already received every
-     dir_reply and share_reply that worker sent before it. (The old loop probed each tag separately,
+     dir_reply and share_reply that worker sent before it, and so every batch: batches
+     reach the Manager only inside a share_reply, and a worker only inside an execute,
+     the answer to a 'ready'. (The old loop probed each tag separately,
      so it could see a 'ready' before the dir_reply sent just ahead of it, decide
      everyone was idle, and lose or hang on that dir_reply.)
-  3. So: no directories queued here and every worker idle means no directory is
-     queued, in flight, or being scanned anywhere. The Manager answers each held
-     'ready' with 'terminate'.
+  3. So: no directories and no batches queued here, and every worker idle, means no
+     directory or batch is queued, in flight, being scanned or being processed
+     anywhere. The Manager answers each held 'ready' with 'terminate'.
 
-A 'share' never carries work, so it cannot upset this. A worker that receives one while
+Processing a batch creates no work: no directories, no batches. A 'share' never
+carries work, so it cannot upset this either. A worker that receives one while
 it waits for the answer to its 'ready' ignores it (its wait is a receive from rank 0
 with ANY_TAG, so it also gets the share before any execute or terminate sent after
-it), and the Manager forgets the request when that 'ready' arrives. The Manager has at
+it; it holds no batch either, so nothing is kept back), and the Manager forgets the
+request when that 'ready' arrives. The Manager has at
 most one unanswered 'share' per worker, and never sends one to a worker whose 'ready'
 it holds.
 
@@ -62,9 +79,9 @@ import heapq
 import sys
 from collections import deque
 
-from hpc_file_utils.walk.common.formatting import format_number
+from hpc_file_utils.walk.common.formatting import format_number, format_size
 from hpc_file_utils.walk.common.mpiclass import MPIClass
-from hpc_file_utils.walk.common.progress import ProgressTally, progress_line
+from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
 
 def _ms(seconds):
     return '{:.3f} ms'.format(1e3 * seconds)
@@ -80,6 +97,7 @@ class Manager(MPIClass):
         self.nsends = 0
         self.nrecvs = 0
         self.dirs = list(self.options.dirs)           # directories waiting for a worker
+        self.batches = deque()                         # batches waiting for a worker (phase 5)
         self.nworkers = self.nranks - 1
         self.idle = deque()                            # (rank, when) of each 'ready' we hold, unanswered
         self.idle_set = set()                          # ... just the ranks
@@ -92,7 +110,10 @@ class Manager(MPIClass):
         self.ndirs_overflow = 0      # directories received as overflow (dir_reply)
         self.ndirs_shared = 0        # ... in share_reply
         self.nshares = 0             # 'share' requests sent
-        self.nshares_empty = 0       # ... answered with no directories
+        self.nshares_empty = 0       # ... answered with no directories (nor batches)
+        self.nbatches_shared = 0     # batches received in share_reply
+        self.nbatch_dispatches = 0   # ... handed out, one per 'execute'
+        self.last_written = 0        # bytes written at the last progress line (rate 'now')
         self.walk_elapsed = 0.0
 
         # instrumentation (--verbose)
@@ -110,7 +131,7 @@ class Manager(MPIClass):
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def finished(self):
         """Nothing queued here and every worker idle: nothing left anywhere (see module doc)."""
-        return not self.dirs and len(self.idle) == self.nworkers
+        return not self.dirs and not self.batches and len(self.idle) == self.nworkers
 
 
 
@@ -123,9 +144,30 @@ class Manager(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def progress_extra_status(self):
-        """Derived tools: text for their workers' 'extra' payloads, appended to the line."""
-        return ''
+    def written(self):
+        """(bytes, files, archives) written so far, summed over the workers' 'extra'
+        payloads; None when no worker sends one (walkstat)."""
+        extras = [e for e in self.progress.extra if e is not None]
+        if not extras:
+            return None
+        return tuple(sum(col) for col in zip(*extras))
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def progress_extra_status(self, elapsed, interval=None):
+        """Text appended to the progress line: tools that write (walktar) report bytes
+        written and the rate, now (over 'interval', since the last line) and on average.
+        Without 'interval', the final line: the totals only."""
+        written = self.written()
+        if written is None:
+            return ''
+        nbytes = written[0]
+        if interval is None:
+            return written_status(nbytes, elapsed)
+        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches))
+        self.last_written = nbytes
+        return status
 
 
 
@@ -140,7 +182,8 @@ class Manager(MPIClass):
         self.progress_time = curtime
         status = progress_line(self.progress.total_items, self.progress.total_bytes,
                                curtime - self.start_time)
-        status += self.progress_extra_status()
+        status += self.progress_extra_status(curtime - self.start_time,
+                                             None if forceprint else deltaprog)
 
         if not forceprint:
             status += ' [dirlen={}, queued={}, idle={}, sends={}, recvs={}, shares={}]'.format(
@@ -167,12 +210,14 @@ class Manager(MPIClass):
 
         elif tag == self.tags['share_reply']:
             # the answer to our 'share'; the worker is still busy
-            dirs, payload = msg
+            dirs, batches, payload = msg
             self.update_progress(rank, payload)
             self.share_pending.discard(rank)
             self.dirs.extend(dirs)
+            self.batches.extend(batches)
             self.ndirs_shared += len(dirs)
-            if not dirs: self.nshares_empty += 1
+            self.nbatches_shared += len(batches)
+            if not dirs and not batches: self.nshares_empty += 1
             self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
 
         elif tag == self.tags['progress']:
@@ -194,15 +239,21 @@ class Manager(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def dispatch(self):
-        """Answer idle workers' 'ready' with directories, while we have both.
+        """Answer idle workers' 'ready' with work, while we have both.
 
-        Each gets up to --dirs-per-dispatch, fewer when there are not enough to go round
-        the idle workers.
+        Batches first, one per worker: a batch is already sized as a unit of work, and
+        handing one worker several would rebuild the tail. Then directories, up to
+        --dirs-per-dispatch each, fewer when there are not enough to go round the idle
+        workers.
         """
-        while self.dirs and self.idle:
-            n = max(1, min(self.options.dirs_per_dispatch, len(self.dirs) // len(self.idle)))
-            give = self.dirs[-n:]
-            del self.dirs[-n:]
+        while (self.batches or self.dirs) and self.idle:
+            if self.batches:
+                give = ([], [self.batches.popleft()])
+                self.nbatch_dispatches += 1
+            else:
+                n = max(1, min(self.options.dirs_per_dispatch, len(self.dirs) // len(self.idle)))
+                give = (self.dirs[-n:], [])
+                del self.dirs[-n:]
             rank, when = self.idle.popleft()
             self.idle_set.discard(rank)
             self.comm.send(give, dest=rank, tag=self.tags['execute']); self.nsends += 1
@@ -224,7 +275,7 @@ class Manager(MPIClass):
         are asked too (it may have grown since), but after the others.
         """
         want = len(self.idle) - len(self.share_pending)
-        if want <= 0 or self.dirs:
+        if want <= 0 or self.dirs or self.batches:
             return
         candidates = [r for r in range(1, self.nranks)
                       if r not in self.idle_set and r not in self.share_pending]
@@ -254,7 +305,7 @@ class Manager(MPIClass):
             t1 = Wtime()
             self.handle(status.Get_source(), status.Get_tag(), msg)
             self.dispatch()
-            if self.idle and not self.dirs:
+            if self.idle and not self.dirs and not self.batches:
                 self.request_shares()
             t2 = Wtime()
             self.wait_time += t1 - t0
@@ -270,6 +321,15 @@ class Manager(MPIClass):
         print('  --> Dispatches: {}; directories received as overflow: {}, shared: {} ({} share requests, {} answered empty)'.format(
             format_number(self.ndispatches), format_number(self.ndirs_overflow), format_number(self.ndirs_shared),
             format_number(self.nshares), format_number(self.nshares_empty)))
+        written = self.written()
+        if self.nbatches_shared or written is not None:
+            line = '  --> Batches: {} received in share replies, {} handed out'.format(
+                format_number(self.nbatches_shared), format_number(self.nbatch_dispatches))
+            if written is not None:
+                line += '; wrote {} files, {} ({} bytes) in {} archives'.format(
+                    format_number(written[1]), format_size(written[0]), format_number(written[0]),
+                    format_number(written[2]))
+            print(line)
         if self.options.verbose:
             self.print_counters()
         print('  --> Finished dispatch, Terminating ranks')

@@ -13,7 +13,6 @@ import os
 import pwd
 import re
 import subprocess
-import tarfile
 
 import pytest
 
@@ -175,17 +174,16 @@ def test_excluded_unreadable_dir_is_never_scanned(walk, unreadable_tree, tmp_pat
     assert "Scan Errors" not in r.summary()
 
 
-def test_walktar_archives_exactly_the_selection(walk, private_golden_tree, tmp_path):
+@pytest.mark.parametrize("batch_args", [[], ["--batch-files", "2"]])
+def test_walktar_archives_exactly_the_selection(walk, private_golden_tree, tmp_path, batch_args):
     """The tars hold every directory walked (with its mode, owner and ACLs), the roots
     included, plus exactly the selected non-directories; nothing below an --exclude."""
     root = private_golden_tree.root
     excludes, preds = ["COLD_STORAGE*"], ["!", "-type", "d", "-mtime", "+1095"]
-    r = walk.run("walktar", [root], cwd=tmp_path, args=["--exclude", "COLD_STORAGE*", "--mtime-older", "3y"])
+    r = walk.run("walktar", [root], cwd=tmp_path,
+                 args=["--exclude", "COLD_STORAGE*", "--mtime-older", "3y", *batch_args])
     assert r.ok, r.report()
-    names = []
-    for t in sorted(tmp_path.glob("output-r*-f*.tar")):
-        with tarfile.open(t) as tf:
-            names += tf.getnames()
+    names = walk.tar_names(tmp_path)
     assert len(names) == len(set(names)), "an entry was archived twice"
     dirs = find(root, excludes, ["-type", "d"], mindepth=0)
     files = find(root, excludes, preds)
