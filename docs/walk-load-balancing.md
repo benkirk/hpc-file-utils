@@ -118,6 +118,14 @@ Run `walkstat` on a small-directory tree (`/glade/u/home`-shaped) and on a large
 at 32, 96 and 256 ranks and plot items/s against ranks. Flat items/s with occupancy near 1.0
 is the Manager ceiling. If items/s still scales at 256 ranks, nothing below is needed yet.
 
+> **Measured (phase 3.5, 2026-11-07;
+> [phase3.5-results.md](phase3.5-results.md)).**
+> - **items/s is flat, but the Manager is not the cause.** With section 5 in place it is
+>   blocked in `recv` 98–100% of the time at 32, 96, 256 and 384 ranks.
+> - **The ceiling is the filesystem client on each node.** One node walks faster with 32
+>   ranks than with 96. Across 4 nodes, 4 × 32 beats 4 × 96 by 21–44%.
+> - **So section 3 (decentralised stealing) is not needed at these scales.**
+
 ## 2. libcircle: how it actually works
 
 libcircle (LLNL, `hpc/libcircle`; LaFon, Misra and Bringhurst, "On Distributed File Tree Walk
@@ -436,7 +444,10 @@ code, the poll hook in `process_directory`, and the `isend` bookkeeping are alre
 3. **Local queues + brokered sharing (one PR, after phase 5 or alongside it).** Gate: the
    small-directory tree scales to 256 ranks with Manager occupancy well below 1.0, and the race
    test still passes 50 of 50 with `--max-dirs-per-send 5` and a tiny local threshold.
-4. **Decentralised stealing (only if 3 is not enough).** Prototype as a separate
+   *Done as phase 3.5 and measured. The Manager is idle at 384 ranks, and the waiting that
+   remains is set by the tree's shape (see section 1.4 and
+   [phase3.5-results.md](phase3.5-results.md)).*
+4. **Decentralised stealing (only if 3 is not enough; it is, for now).** Prototype as a separate
    `walk/experiments/steal_walk.py` that reuses `process_directory`. Before running it at
    scale, write a **termination simulator**: the same loop driven by a fake `comm` (a dict of
    deques) with randomised interleavings, asserting that TERMINATE is never delivered while any

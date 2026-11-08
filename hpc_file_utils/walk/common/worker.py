@@ -8,6 +8,9 @@ import os, sys, stat, time
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
 SHARE_CHECK_INCREMENT = 1000 # entries of one directory between looks for a 'share'
+WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages, whatever --progress
+                             # (that is the screen's interval): the Manager's progress line and its
+                             # choice of whom to ask for a 'share' use the stack lengths they carry
 
 SECONDS_IN_YEAR = 60*60*24*365
 THREE_YEARS = 3*SECONDS_IN_YEAR
@@ -146,14 +149,15 @@ class BaseWorker(MPIClass):
             heaps['nbytes_dirs'].add((thisdir_nbytes, de))
 
             # are the contents owned by a single user id?  If so, track per-user info as well
-            single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else False
+            # (None if not: uid 0 is a valid owner, and root runs the scans)
+            single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else None
 
             # granular directory tracking by timestamp thresholds.
             # check against thresholds to avoid tracking users that only have
             # tiny residual data
             if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
 
-                if single_owner:
+                if single_owner is not None:
                     user_heaps['nitems_dirs'][single_owner].add((thisdir_nitems, de))
                     user_heaps['nbytes_dirs'][single_owner].add((thisdir_nbytes, de))
 
@@ -161,15 +165,15 @@ class BaseWorker(MPIClass):
                 if 10 < thisdir_max_atime:
                     if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
                         heaps['nbytes_dirs_7yrs'].add((thisdir_nbytes, de))
-                        if single_owner: user_heaps['nbytes_dirs_7yrs'][single_owner].add((thisdir_nbytes, de))
+                        if single_owner is not None: user_heaps['nbytes_dirs_7yrs'][single_owner].add((thisdir_nbytes, de))
 
                     elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime):
                         heaps['nbytes_dirs_5yrs'].add((thisdir_nbytes, de))
-                        if single_owner: user_heaps['nbytes_dirs_5yrs'][single_owner].add((thisdir_nbytes, de))
+                        if single_owner is not None: user_heaps['nbytes_dirs_5yrs'][single_owner].add((thisdir_nbytes, de))
 
                     elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
                         heaps['nbytes_dirs_3yrs'].add((thisdir_nbytes, de))
-                        if single_owner: user_heaps['nbytes_dirs_3yrs'][single_owner].add((thisdir_nbytes, de))
+                        if single_owner is not None: user_heaps['nbytes_dirs_3yrs'][single_owner].add((thisdir_nbytes, de))
 
         except Exception as error:
             st.num_errors += 1
@@ -247,11 +251,13 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def report_progress(self, only_if_due=False):
-        """Send our counts. With only_if_due, only when --progress seconds have passed
-        since the last time: a worker walking many small directories from its own stack
-        otherwise sends nothing between PROGRESS_INCREMENT entries."""
+        """Send our counts. With only_if_due, only when --progress seconds (at most
+        WORKER_UPDATE_SECONDS) have passed since the last time: a worker walking many small
+        directories from its own stack otherwise sends nothing between PROGRESS_INCREMENT
+        entries."""
         now = self.MPI.Wtime()
-        if only_if_due and (now - self.last_progress_time) < self.options.progress:
+        interval = min(self.options.progress, WORKER_UPDATE_SECONDS)
+        if only_if_due and (now - self.last_progress_time) < interval:
             return
         self.last_progress_time = now
         self.comm.send(self.progress_payload(), dest=0, tag=self.tags['progress'])
