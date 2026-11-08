@@ -14,7 +14,8 @@ Since phase 3.5 the workers keep a local queue and ship its oldest half as overf
 past --local-queue-max, so 2 is the equivalent stress: a dir_reply every other
 subdirectory, while the Manager also asks the busy rank to share with the idle ones.
 
-Phase 5 adds the batch variant: walktar with tiny batches, so the busy rank's share
+Phase 5 adds two batch variants: walkstat with tiny stat batches (lqm2-statbatch20; a
+lost batch there loses its entries from the Total Count), and walktar with tiny batches, so the busy rank's share
 replies carry batches as well as directories. A lost batch would not show in the Total
 Count (the scan counted it), only in the tars, so it checks that their union is the tree.
 """
@@ -29,11 +30,12 @@ RUN_TIMEOUT = int(os.environ.get("HFU_RACE_TIMEOUT", "60"))
 
 @pytest.mark.mpi
 @pytest.mark.timeout(RUN_TIMEOUT + 60)
-@pytest.mark.parametrize("local_queue_max", [1000, 2])
+@pytest.mark.parametrize("args", [["--local-queue-max", 1000], ["--local-queue-max", 2],
+                                  ["--local-queue-max", 2, "--batch-files", 20]],
+                         ids=["lqm1000", "lqm2", "lqm2-statbatch20"])
 @pytest.mark.parametrize("run", range(RUNS))
-def test_wide_directory_terminates_and_counts_everything(walk, wide_tree, tmp_path, run, local_queue_max):
-    r = walk.run("walkstat", [wide_tree.root], cwd=tmp_path, timeout=RUN_TIMEOUT,
-                 args=["--local-queue-max", local_queue_max])
+def test_wide_directory_terminates_and_counts_everything(walk, wide_tree, tmp_path, run, args):
+    r = walk.run("walkstat", [wide_tree.root], cwd=tmp_path, timeout=RUN_TIMEOUT, args=args)
     assert not r.timed_out, f"run {run} hung:\n{r.report()}"
     assert r.returncode == 0, r.report()
     assert r.total_count() == wide_tree.nitems, f"run {run} lost entries:\n{r.report()}"

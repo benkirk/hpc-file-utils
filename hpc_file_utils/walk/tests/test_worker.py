@@ -1,4 +1,5 @@
-"""BaseWorker.process_directory() on its own, in-process (no MPI), via walkstat's StatWorker."""
+"""The workers' scans and batches on their own, in-process (no MPI): walkstat's StatWorker
+(stat batches), and BaseWorker's inline scan (walktar's) through a small subclass."""
 
 import os
 import types
@@ -7,7 +8,15 @@ import pytest
 
 from hpc_file_utils.walk.common import worker as worker_mod
 from hpc_file_utils.walk.common.stats import WalkStats
+from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.stat.worker import StatWorker
+
+
+def _with_uid(s, uid):
+    """A stat result that reports a different owner."""
+    fields = {k: getattr(s, k) for k in dir(s) if k.startswith("st_")}
+    fields["st_uid"] = uid
+    return types.SimpleNamespace(**fields)
 
 
 class _Entry:
@@ -17,18 +26,19 @@ class _Entry:
         self._entry, self._uid = entry, uid
         self.path, self.name = entry.path, entry.name
 
+    def is_dir(self, follow_symlinks=True):
+        return self._entry.is_dir(follow_symlinks=follow_symlinks)
+
     def stat(self, follow_symlinks=True):
-        s = self._entry.stat(follow_symlinks=follow_symlinks)
-        fields = {k: getattr(s, k) for k in dir(s) if k.startswith("st_")}
-        fields["st_uid"] = self._uid
-        return types.SimpleNamespace(**fields)
+        return _with_uid(self._entry.stat(follow_symlinks=follow_symlinks), self._uid)
 
 
 def _worker():
     w = object.__new__(StatWorker)   # skip MPIClass.__init__: no MPI here
     w.rank, w.local_dirs, w.local_batches, w.batch, w.batch_bytes = 1, [], [], [], 0
     w.max_local_dirs = 0
-    w.options = types.SimpleNamespace(threshold_count=1, threshold_size=0, local_queue_max=1000)
+    w.options = types.SimpleNamespace(threshold_count=1, threshold_size=0, local_queue_max=1000,
+                                      batch_files=1000)
     w.stats = WalkStats(heap_size=10)
     w.check_share = w.report_progress = lambda *a, **k: None
     return w
@@ -40,12 +50,13 @@ def test_single_owner_dirs_are_listed_for_that_uid(tmp_path, monkeypatch, uid):
     uid 0 included: root runs the scans (it was dropped when the check was truthiness)."""
     for name in ("a.dat", "b.dat"):
         (tmp_path / name).write_bytes(b"x" * 4096)
-    real_scandir = os.scandir
+    real_scandir, real_lstat = os.scandir, os.lstat
     monkeypatch.setattr(worker_mod.os, "scandir",
                         lambda d: (_Entry(e, uid) for e in real_scandir(d)))
+    monkeypatch.setattr(worker_mod.os, "lstat", lambda p: _with_uid(real_lstat(p), uid))   # the stat batches
 
     w = _worker()
-    w.process_directory(str(tmp_path))
+    _walk(w, tmp_path)
     assert w.stats.num_errors == 0
 
     for name in ("nitems_dirs", "nbytes_dirs"):
@@ -87,9 +98,16 @@ def _filtered_worker(tmp_path, *args):
 
 
 def _walk(w, root):
+    """Walk root on this one worker, batches first (as drain_local_work does), then list
+    the directories that were split over batches (as rank 0 does after the reduction)."""
     w.local_dirs.append(str(root))
-    while w.local_dirs:
-        w.process_directory(w.local_dirs.pop())
+    while w.local_batches or w.local_dirs:
+        if w.local_batches:
+            w.process_batch(w.local_batches.pop())
+        else:
+            w.process_directory(w.local_dirs.pop())
+    w.stats.finish_directories(w.options.threshold_count, w.options.threshold_size,
+                               w.select is not None)
 
 
 def test_failing_directories_are_still_walked(tmp_path):
@@ -137,8 +155,10 @@ def test_share_checks_count_entries_scanned(tmp_path, monkeypatch):
     w.check_share = lambda: shares.append(1)
     w.report_progress = lambda *a, **k: updates.append(1)
     w.process_directory(str(tmp_path))
+    assert (len(shares), len(updates)) == (2, 3)     # the scan: every 3 and every 2 of 7
+    w.process_batch(w.local_batches.pop())           # the stats: every 3 of the 6 names
     assert w.stats.num_items == 0 and w.stats.num_excluded == 1 and w.stats.num_unmatched == 6
-    assert (len(shares), len(updates)) == (2, 3)
+    assert (len(shares), len(updates)) == (4, 5)
 
 
 class _Unstattable:
@@ -168,8 +188,8 @@ def test_excluded_entries_are_never_stated(tmp_path, monkeypatch):
 # phase 5 batches
 # ---------------------------------------------------------------------------
 
-class _Batcher(StatWorker):
-    """walkstat's worker plus walktar's process_file: files go into batches."""
+class _Batcher(BaseWorker):
+    """BaseWorker's inline scan plus walktar's process_file: files go into batches."""
 
     def process_file(self, filename, statinfo):
         self.add_to_batch(filename, statinfo.st_size)
@@ -207,13 +227,70 @@ def test_small_directories_combine_into_one_batch(tmp_path):
     assert w.batch_bytes == 30
 
 
-def test_walkstat_collects_nothing(tmp_path):
+def test_walkstat_batches_names_not_paths(tmp_path):
+    """walkstat's scan stats nothing but subdirectories: the names wait in a batch of the
+    directory's own, which carries the subdirectories' totals (and never uses the open,
+    cross-directory batch, which is walktar's)."""
     for i in range(5):
         (tmp_path / f"f{i}").write_bytes(b"x")
+    (tmp_path / "sub").mkdir()
     w = _worker()
-    _walk(w, tmp_path)
-    assert (w.local_batches, w.batch, w.batch_bytes) == ([], [], 0)
-    assert w.progress_payload()[2:] == (0, None)
+    w.process_directory(str(tmp_path))
+    assert w.stats.num_items == 1                    # sub, stat'ed by the scan
+    [(dirname, names, (subdirs, whole))] = w.local_batches
+    assert (dirname, sorted(names), subdirs.nitems, whole) == (str(tmp_path), [f"f{i}" for i in range(5)], 1, True)
+    assert (w.batch, w.batch_bytes) == ([], 0)
+    assert w.progress_payload()[2:] == (2, None)     # sub on the stack, one batch
+
+
+def _dir_lists(stats):
+    return {name: [(k, tuple(e)) for k, e in stats.heaps[name].top()]
+            for name in ("nitems_dirs", "nbytes_dirs")}
+
+
+@pytest.mark.parametrize("batch_files", [1, 2, 3, 7])
+def test_split_directories_list_the_same_totals(tmp_path, batch_files):
+    """A directory split over stat batches adds up to the same line as a whole one."""
+    (tmp_path / "a/b").mkdir(parents=True)
+    for i in range(7):
+        (tmp_path / f"a/f{i}").write_bytes(b"x" * 1024 * (i + 1))
+    (tmp_path / "a/b/g").write_bytes(b"y" * 4096)
+    whole, split = _worker(), _worker()
+    split.options.batch_files = batch_files
+    _walk(whole, tmp_path)
+    _walk(split, tmp_path)
+    assert split.stats.partial_dirs == {}            # all listed by finish_directories()
+    assert _dir_lists(split.stats) == _dir_lists(whole.stats)
+    assert (split.stats.num_items, split.stats.total_size) == (whole.stats.num_items, whole.stats.total_size)
+
+
+def test_split_directory_parts_merge_across_ranks(tmp_path):
+    """Parts of one directory processed on different ranks add up in the reduction."""
+    for i in range(6):
+        (tmp_path / f"f{i}").write_bytes(b"x" * 1024)
+    whole = _worker()
+    _walk(whole, tmp_path)
+    scanner, other = _worker(), _worker()
+    scanner.options.batch_files = other.options.batch_files = 2
+    scanner.process_directory(str(tmp_path))
+    other.process_batch(scanner.local_batches.pop(0))          # 'shared' to another rank
+    while scanner.local_batches:
+        scanner.process_batch(scanner.local_batches.pop())
+    merged = WalkStats.merged(scanner.stats, other.stats)
+    merged.finish_directories(1, 0, False)
+    assert _dir_lists(merged) == _dir_lists(whole.stats)
+
+
+def test_a_vanished_file_costs_one_error_not_the_directory(tmp_path):
+    for name in ("a", "b", "c"):
+        (tmp_path / name).write_bytes(b"x")
+    w = _worker()
+    w.process_directory(str(tmp_path))
+    (tmp_path / "b").unlink()                        # between the scan and the stat
+    while w.local_batches:
+        w.process_batch(w.local_batches.pop())
+    assert (w.stats.num_items, w.stats.num_errors) == (2, 1)
+    assert [e.nitems for _, e in w.stats.heaps["nitems_dirs"].top()] == [2]
 
 
 def _share_worker(dirs, batches):
