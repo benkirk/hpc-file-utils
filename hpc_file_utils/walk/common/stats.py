@@ -94,6 +94,8 @@ class WalkStats:
         self.num_items = 0
         self.total_size = 0
         self.num_errors = 0   # entries that could not be scanned (or archived)
+        self.num_excluded = 0   # entries pruned by --exclude (never stat'ed or descended)
+        self.num_unmatched = 0  # entries stat'ed but not counted: they failed a selecting filter
         self.st_modes = defaultdict(int)
         self.uids = defaultdict(UIDCounts)
         self.gids = defaultdict(GIDCounts)
@@ -109,6 +111,8 @@ class WalkStats:
         self.num_items += other.num_items
         self.total_size += other.total_size
         self.num_errors += other.num_errors
+        self.num_excluded += other.num_excluded
+        self.num_unmatched += other.num_unmatched
         for k, v in other.st_modes.items():
             self.st_modes[k] += v
         for mine, theirs in ((self.uids, other.uids), (self.gids, other.gids)):

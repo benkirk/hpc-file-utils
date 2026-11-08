@@ -77,6 +77,8 @@ def main(app, argv=None):
             print('All Options: {}'.format(args))
         else:
             print('Processing Directories: {}'.format(args.dirs))
+        if args.filters is not None:
+            print('Filters: {}'.format(args.filters.describe()))
         print('Running {} on {} MPI ranks'.format(app, size))
         sys.stdout.flush()
         walker = Manager(options=args)

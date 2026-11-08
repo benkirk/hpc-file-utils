@@ -24,6 +24,9 @@ NOW_TIMESTAMP = time.time()
 ################################################################################
 class BaseWorker(MPIClass):
 
+    exclude = None   # --exclude: name -> truthy if pruned (filters.py); None without it
+    select = None    # selecting filters: statinfo -> bool; None without any
+
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self):
         MPIClass.__init__(self)
@@ -33,6 +36,12 @@ class BaseWorker(MPIClass):
         self.max_local_dirs = 0       # its high-water mark
         self.wait_time = 0.0          # waiting for the Manager to answer 'ready' with work
         self.last_progress_time = self.MPI.Wtime()
+
+        # the filters rank 0 compiled, as this rank's callables (None: no cost in the loop)
+        filters = getattr(self.options, 'filters', None)
+        if filters is not None:
+            self.exclude = filters.exclude_matcher()
+            self.select = filters.predicate()
         return
 
 
@@ -48,9 +57,13 @@ class BaseWorker(MPIClass):
         st = self.stats
         heaps = st.heaps
         user_heaps = st.user_heaps
+        exclude = self.exclude
+        select = self.select
 
         st.num_dirs += 1
-        st.st_modes['dir'] += 1
+        # with a selecting filter, directories are counted as entries that match (below), as find
+        # does; without one, every directory walked, the roots included, as before phase 4
+        if select is None: st.st_modes['dir'] += 1
 
         #print('[{:3d}](d) {}'.format(self.rank, dirname))
 
@@ -65,11 +78,37 @@ class BaseWorker(MPIClass):
 
             dirdepth = dirname.count(os.path.sep)
 
-            for di in os.scandir(dirname):
+            for nscanned, di in enumerate(os.scandir(dirname), 1):
+
+                # send a progress update periodically
+                # (in production we have many directories with 1M+ files, this ensures some progress is
+                # detected and reported by Manager even for huge dirs)
+                if 0 == nscanned%PROGRESS_INCREMENT:
+                    self.report_progress()
+                # and look for a 'share' from the Manager, so a huge directory does not
+                # keep the subdirectories we have already queued from the idle ranks.
+                # Both count entries scanned, not counted: a filter may match few of them.
+                if 0 == nscanned%SHARE_CHECK_INCREMENT:
+                    self.check_share()
+
+                # --exclude: by name, before the stat; never counted or descended
+                if exclude is not None and exclude(di.name):
+                    st.num_excluded += 1
+                    continue
 
                 pathname = di.path
 
                 statinfo = di.stat(follow_symlinks=False)
+                fmode = statinfo.st_mode
+
+                # selecting filters: an entry that fails is not counted (nor archived),
+                # but a directory that fails is still walked, for the entries inside that pass
+                if select is not None and not select(statinfo):
+                    st.num_unmatched += 1
+                    if stat.S_ISDIR(fmode):
+                        self.local_dirs.append(pathname)
+                        if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
+                    continue
 
                 # about statinfo.st_size: we can't always trust it.
                 # for sparse files, or files migrated to tape via HSM,
@@ -98,20 +137,9 @@ class BaseWorker(MPIClass):
                 g.nitems += 1
                 g.nbytes += item_size
 
-                # send a progress update periodically
-                # (in production we have many directories with 1M+ files, this ensures some progress is
-                # detected and reported by Manager even for huge dirs)
-                if 0 == thisdir_nitems%PROGRESS_INCREMENT:
-                    self.report_progress()
-                # and look for a 'share' from the Manager, so a huge directory does not
-                # keep the subdirectories we have already queued from the idle ranks
-                if 0 == thisdir_nitems%SHARE_CHECK_INCREMENT:
-                    self.check_share()
-
                 # decode file type
-                fmode = statinfo.st_mode
-
                 if stat.S_ISDIR(fmode):
+                    if select is not None: st.st_modes['dir'] += 1
                     self.local_dirs.append(pathname)
                     if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
                 else:
@@ -142,38 +170,10 @@ class BaseWorker(MPIClass):
                     #------------------------------------
 
 
-            # track the size & count of this directory in our top heaps
-            de = DirEntry(dirname, thisdir_nbytes, thisdir_nitems, thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime)
-
-            heaps['nitems_dirs'].add((thisdir_nitems, de))
-            heaps['nbytes_dirs'].add((thisdir_nbytes, de))
-
-            # are the contents owned by a single user id?  If so, track per-user info as well
-            # (None if not: uid 0 is a valid owner, and root runs the scans)
-            single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else None
-
-            # granular directory tracking by timestamp thresholds.
-            # check against thresholds to avoid tracking users that only have
-            # tiny residual data
-            if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
-
-                if single_owner is not None:
-                    user_heaps['nitems_dirs'][single_owner].add((thisdir_nitems, de))
-                    user_heaps['nbytes_dirs'][single_owner].add((thisdir_nbytes, de))
-
-                # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
-                if 10 < thisdir_max_atime:
-                    if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
-                        heaps['nbytes_dirs_7yrs'].add((thisdir_nbytes, de))
-                        if single_owner is not None: user_heaps['nbytes_dirs_7yrs'][single_owner].add((thisdir_nbytes, de))
-
-                    elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime):
-                        heaps['nbytes_dirs_5yrs'].add((thisdir_nbytes, de))
-                        if single_owner is not None: user_heaps['nbytes_dirs_5yrs'][single_owner].add((thisdir_nbytes, de))
-
-                    elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
-                        heaps['nbytes_dirs_3yrs'].add((thisdir_nbytes, de))
-                        if single_owner is not None: user_heaps['nbytes_dirs_3yrs'][single_owner].add((thisdir_nbytes, de))
+            # with a selecting filter, a directory holding no matching entries goes in no list
+            if select is None or thisdir_nitems:
+                self.record_directory(dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
+                                      thisdir_max_ctime, thisdir_max_atime, thisdir_uids)
 
         except Exception as error:
             st.num_errors += 1
@@ -188,6 +188,49 @@ class BaseWorker(MPIClass):
         # process later.
         if self.queue: self.queue.join()
 
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def record_directory(self, dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
+                         thisdir_max_ctime, thisdir_max_atime, thisdir_uids):
+        """A walked directory's own (non-recursive) totals, into the directory lists."""
+        heaps = self.stats.heaps
+        user_heaps = self.stats.user_heaps
+
+        # track the size & count of this directory in our top heaps
+        de = DirEntry(dirname, thisdir_nbytes, thisdir_nitems, thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime)
+
+        heaps['nitems_dirs'].add((thisdir_nitems, de))
+        heaps['nbytes_dirs'].add((thisdir_nbytes, de))
+
+        # are the contents owned by a single user id?  If so, track per-user info as well
+        # (None if not: uid 0 is a valid owner, and root runs the scans)
+        single_owner = thisdir_uids.pop() if 1 == len(thisdir_uids) else None
+
+        # granular directory tracking by timestamp thresholds.
+        # check against thresholds to avoid tracking users that only have
+        # tiny residual data
+        if thisdir_nitems >= self.options.threshold_count or thisdir_nbytes >= self.options.threshold_size:
+
+            if single_owner is not None:
+                user_heaps['nitems_dirs'][single_owner].add((thisdir_nitems, de))
+                user_heaps['nbytes_dirs'][single_owner].add((thisdir_nbytes, de))
+
+            # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
+            if 10 < thisdir_max_atime:
+                if   SEVEN_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
+                    heaps['nbytes_dirs_7yrs'].add((thisdir_nbytes, de))
+                    if single_owner is not None: user_heaps['nbytes_dirs_7yrs'][single_owner].add((thisdir_nbytes, de))
+
+                elif FIVE_YEARS  < (NOW_TIMESTAMP - thisdir_max_atime):
+                    heaps['nbytes_dirs_5yrs'].add((thisdir_nbytes, de))
+                    if single_owner is not None: user_heaps['nbytes_dirs_5yrs'][single_owner].add((thisdir_nbytes, de))
+
+                elif THREE_YEARS < (NOW_TIMESTAMP - thisdir_max_atime):
+                    heaps['nbytes_dirs_3yrs'].add((thisdir_nbytes, de))
+                    if single_owner is not None: user_heaps['nbytes_dirs_3yrs'][single_owner].add((thisdir_nbytes, de))
         return
 
 

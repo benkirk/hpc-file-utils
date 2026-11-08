@@ -5,7 +5,7 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 | | |
 |---|---|
 | `cli.py` | the `walkstat` and `walktar` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports |
-| `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, and how two ranks' combine), `heaps.py`, `progress.py`, `formatting.py`, `options.py` |
+| `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, and how two ranks' combine), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
 | `stat/` | walkstat: `worker.py` (StatWorker), `report.py` (summary and userlists), `spreadsheet.py` |
 | `tar/` | walktar: `worker.py` (TarWorker) |
 
@@ -17,7 +17,51 @@ Outputs (in the working directory, written by rank 0):
   scans publish it as `<dir>/.usage/summary.txt`.
 - `userlists/<prefix>/<user>`, one per user above `--threshold-size`/`--threshold-count`,
   published as `<dir>/.usage/users/`.
-- `--spreadsheet FILE.xlsx`: three sheets per prefix, added to (or replaced in) FILE.
+- `--spreadsheet FILE.xlsx`: three sheets per prefix (four when filtered), added to (or
+  replaced in) FILE.
+
+## Filtering (phase 4)
+
+Find-like filters, in `common/filters.py`, shared by walkstat and walktar. There are two kinds:
+
+- **Pruning: `--exclude GLOB`** (repeatable) matches an entry's *name* (fnmatch, case-sensitive;
+  `*` matches a leading dot, as in find). A match is never stat'ed, counted, descended or
+  archived: `find TREE -name GLOB -prune -o … -print`. The `--dirs` roots are never tested. A GLOB
+  holding `/` is refused (no path patterns yet). Phase 6's walksync will reuse this option.
+- **Selecting** decides what is counted (walkstat) or archived (walktar's files). It is tested on
+  the stat already fetched, on every entry, directories included, and never stops descent: a
+  directory that fails is still walked for the entries inside it that pass.
+
+  | option | an entry is counted if | find |
+  |---|---|---|
+  | `--mtime-older WHEN`, `--mtime-newer WHEN` (also `--atime-*`, `--ctime-*`) | its time is before (older) or after (newer) WHEN. WHEN is an age, `N[smhdwy]` (a bare N is days, y = 365 days), or a local date, `YYYY-MM-DD[THH:MM[:SS]]`. Older and newer together give a window. | `-mtime +N`, `-newermt DATE` |
+  | `--user U[,U…]`, `--group G[,G…]` (repeatable) | it is owned by one of them. Each is a name, or else a numeric id. | `-user`, `-group` |
+  | `--min-size S`, `--max-size S` | `S_min <= st_size <= S_max`. Sizes as for `--threshold-size` (binary). | `-size +Nc`, `-size -Nc` |
+  | `--type T[,T…]` | its type is one of `f d l p s b c` | `-type` |
+
+Different kinds AND together; the values of one kind OR together. Rank 0 resolves everything
+once (names to ids, ages and dates to absolute times, globs to one regex) and broadcasts it
+with the options. Without a filter, the hot loop pays one `is None` test for each kind.
+
+What a filter changes:
+- **walkstat:** Total Count, Total Size, Type Counts, the Users and Groups tables and every
+  list count only the matching entries. So `--user bob`'s totals are bob's row of the
+  unfiltered Users table.
+  - A directory's own figures (size, items, last access, single owner, the thresholds) cover
+    its matching entries only. With a selecting filter, a directory that holds none is left
+    out of the lists.
+  - Type Counts then leave out the roots, so they sum to Total Count, which is the count of
+    `find TREE -mindepth 1 <predicates>`.
+  - The summary gets `Filters:`, `Excluded:` (entries pruned) and `Unmatched:` (entries
+    scanned but not counted) lines after `Scanned:`. Each userlist gets the `Filters:` line,
+    and the spreadsheet a `<prefix> - Filters` sheet. An unfiltered report is unchanged.
+  - The progress line counts matching items.
+- **walktar:** archives every directory it walks (keeping its mode, owner and ACLs), the roots
+  included, plus exactly the selected non-directories. Nothing below an `--exclude` is
+  archived.
+- **Sizes:** `--min-size`/`--max-size` test `st_size`, the apparent size, as find does. The
+  reports add up `min(st_size, st_blocks × 512)`, which is smaller for sparse or HSM-migrated
+  files.
 
 ## Behaviour changes since the csg-utils import
 
@@ -129,3 +173,25 @@ Outputs (in the working directory, written by rank 0):
       than it saves.
 - **Walks run as root keep uid 0's per-user directory lists.** A directory owned only by
   uid 0 was skipped, because the single-owner test was a truth test on the uid.
+
+### Phase 4
+
+- **Filters** (see [Filtering](#filtering-phase-4) above): `--exclude` prunes by name;
+  `--{m,a,c}time-{older,newer}`, `--user`, `--group`, `--min-size`, `--max-size` and `--type`
+  select. Without a filter, every report is unchanged.
+- **The share and progress checks count entries scanned,** not entries counted, so a huge
+  directory whose entries a filter mostly rejects still answers the Manager's `share`.
+- **Measured on derecho** (CGD-ppc, 3.6M items, 5 rounds, mean of rounds 2–5, against `main`
+  at `c971cd7`):
+
+  | | wall s, new | wall s, main | items/s, new | items/s, main |
+  |---|---|---|---|---|
+  | 1 node × 32 ranks, unfiltered | 114.0 | 114.9 | 32,084 | 31,853 |
+  | 4 nodes × 32 ranks, unfiltered | 38.1 | 37.9 | 101,322 | 103,215 |
+
+  - Both differences are well inside the run-to-run noise (±10–15%).
+  - Without filters, the summary and all 20 userlists are identical to `main`'s, apart from
+    the timestamp line.
+  - A filtered walk (`--atime-older 3y --exclude 'COLD_STORAGE*'`, counting 1.2M of 3.6M
+    entries) took 114.0 s, the same as an unfiltered one. The walk is bound by the `stat`
+    calls, and a filter adds none.

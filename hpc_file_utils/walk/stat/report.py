@@ -100,12 +100,34 @@ def scanned_line(dirs):
                                                   ' under ' + printable(parent) if parent else '')
 
 
+def filter_items(stats, options, per_user=False):
+    """(label, text) pairs naming the active filters (phase 4), or [] for an unfiltered walk,
+    so a filtered report is never mistaken for a full one. The counts are the whole walk's,
+    so a userlist gets only the filters."""
+    filters = getattr(options, 'filters', None)
+    if filters is None:
+        return []
+    items = [('Filters', filters.describe())]
+    if per_user:
+        return items
+    if filters.exclude:
+        items.append(('Excluded', '{} entries (never stat\'ed or descended)'.format(format_number(stats.num_excluded))))
+    if filters.selects:
+        items.append(('Unmatched', '{} entries scanned but not counted'.format(format_number(stats.num_unmatched))))
+    return items
+
+
+def filter_lines(stats, options, per_user=False):
+    return ['{:<13}{}'.format(label + ':', text) for label, text in filter_items(stats, options, per_user)]
+
+
 def summary_text(stats, options, now=None):
     now = now or datetime.now()
     lines = [SEP, '# Summary as of {}'.format(now.isoformat(sep=' ', timespec='minutes')), SEP,
-             scanned_line(options.dirs),
-             'Total Count: {} items'.format(format_number(stats.num_items)),
-             'Total Size:  {}'.format(format_size(stats.total_size))]
+             scanned_line(options.dirs)]
+    lines += filter_lines(stats, options)
+    lines += ['Total Count: {} items'.format(format_number(stats.num_items)),
+              'Total Size:  {}'.format(format_size(stats.total_size))]
     if stats.num_errors:
         lines.append('Scan Errors: {} entries could not be scanned, so these totals are incomplete'.format(
             format_number(stats.num_errors)))
@@ -128,8 +150,9 @@ def userlist_text(stats, counts, options, now=None):
     now = now or datetime.now()
     uid, name = counts.id, printable(str(counts.name))
     lines = [SEP, '# Summary as of {}'.format(now.isoformat(sep=' ', timespec='minutes')), SEP,
-             'User:        {}'.format(name),
-             'Total Count: {} items'.format(format_number(counts.nitems)),
+             'User:        {}'.format(name)]
+    lines += filter_lines(stats, options, per_user=True)
+    lines += ['Total Count: {} items'.format(format_number(counts.nitems)),
              'Total Size:  {}'.format(format_size(counts.nbytes)),
              '', SEP, EXPLAINER, SEP]
     for heap_name, title in DIR_LISTS:
