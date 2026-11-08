@@ -153,7 +153,9 @@ Job 8106112: 4 nodes × 96, rounds 2–3.
 The Manager still handles only 10–21% of phase 3's message count at 4 nodes and is blocked 97–99% of the
 time. `request_shares()`'s O(nranks) scan is part of its 1–3% busy time. Neither the
 ping-pong nor the scan shows up as a cost. HAO-radmhd, whose large directories are the
-ping-pong case, is in [Other tree shapes](#other-tree-shapes).
+ping-pong case, is in [Other tree shapes](#other-tree-shapes). It doesn't change the
+answer: its empty shares cost nothing at the default, and looking for shares more often
+helps nothing there and is what makes the ping-pong cost.
 
 ## Other tree shapes
 
@@ -170,19 +172,48 @@ messages, and its Manager fell to 95.8% blocked in `recv`, the closest any run c
 section 1.4 ceiling. 3.5's workers waited 0.6% of the walk.
 
 **HAO-radmhd (large directories): a tie, the one tree where 3.5 gains nothing.** Its workers
-waited 12.5–14.6% of the walk. About 89% of share requests came back empty: the busy workers
-are each deep in a big directory, with nothing on their stacks yet. That is the ping-pong
-case, but the cost is not the messages (the Manager stays 99.8% blocked). It is latency:
-- A worker looked for a `share` only every 1,000 entries of a directory.
-- At about 6 ms per stat per rank here, that is up to 6 s.
-- Meanwhile the subdirectories the directory has already yielded wait on that worker's
-  stack while other ranks idle.
+waited 12.5–14.6% of the walk, and about 89% of share requests came back empty. The
+Manager stayed 99.8% blocked, so the messages cost nothing.
 
-Section 3.2 of the note assumed 1,000 entries meant 10–50 ms of stats; on campaign storage
-it is a hundred times that. Job 8107007 tests looking every 50 entries.
+**Answering shares sooner does not help (job 8107007).** A worker looks for a `share` every
+1,000 entries of a big directory. At about 6 ms per stat per rank, that can be 6 s, so the
+first guess was that the subdirectories found mid-directory waited on a busy worker's stack
+while others idled. Job 8107007 tested looking every 50 entries, 4 × 96, 3 rounds, all
+rounds shown:
 
-*(Pending: job 8106451, 3.5 at 4 × 32 and 4 × 16 on these two trees; job 8107007, share
-check every 1,000 against every 50 entries.)*
+| | every 1,000 (default) | every 50 |
+|---|---|---|
+| HAO-radmhd wall | 409.0 s | 411.9 s |
+| HAO-radmhd workers waited | 15.7% | 16.6% |
+| HAO-radmhd share requests (empty) | 17.8–18.3k (89%) | 331–341k (99%) |
+| HAO-radmhd Manager blocked in `recv` | 99.7% | 95.8% |
+| CMIP6 wall | 48.6 s | 50.4 s |
+
+The waiting did not move, and the empty replies are the reason. radmhd's big directories hold
+files, not subdirectories, so the busy workers have nothing to share. The waiting is the tail
+of the walk: a few huge directories left at the end, each one unit of work for one worker.
+That is phase 5's job (a big directory's files as several units of work), not the broker's.
+
+Looking more often did set off the ping-pong the hand-off predicted. Each empty reply comes
+back sooner and triggers another request, so there were 19× the requests, and the Manager
+fell to 95.8% blocked. That is the only measurable cost the ping-pong has shown, and only
+with the 50-entry check. The default stays at 1,000 (the change was reverted), and the
+skip-empty-stacks fix is not needed while it does.
+
+Job 8106451: the same trees, 3.5 at fewer ranks per node, rounds 2–3. The last walk ran past
+the job's walltime, so HAO-radmhd at 4 × 16 has round 2 only.
+
+| fileset | 4 × 96 (8106114, round 2) | 4 × 32 | 4 × 16 |
+|---|---|---|---|
+| COLLECTIONS-CDG-cdg | 382 s | **140.7 s** | 151.8 s |
+| HAO-radmhd | 432 s | 385.2 s | **240.3 s** |
+
+- **CDG-cdg is 2.7× faster at 4 × 32 than at 4 × 96.** That is 5.6× faster than phase 3 at
+  4 × 96.
+- **HAO-radmhd gains little at 4 × 32 (−11%), but 4 × 16 is 1.8× faster.** At 32 and 16 ranks
+  per node its workers waited only 3–6% of the walk, so the gain is not less starvation.
+  Large directories seem to hit the per-node limit hardest. Contention for one directory's
+  GPFS tokens would fit, but nothing here measures it.
 
 The radmhd item counts differ slightly between runs (26.636–26.639M): the fileset was being
 written to during the walks.
@@ -206,6 +237,10 @@ The ranks-per-node result matters more for these than any of the knobs above. Tw
 estimates from the CGD-ppc and CMIP6 rates, not measurements:
 - At 4 × 32, RAL-hap would take about 30–50 minutes.
 - Even at 1 node, 32 ranks walked 35–95% faster than 96.
+
+Across all four trees, 4 × 32 took 11–63% less time than 4 × 96 (HAO-radmhd 11%, CGD-ppc 21%, CMIP6 44%,
+CDG-cdg 63%).
+16 per node was best for the large-directory tree.
 
 ## Changes in this close-out
 
