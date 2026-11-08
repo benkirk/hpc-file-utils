@@ -81,12 +81,12 @@ def test_walksync_options(tmp_path):
     a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "-n", "--mtime-newer", "1y",
                                    "--exclude", "COLD_STORAGE*", "--batch-size", "1GiB"])
     assert a.dry_run and a.filters.selects and a.batch_size == 1024 ** 3
+    a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--min-size", "1MiB", "--max-size", "2GiB"])
+    assert (a.filters.min_size, a.filters.max_size) == (1024 ** 2, 2 * 1024 ** 3)
 
 
 @pytest.mark.parametrize("args", [
     [],                                               # no --dest
-    ["--dest", "{dest}", "--min-size", "1MB"],        # size filters: not for walksync
-    ["--dest", "{dest}", "--max-size", "1MB"],
     ["--dest", "{src}"],                              # the source itself
     ["--dest", "{src}/inner"],                        # inside the source
     ["--dest", "{dest}", "--rsync", "no-such-rsync-here"],

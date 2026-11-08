@@ -188,9 +188,10 @@ rerun with nothing changed copies nothing: it costs only the walk.
   processed it, which handles them before its next `ready`, so the Manager's argument
   (manager.py, point 1) is unchanged.
 - **Filters:** `--exclude` prunes by name (never compared, copied or descended; for
-  `COLD_STORAGE*`). The time, `--user`, `--group` and `--type` filters choose which files are
-  copied, a partial copy (the banner says so). Every directory is still walked and created.
-  `--min-size`/`--max-size` are refused.
+  `COLD_STORAGE*`). The time, `--user`, `--group`, `--type` and `--min-size`/`--max-size`
+  filters choose which files are copied, a partial copy (the banner says so). Every directory
+  is still walked and created. A file that later leaves the selection (it grew past
+  `--max-size`, or was modified under `--mtime-older`) keeps its old copy in the destination.
 - **Progress:** `| copied S (R/s now, A/s avg)`. Bytes count when a batch's rsync returns, so
   the rate is lumpy. **Summary:** new / changed / unchanged / only in the destination, the
   excluded and unselected counts, and the files, bytes, rsync batches and rsync-seconds

@@ -142,9 +142,6 @@ def check_sync_options(parser, args):
     """walksync: one source, its own rsync and filter rules."""
     if len(args.dirs) != 1:
         parser.error('walksync copies one directory: give one --dirs (got {})'.format(len(args.dirs)))
-    f = args.filters
-    if f is not None and (f.min_size is not None or f.max_size is not None):
-        parser.error('walksync does not take --min-size/--max-size')
     try:
         args.rsync_opts = shlex.split(args.rsync_opts)
     except ValueError as e:

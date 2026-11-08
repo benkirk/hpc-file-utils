@@ -186,7 +186,7 @@ are replaced by batches + `share`). Decisions taken along the way:
 - the src/dest compare happens in **compare batches** (like walkstat's stat batches), so a huge
   directory's lstats spread over ranks; changed files go into cross-directory **copy batches**;
 - `--dry-run` lists to per-rank `walksync-dryrun-r*.txt` (ranks' stdout lines got spliced);
-- time/user/group/type filters select which files are copied; size filters are refused;
+- the selecting filters (time, user, group, type, size) choose which files are copied;
 - rsync's exit 24 (vanished source files) is a warning; any other failure exits 1.
 
 Original plan: walksync on top of phases 3 and 4. Start from the prototype (`walksync_dev/walkstat/sync_worker.py`)

@@ -123,18 +123,26 @@ def test_exclude_prunes_cold_storage(walk, private_golden_tree, dest, tmp_path):
     same_contents(src, dest, skip=lambda rel: "COLD_STORAGE" in rel)
 
 
-def test_selecting_filter_copies_only_matching_files(walk, private_golden_tree, dest, tmp_path):
+YEAR_AGO = time.time() - 365 * 86400
+MiB = 1024 * 1024
+
+
+@pytest.mark.parametrize("args,wanted", [
+    (["--mtime-newer", "1y"], lambda s: s.st_mtime > YEAR_AGO),
+    (["--min-size", "2MiB"], lambda s: s.st_size >= 2 * MiB),
+    (["--min-size", "1MiB", "--max-size", "3MiB"], lambda s: MiB <= s.st_size <= 3 * MiB),
+], ids=["mtime", "min-size", "size-range"])
+def test_selecting_filter_copies_only_matching_files(walk, private_golden_tree, dest, tmp_path, args, wanted):
     src = private_golden_tree.root
-    r = sync(walk, src, dest, tmp_path / "run", "--mtime-newer", "1y")
+    r = sync(walk, src, dest, tmp_path / "run", *args)
     assert r.ok, r.report()
     assert "a partial copy" in r.stdout
-    cutoff = time.time() - 365 * 86400
     for dirpath, dirnames, filenames in os.walk(src):
         rel = os.path.relpath(dirpath, src)
         assert os.path.isdir(os.path.join(dest, rel)), rel           # every directory is created
         for n in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
-            recent = os.lstat(os.path.join(dirpath, n)).st_mtime > cutoff
-            assert os.path.lexists(os.path.join(dest, rel, n)) == recent, os.path.join(rel, n)
+            selected = wanted(os.lstat(os.path.join(dirpath, n)))
+            assert os.path.lexists(os.path.join(dest, rel, n)) == selected, os.path.join(rel, n)
 
 
 def test_changed_and_extraneous_destination_entries(walk, private_golden_tree, dest, tmp_path):
