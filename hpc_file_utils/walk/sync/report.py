@@ -22,6 +22,7 @@ def sync_lines(stats, elapsed, options):
                  '{} failed, {} with vanished source files'.format(
                      n('copied_files'), format_size(c['copied_bytes']), format_size(rate), n('rsync_batches'),
                      c['rsync_seconds'], elapsed, n('rsync_failures'), n('rsync_vanished')))
-    lines.append('--> Not done here: deletions, hard links, directory modes and times; finish with '
-                 'rsync -aHAX --delete {}/ {}/'.format(options.dirs[0], options.dest))
+    missing = ''.join(', {} (this rsync has none)'.format(m) for m in getattr(options, 'rsync_missing', []))
+    lines.append('--> Not done here: deletions, hard links, directory modes and times{}; finish with '
+                 'rsync -aHAX --delete {}/ {}/'.format(missing, options.dirs[0], options.dest))
     return lines

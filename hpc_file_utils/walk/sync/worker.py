@@ -22,6 +22,7 @@ which a 'share' can hand to idle ranks (see manager.py):
            or --batch-size bytes.
   copy     ('copy', relpaths, nbytes): one
            rsync -aAX --numeric-ids --chmod=Du+w --files-from=- --from0 [--rsync-opts] SRC/ DEST/
+           (-A / -X dropped, with a warning, if this rsync was built without them)
            With --files-from rsync does not recurse, so a directory listed is created
            (with u+w: other ranks' batches write into it) but not filled from here.
 
@@ -40,7 +41,6 @@ import tempfile
 import time
 
 from hpc_file_utils.walk.common import worker as base
-from hpc_file_utils.walk.common.options import RSYNC_OPTS
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy, show
 
@@ -61,7 +61,7 @@ class SyncWorker(BaseWorker):
         self.dest = o.dest
         self.src_prefix = len(self.src.rstrip('/')) + 1
         self.dry_run = o.dry_run
-        self.cmd = [o.rsync, *RSYNC_OPTS, '--files-from=-', '--from0', *o.rsync_opts,
+        self.cmd = [o.rsync, *o.rsync_base, '--files-from=-', '--from0', *o.rsync_opts,
                     self.src.rstrip('/') + '/', self.dest.rstrip('/') + '/']
         self.copied_bytes = 0                 # in rsync batches that finished (progress_extra)
         self.copied_files = 0

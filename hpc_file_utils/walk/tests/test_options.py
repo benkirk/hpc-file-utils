@@ -2,7 +2,7 @@
 
 import pytest
 
-from hpc_file_utils.walk.common.options import parse_options
+from hpc_file_utils.walk.common.options import parse_options, parse_rsync_capabilities, rsync_base_opts
 
 
 def test_defaults(tmp_path):
@@ -111,3 +111,32 @@ def test_walksync_one_source_and_an_existing_dest(tmp_path):
     dest.mkdir()
     with pytest.raises(SystemExit):     # the source inside the destination
         parse_options("walksync", ["--dirs", str(src), "--dest", str(tmp_path)])
+
+
+RSYNC_327 = """rsync  version 3.2.7  protocol version 31
+Capabilities:
+    64-bit files, 64-bit inums, 64-bit timestamps, 64-bit long ints,
+    hardlink-symlinks, IPv6, atimes, batchfiles, inplace, append, ACLs,
+    xattrs, optional secluded-args, iconv, prealloc, stop-at, no crtimes
+"""
+
+
+def test_rsync_capabilities():
+    assert parse_rsync_capabilities(RSYNC_327) == (True, True)
+    assert parse_rsync_capabilities(RSYNC_327.replace("ACLs", "no ACLs")) == (False, True)
+    assert parse_rsync_capabilities(RSYNC_327.replace("xattrs,", "no xattrs,")) == (True, False)
+    assert parse_rsync_capabilities("something else entirely") == (True, True)
+    assert rsync_base_opts(True, True)[0] == "-aAX"
+    assert rsync_base_opts(False, True) == ["-aX", "--numeric-ids", "--chmod=Du+w"]
+    assert rsync_base_opts(False, False)[0] == "-a"
+
+
+def test_walksync_without_acls_drops_A(tmp_path):
+    """An rsync built without ACLs: -A is dropped and the run says ACLs are not copied."""
+    fake = tmp_path / "rsync"
+    fake.write_text("#!/bin/sh\necho 'rsync version 9  Capabilities: no ACLs, xattrs'\n")
+    fake.chmod(0o755)
+    src, dest = tmp_path / "src", tmp_path / "dest"
+    src.mkdir(), dest.mkdir()
+    a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--rsync", str(fake)])
+    assert a.rsync_base[0] == "-aX" and a.rsync_missing == ["ACLs"]

@@ -2,8 +2,10 @@
 
 import argparse
 import os
+import re
 import shlex
 import shutil
+import subprocess
 
 from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters
 
@@ -19,6 +21,31 @@ DESCRIPTIONS = {
 # different ranks create the same parent directories, and a read-only source's would
 # refuse the files of the next batch.
 RSYNC_OPTS = ['-aAX', '--numeric-ids', '--chmod=Du+w']
+
+
+def parse_rsync_capabilities(version_text):
+    """(acls, xattrs) from 'rsync --version': False only for an explicit 'no ACLs' /
+    'no xattrs' in its Capabilities list (conda-forge's Linux rsync has no ACLs); an
+    unfamiliar format counts as supported, and rsync itself will say if it is not."""
+    acls = not re.search(r'\bno ACLs\b', version_text)
+    xattrs = not re.search(r'\bno xattrs\b', version_text)
+    return acls, xattrs
+
+
+def rsync_capabilities(rsync):
+    """(acls, xattrs) the rsync at path 'rsync' was built with."""
+    try:
+        out = subprocess.run([rsync, '--version'], capture_output=True, text=True, errors='replace',
+                             timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ''
+    return parse_rsync_capabilities(out)
+
+
+def rsync_base_opts(acls, xattrs):
+    """RSYNC_OPTS without -A / -X where rsync lacks them."""
+    flags = '-a' + ('A' if acls else '') + ('X' if xattrs else '')
+    return [flags] + RSYNC_OPTS[1:]
 
 
 def parse_options(appname=None, argv=None):
@@ -126,6 +153,10 @@ def check_sync_options(parser, args):
     if rsync is None:
         parser.error('--rsync: no such program: {}'.format(args.rsync))
     args.rsync = rsync
+    # an rsync built without ACLs (or xattrs) refuses -A (-X) outright: drop it, and say so
+    acls, xattrs = rsync_capabilities(rsync)
+    args.rsync_base = rsync_base_opts(acls, xattrs)
+    args.rsync_missing = [name for name, ok in (('ACLs', acls), ('xattrs', xattrs)) if not ok]
     # the progress line and the Manager's last line say what the batches did
     args.written_verb, args.written_units = 'copied', 'rsync batches'
     return
