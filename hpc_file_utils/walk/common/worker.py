@@ -7,9 +7,7 @@ from hpc_file_utils.walk.common.stats import DirEntry, FileEntry
 import os, sys, stat, time
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
-SHARE_CHECK_INCREMENT = 50   # entries of one directory between looks for a 'share': on campaign
-                             # storage a stat can take ~6 ms per rank, so 1,000 kept the subdirs a
-                             # big directory had yielded from idle ranks for seconds; an iprobe is ~1 us
+SHARE_CHECK_INCREMENT = 1000 # entries of one directory between looks for a 'share'
 WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages, whatever --progress
                              # (that is the screen's interval): the Manager's progress line and its
                              # choice of whom to ask for a 'share' use the stack lengths they carry
