@@ -7,7 +7,7 @@ import shlex
 import shutil
 import subprocess
 
-from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters
+from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters, parse_size_option
 
 DESCRIPTIONS = {
     'walkstat': 'Walk directory trees in parallel (MPI) and summarize their usage.',
@@ -131,30 +131,22 @@ def parse_options(appname=None, argv=None):
 
     if args.batch_files < 1:
         parser.error('--batch-files must be at least 1')
-    if appname in ('walktar', 'walksync'):
-        from humanfriendly import InvalidSize, parse_size
-        try:
-            args.batch_size = parse_size(args.batch_size, binary=True)
-        except InvalidSize as e:
-            parser.error('--batch-size: {}'.format(e))
-        if args.batch_size < 1:
-            parser.error('--batch-size must be at least 1 byte')
-    if 'walktar' == appname and args.read_ahead < 0:
-        parser.error('--read-ahead must be at least 0')
-
-    if 0 >= args.progress:
-        args.progress = float('inf')
-
-    if '0' == args.threshold_size:
-        args.threshold_size = 0
-    else:
-        from humanfriendly import InvalidSize, parse_size
-        try:
-            args.threshold_size = parse_size(args.threshold_size, binary=True)
-        except InvalidSize as e:
-            parser.error('--threshold-size: {}'.format(e))
-
     try:
+        if appname in ('walktar', 'walksync'):
+            args.batch_size = parse_size_option(args.batch_size, '--batch-size')
+            if args.batch_size < 1:
+                parser.error('--batch-size must be at least 1 byte')
+        if 'walktar' == appname and args.read_ahead < 0:
+            parser.error('--read-ahead must be at least 0')
+
+        if 0 >= args.progress:
+            args.progress = float('inf')
+
+        if '0' == args.threshold_size:
+            args.threshold_size = 0
+        else:
+            args.threshold_size = parse_size_option(args.threshold_size, '--threshold-size')
+
         args.filters = compile_filters(args)   # None without a filter
     except ValueError as e:
         parser.error(str(e))

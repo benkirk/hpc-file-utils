@@ -8,8 +8,9 @@ Two kinds, which behave differently:
   selecting  --{m,a,c}time-{older,newer} WHEN, --user, --group, --min-size, --max-size,
              --type              tested on the stat already fetched (no extra system calls),
                                  on every entry, directories included. They decide what is
-                                 counted (walkstat) or archived (walktar's files), never what
-                                 is descended: a directory that fails can hold entries that pass.
+                                 counted (walkstat), archived (walktar) or copied (walksync),
+                                 never what is descended: a directory that fails can hold
+                                 entries that pass.
 
 Kinds AND together; the values of one repeatable kind (--user a,b --user c) OR together.
 
@@ -30,7 +31,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-SECONDS_IN_YEAR = 60*60*24*365   # as common/worker.py
+from hpc_file_utils.walk.common.stats import SECONDS_IN_YEAR
+
 AGE_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 7*86400, 'y': SECONDS_IN_YEAR}
 AGE_RE = re.compile(r'^(\d+(?:\.\d+)?)([smhdwy]?)$')
 
@@ -106,8 +108,8 @@ class Filters:
 def add_filter_options(parser):
     g = parser.add_argument_group('filters', 'find-like; different kinds AND together. '
                                   '--exclude prunes (never stat\'ed or descended); the others select what is '
-                                  'counted (walkstat) or archived (walktar\'s files), and are tested on every '
-                                  'entry, directories included, without stopping descent.')
+                                  'counted (walkstat), archived (walktar) or copied (walksync), and are tested '
+                                  'on every entry, directories included, without stopping descent.')
     g.add_argument('--exclude', action='append', metavar='GLOB',
                    help='skip entries whose name matches GLOB (fnmatch, case-sensitive; repeatable): '
                         'never stat\'ed, counted, descended or archived, like find\'s -name GLOB -prune')
@@ -160,7 +162,9 @@ def _ids(values, lookup, kind):
     return frozenset(ids)
 
 
-def _size(text, option):
+def parse_size_option(text, option):
+    """A size option's value ('10MB', '1GiB': binary units) in bytes; ValueError, naming
+    the option, if it is not a size. parse_options() turns that into a parser error."""
     from humanfriendly import InvalidSize, parse_size
     try:
         return parse_size(text, binary=True)
@@ -210,10 +214,10 @@ def compile_filters(args, now=None):
         f.described.append('--group {}'.format(','.join(args.group)))
 
     if args.min_size is not None:
-        f.min_size = _size(args.min_size, '--min-size')
+        f.min_size = parse_size_option(args.min_size, '--min-size')
         f.described.append('--min-size {}'.format(args.min_size))
     if args.max_size is not None:
-        f.max_size = _size(args.max_size, '--max-size')
+        f.max_size = parse_size_option(args.max_size, '--max-size')
         f.described.append('--max-size {}'.format(args.max_size))
     if f.min_size is not None and f.max_size is not None and f.min_size > f.max_size:
         raise ValueError('--min-size is larger than --max-size')

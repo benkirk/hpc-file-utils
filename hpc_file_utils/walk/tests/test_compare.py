@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hpc_file_utils.walk.sync.compare import extraneous, needs_copy, show
+from hpc_file_utils.walk.sync.compare import extraneous, needs_copy
 
 
 def st(kind="f", size=10, mtime=1000.0, rdev=0):
@@ -44,9 +44,3 @@ def test_extraneous():
     assert extraneous(["a", "b"], ["b", "c", "a", "COLD_STORAGE"]) == ["COLD_STORAGE", "c"]
     assert extraneous(["a"], ["a", "c", "COLD_STORAGE"], exclude=lambda n: n.startswith("COLD")) == ["c"]
     assert extraneous([], []) == []
-
-
-def test_show():
-    assert show("plain/name") == "plain/name"
-    assert show("new\nline\ttab") == "new\\nline\\ttab"
-    assert show("bad-\udcff") == "bad-\\xff"

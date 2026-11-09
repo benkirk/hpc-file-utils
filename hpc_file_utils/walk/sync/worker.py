@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """SyncWorker: walksync's worker (phase 6). Copies what is new or changed from the source
 (--dirs SRC) to --dest DEST with batched rsync --files-from, never deleting anything.
 
@@ -41,8 +39,9 @@ import tempfile
 import time
 
 from hpc_file_utils.walk.common import worker as base
+from hpc_file_utils.walk.common.formatting import printable
 from hpc_file_utils.walk.common.worker import BaseWorker
-from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy, show
+from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy
 
 RSYNC_POLL_SECONDS = 0.5   # while an rsync runs, look for a 'share' and send progress this often
 RSYNC_VANISHED = 24        # rsync's "some source files vanished": a warning, not a failure
@@ -114,7 +113,7 @@ class SyncWorker(BaseWorker):
         c['new' if reason == NEW else 'changed'] += 1
         c['bytes_to_copy'] += size
         if self.dry_run:
-            lines.append('{} {}\n'.format('N' if reason == NEW else 'C', show(rel)))
+            lines.append('{} {}\n'.format('N' if reason == NEW else 'C', printable(rel)))
         else:
             self.add_to_batch(rel, size)
         return
@@ -197,7 +196,7 @@ class SyncWorker(BaseWorker):
         extra = extraneous(src_names, dest, exclude)
         st.counters['extraneous'] += len(extra)
         if self.dry_run:
-            lines += ['X {}\n'.format(show(join(reldir, n))) for n in extra]
+            lines += ['X {}\n'.format(printable(join(reldir, n))) for n in extra]
         self.emit(lines)
         return
 
@@ -353,11 +352,4 @@ class SyncWorker(BaseWorker):
         if self.dryrun_file is not None:
             self.dryrun_file.close()
             self.dryrun_file = None
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_file(self, filename, statinfo):
-        # not called: SyncWorker has its own scan (process_directory above)
         return

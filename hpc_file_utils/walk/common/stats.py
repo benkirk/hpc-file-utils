@@ -122,6 +122,15 @@ class RankInfo(NamedTuple):
     max_local_dirs : int  # high-water mark of its local stack
 
 
+def _add_into(mine, theirs):
+    """Add the dict 'theirs' into 'mine': a key both hold is add()ed, a new one taken."""
+    for k, v in theirs.items():
+        if k in mine:
+            mine[k].add(v)
+        else:
+            mine[k] = v
+
+
 class WalkStats:
     """One rank's accumulators (or, after merge(), several ranks')."""
 
@@ -159,12 +168,8 @@ class WalkStats:
         self.num_unmatched += other.num_unmatched
         for k, v in other.st_modes.items():
             self.st_modes[k] += v
-        for mine, theirs in ((self.uids, other.uids), (self.gids, other.gids)):
-            for k, v in theirs.items():
-                if k in mine:
-                    mine[k].add(v)
-                else:
-                    mine[k] = v
+        _add_into(self.uids, other.uids)
+        _add_into(self.gids, other.gids)
         for name, heap in other.heaps.items():
             self.heaps[name].merge(heap)
         for name, per_user in other.user_heaps.items():
@@ -174,19 +179,12 @@ class WalkStats:
                 self.user_heaps[name][uid].merge(heap)
         self.ranks += other.ranks
         self.counters.update(other.counters)
-        for path, totals in other.partial_dirs.items():
-            if path in self.partial_dirs:
-                self.partial_dirs[path].add(totals)
-            else:
-                self.partial_dirs[path] = totals
+        _add_into(self.partial_dirs, other.partial_dirs)
         return self
 
     def add_partial_dir(self, path, totals):
         """Part of a directory's totals, from one stat batch; listed once all are merged."""
-        if path in self.partial_dirs:
-            self.partial_dirs[path].add(totals)
-        else:
-            self.partial_dirs[path] = totals
+        _add_into(self.partial_dirs, {path: totals})
 
     def record_directory(self, path, totals, threshold_count, threshold_size):
         """A walked directory's own (non-recursive) totals, into the directory lists."""

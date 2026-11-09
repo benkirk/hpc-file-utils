@@ -1,4 +1,4 @@
-"""Fixtures for the walkstat/walktar tests.
+"""Fixtures for the walkstat, walktar and walksync tests.
 
 The tests run the console scripts the way the scans do:
 ``mpiexec -n 4 walkstat --dirs <tree>``, in a scratch working directory
@@ -121,7 +121,7 @@ class WalkResult:
 
 
 def console_script(app):
-    """The installed walkstat/walktar ('pip install -e .' puts them beside python)."""
+    """The installed console script, walkstat, walktar or walksync ('pip install -e .' puts them beside python)."""
     exe = Path(sys.executable).parent / app
     if not exe.exists():
         pytest.fail(f"{exe} is missing: reinstall the package (source etc/config_env.sh)")
@@ -129,7 +129,7 @@ def console_script(app):
 
 
 def run_walk(app, dirs, cwd, nranks=4, args=(), timeout=120):
-    """Run walkstat/walktar under mpiexec; never hangs longer than ``timeout``."""
+    """Run a console script under mpiexec; never hangs longer than ``timeout``."""
     cwd = Path(cwd)
     cwd.mkdir(parents=True, exist_ok=True)
     cmd = mpiexec(nranks) + [console_script(app), "--progress", "0",

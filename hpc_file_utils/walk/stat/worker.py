@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """StatWorker: walkstat's worker, with stat batches (phase 5).
 
 The scan of a directory reads its names and types from scandir (d_type: no stat on
@@ -29,13 +27,6 @@ from hpc_file_utils.walk.common.worker import BaseWorker
 
 ################################################################################
 class StatWorker(BaseWorker):
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def __init__(self):
-        BaseWorker.__init__(self)
-        return
-
-
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def count(self, path, statinfo, totals):
@@ -211,11 +202,4 @@ class StatWorker(BaseWorker):
             self.list_directory(dirname, totals)
         else:                                   # the last part of a split directory
             st.add_partial_dir(dirname, totals)
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_file(self, filename, statinfo):
-        # not called: StatWorker has its own scan (process_directory above)
         return

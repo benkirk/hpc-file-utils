@@ -52,10 +52,3 @@ def extraneous(src_names, dest_names, exclude=None):
     if exclude is not None:
         extra = {n for n in extra if not exclude(n)}
     return sorted(extra)
-
-
-def show(path):
-    """A path printable on one line, whatever bytes it holds: a newline or tab as \\n or
-    \\t, a byte that is not UTF-8 as \\xNN (for reading, not for parsing back)."""
-    text = path.encode('utf-8', 'surrogateescape').decode('utf-8', 'backslashreplace')
-    return text.replace('\n', '\\n').replace('\t', '\\t')

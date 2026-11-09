@@ -19,9 +19,7 @@ class MPIClass:
         self.comm = MPI.COMM_WORLD
         self.rank   = self.comm.Get_rank()
         self.nranks = self.comm.Get_size()
-        self.i_am_root = False if self.rank else True
         self.options = self.comm.bcast(options)
-        self.dirs = None
         self.maxnumdirs = 0
         self.stats = WalkStats(self.options.heap_size)
         self.total_errors = 0 # sum over all ranks, set in collect()

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """TarWorker: walktar's worker. One tar file per batch of files, plus one per rank for
 the directories it walks (phase 5; see manager.py for batches and the protocol).
 

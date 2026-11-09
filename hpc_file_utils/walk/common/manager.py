@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """The Manager (rank 0) hands directories and file batches to the workers until the walk is done.
 
 Workers walk their own local stack of directories, depth-first, and talk to the Manager
@@ -123,8 +121,7 @@ class Manager(MPIClass):
         self.wait_time = 0.0         # blocked in recv, waiting for any message
         self.busy_time = 0.0         # handling messages and answering 'ready's
         self.max_handle_time = 0.0
-        self.nexecute = 0            # 'ready' answered with a directory
-        self.sum_ready_wait = 0.0    # ... and how long each was held first
+        self.sum_ready_wait = 0.0    # how long each 'ready' was held before its 'execute'
         self.max_ready_wait = 0.0
         self.max_terminate_wait = 0.0
         return
@@ -140,7 +137,7 @@ class Manager(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def update_progress(self, rank, payload):
-        """payload: the (items, bytes, extra) every worker message carries (protocol.py)."""
+        """payload: the (items, bytes, queued, extra) every worker message carries (protocol.py)."""
         self.progress.update(rank, payload)
         return
 
@@ -263,7 +260,6 @@ class Manager(MPIClass):
             self.comm.send(give, dest=rank, tag=self.tags['execute']); self.nsends += 1
             self.ndispatches += 1
             wait = self.MPI.Wtime() - when
-            self.nexecute += 1
             self.sum_ready_wait += wait
             self.max_ready_wait = max(self.max_ready_wait, wait)
         return
@@ -363,7 +359,7 @@ class Manager(MPIClass):
         print('  --> Manager blocked in recv: {:.2f} s of {:.2f} s in the loop ({:.1f}%)'.format(
             self.wait_time, loop_time, 100 * self.wait_time / loop_time if loop_time else 0))
         print('  --> Manager ready -> execute: {} answered, held {} mean, {} max (includes waiting for work)'.format(
-            format_number(self.nexecute), _ms(self.sum_ready_wait / max(self.nexecute, 1)),
+            format_number(self.ndispatches), _ms(self.sum_ready_wait / max(self.ndispatches, 1)),
             _ms(self.max_ready_wait)))
         sys.stdout.flush()
         return

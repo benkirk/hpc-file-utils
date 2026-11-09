@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """BaseWorker: scans the directories the Manager hands it (see manager.py for the protocol)."""
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
@@ -60,8 +58,6 @@ class BaseWorker(MPIClass):
         # does; without one, every directory walked, the roots included, as before phase 4
         if select is None: st.st_modes['dir'] += 1
 
-        #print('[{:3d}](d) {}'.format(self.rank, dirname))
-
         try:
             thisdir_nitems = 0
             thisdir_nbytes = 0
@@ -105,15 +101,9 @@ class BaseWorker(MPIClass):
                         if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
                     continue
 
-                # about statinfo.st_size: we can't always trust it.
-                # for sparse files, or files migrated to tape via HSM,
-                # the size is not what is occupied on disk.
-                # a better metric is (number of blocks * fs_block_size);
-                # however the block size is variable across filesystems / GPFS file sets
-                # for regular, uncompressed, unmigrated files; size <= (n_blocks*fs_block_size)
-                item_size = statinfo.st_size
-                item_nblocks = statinfo.st_blocks
-                for bs in [ 512 ]: item_size = min(statinfo.st_size, statinfo.st_blocks*bs)
+                # about statinfo.st_size: we can't always trust it. for sparse files, or files
+                # migrated to tape via HSM, the size is not what is occupied on disk.
+                item_size = min(statinfo.st_size, statinfo.st_blocks * 512)
 
                 thisdir_nitems += 1
                 thisdir_nbytes += item_size
@@ -193,7 +183,7 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def add_to_batch(self, path, size):
-        """Tools with a process_batch() (walktar): put a selected file in the open batch.
+        """Tools with a process_batch() (walktar, walksync): put a selected file in the open batch.
 
         Past --batch-files files or --batch-size bytes the batch closes onto our list of
         batches to process, which a 'share' can hand to idle ranks. The open batch carries
