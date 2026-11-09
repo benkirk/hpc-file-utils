@@ -61,7 +61,12 @@ def per_rank(cwd):
 
 
 def test_big_directory_is_spread_over_every_rank(walk, big_dir_tree, tmp_path):
-    r = walk.run("walktar", [big_dir_tree], cwd=tmp_path, nranks=4, args=["--batch-files", "10"])
+    # --read-ahead 0: this tests how batches are shared, and on an oversubscribed runner the
+    # reader threads tip the scheduling. 24 copies at once on 12 cores: 3 of 24 runs left the
+    # scanning rank with 270 of 403 files at the default 16, 0 of 48 at 0. With real I/O on
+    # derecho the default balanced (manyfiles: 5.9 / 6.3 / 6.8 GiB per rank, min / mean / max).
+    r = walk.run("walktar", [big_dir_tree], cwd=tmp_path, nranks=4,
+                 args=["--batch-files", "10", "--read-ahead", "0"])
     assert r.ok, r.report()
     names = walk.tar_names(tmp_path)
     assert len(names) == len(set(names)), "an entry was archived twice"
