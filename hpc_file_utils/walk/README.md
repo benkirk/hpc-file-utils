@@ -104,6 +104,19 @@ just as directories are, so one huge directory no longer ties up one rank for ho
   `share` and sends its counts when they are due. The tar thread and `--tar-queue-depth` are
   gone. The thread overlapped scanning a directory with archiving it, but only within that
   directory: the worker waited for its queue to drain after every directory.
+- **Read-ahead (phase 5.5):** `--read-ahead` [16] reader threads per rank open and read the
+  batch's next files while the worker writes the current one into the tar.
+  - A reader reads a regular file whole when it is at most 16 MiB, so a rank holds at most
+    about 16 × 16 MiB. A bigger file it only opens, and the tar copies it in 16 MiB chunks
+    as before.
+  - A reader lstats first and opens only regular files, with `O_NOFOLLOW`. Symlinks, fifos
+    and devices still go through `tar.add()`.
+  - The worker writes the files in batch order, through tarfile's own `gettarinfo()` and
+    `addfile()`. The members (names, modes, owners, times, hard links) are `tar.add()`'s.
+    `test_tar_members.py` checks this.
+  - A file that shrinks between its stat and its read counts one error and is left out.
+    `tar.add()` would have written its header and then failed partway, breaking the tar.
+  - `--read-ahead 0` is phase 5's `tar.add()`, one file at a time.
 
 ### walkstat: stat batches
 
@@ -285,12 +298,61 @@ or on an idle one the Manager's `share` hands it to. Batches move exactly as wal
     - 5,000-file batches left `manyfiles`' busiest rank with 9.8 GiB against a mean of 6.3
       (423–466 s).
     - Hence the defaults of 1,000 files and 16 GiB.
-  - **Balanced, the limit is the node.** On scratch, 31 streams together reached about
-    2.5–3 GiB/s.
-    - One stream reading GDEX on GPFS (campaign) and writing to GPFS (campaign) managed 2.59
-      GiB/s on its own, against 0.42 GiB/s on scratch.
-    - Small files cost about 40 ms each per stream on both filesystems. That is worth a
-      profile later (`tarfile` looks up owner and group names for every member).
+  - **GPFS and Lustre, each way**, 1 × 32 at the defaults. The GDEX trees (read-only, on
+    campaign GPFS) are `day_1`, 468 × 4.9 GiB, and the VIT zarr, 333k × ~4 MiB. "csg" is
+    campaign GPFS (`/glade/campaign/cisl/csg`). "Cut off" runs stopped at 900 s and give a
+    rate only; "no copybufsize" ran before the 16 MiB chunks.
+
+    | tree, read → write | `main` | phase 5 |
+    |---|---|---|
+    | scratch `bigdir`, Lustre → Lustre | 2,433 s, 0.42 GiB/s | 408–423 s, 2.4–2.5 GiB/s |
+    | scratch `manyfiles`, Lustre → Lustre | ~8,400 s, 0.024 GiB/s (24.5 files/s) | 260–282 s, 0.7 GiB/s |
+    | GDEX `day_1`, GPFS → GPFS (csg) | 881 s, 2.59 GiB/s | 362 s, 6.31 GiB/s (no copybufsize) |
+    | GDEX VIT zarr, GPFS → GPFS (csg) | cut off, 0.10 GiB/s (26 files/s) | 410 s, 3.15 GiB/s (no copybufsize) |
+    | GDEX `day_1`, GPFS → Lustre (scratch) | cut off, 0.56 GiB/s | 421 s, 5.43 GiB/s |
+    | GDEX VIT zarr, GPFS → Lustre | cut off, 0.09 GiB/s | ~460 s, 2.81 GiB/s |
+    | scratch `bigdir`, Lustre → GPFS (csg) | cut off, 0.61 GiB/s | 359 s, 2.85 GiB/s |
+    | scratch `manyfiles`, Lustre → GPFS | cut off, 0.03 GiB/s | 247 s, 0.79 GiB/s |
+
+  - **Reading Lustre caps a node:** 31 streams reading scratch reach 2.4–2.9 GiB/s whatever
+    they write to; reading GPFS, 5.4–6.3 GiB/s. Writing to Lustre costs a little (6.31 →
+    5.43 GiB/s).
+  - **One stream is slow whenever Lustre is at either end:** 0.42–0.61 GiB/s, against 2.59
+    GiB/s GPFS → GPFS.
+  - **Small files cost about 40 ms each per stream** on both filesystems (24.5–26 files/s).
+    Phase 5.5 found where (below).
+  - The node's NIC is 200 Gb/s (~25 GB/s), and `mktree` wrote 17 GB/s from one node in 1 MiB
+    writes: walktar is far from the hardware.
   - **walkstat** (CGD-ppc, 1 × 32, 5 rounds, the mean of rounds 2–5): 105.3 s against
     `main`'s 102.7 s, best runs 102.6 against 102.1 s. This is within the noise; the walk
     itself is unchanged.
+
+### Phase 5.5
+
+- **Where a small file's ~40 ms went:** a profile of `tar.add()` on 300 `manyfiles` members
+  (1 MiB each, derecho login node) gave 38.8 ms per file.
+  - 35 ms of it is the source file's one `read()`: the storage's latency on a cold read. It
+    is the same on campaign GPFS (37.5 ms per ~5 MiB file of the GDEX VIT zarr).
+  - lstat, open, close and the tar header together cost about 1.2 ms. The owner and group
+    name lookups cost 0.04 ms.
+  - Reading in parallel scales almost linearly: 16 threads read 500 files/s on scratch and
+    389 on GPFS, against 26–30 one at a time. `posix_fadvise(WILLNEED)` changed nothing on
+    either filesystem.
+  - Hence the reader threads (`--read-ahead`, [above](#walktar)), not a faster `tar.add()`.
+- **Measured on derecho**, 1 node × 32 ranks, tars on scratch, two rounds each. Each
+  `manyfiles` run follows a `bigdir` run, whose 2 TiB of I/O flush the caches: scratch's
+  servers answer a re-read of a recently read file in ~5 ms instead of ~35.
+
+  | `--read-ahead` | `bigdir`: 1,024 × 1 GiB | `manyfiles`: 200,000 × 1 MiB |
+  |---|---|---|
+  | phase 5 (`tar.add()`) | 416.3, 416.9 s (2.46 GiB/s) | 274.5, 268.1 s (0.72 GiB/s) |
+  | 4 | 429.7, 408.2 s | 84.2, 81.2 s (2.37 GiB/s, 3.3×) |
+  | **16 (default)** | 417.9, 427.9 s | **54.2, 53.4 s (3.64 GiB/s, 5.0×)** |
+  | 32 | 424.1, 421.1 s | 57.4, 54.7 s |
+
+  - Big files are unchanged within the noise (408–430 s for every setting): a big file's
+    time is its transfer, not the start of its read.
+  - With read-ahead, 31 streams read small files from scratch at 3.6 GiB/s. Phase 5's
+    2.4–2.9 GiB/s "Lustre read cap" was partly this latency.
+  - These runs used PALS's default binding, which pins each rank to one CPU (`taskset`
+    showed ranks on CPUs 0, 1, 2, ...), so a rank's reader threads share that CPU.

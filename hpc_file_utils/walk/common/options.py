@@ -40,6 +40,7 @@ def parse_options(appname=None, argv=None):
     # tool-specific arguments follow
     if 'walktar' == appname:
         parser.add_argument('--batch-size', default='16GiB', type=str, required=False, help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own (default: 16GiB)')
+        parser.add_argument('--read-ahead', default=16, type=int, required=False, help='Files each rank opens and reads (whole, up to 16 MiB) ahead of the one it is archiving, in as many reader threads: a small file costs one storage round trip, ~35 ms on campaign GPFS and scratch, and these overlap them (default: 16; 0 reads one file at a time)')
 
     args = parser.parse_args(argv)
 
@@ -61,6 +62,8 @@ def parse_options(appname=None, argv=None):
             parser.error('--batch-size: {}'.format(e))
         if args.batch_size < 1:
             parser.error('--batch-size must be at least 1 byte')
+        if args.read_ahead < 0:
+            parser.error('--read-ahead must be at least 0')
 
     if 0 >= args.progress:
         args.progress = float('inf')

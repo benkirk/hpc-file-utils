@@ -18,6 +18,7 @@ Phase 5 adds two batch variants: walkstat with tiny stat batches (lqm2-statbatch
 lost batch there loses its entries from the Total Count), and walktar with tiny batches, so the busy rank's share
 replies carry batches as well as directories. A lost batch would not show in the Total
 Count (the scan counted it), only in the tars, so it checks that their union is the tree.
+Phase 5.5 runs it with the reader threads (--read-ahead, default 16) and without (0).
 """
 
 import os
@@ -43,10 +44,11 @@ def test_wide_directory_terminates_and_counts_everything(walk, wide_tree, tmp_pa
 
 @pytest.mark.mpi
 @pytest.mark.timeout(RUN_TIMEOUT + 60)
+@pytest.mark.parametrize("read_ahead", ["16", "0"], ids=["readahead16", "readahead0"])
 @pytest.mark.parametrize("run", range(RUNS))
-def test_batch_storm_terminates_and_archives_everything(walk, wide_tree, tmp_path, run):
+def test_batch_storm_terminates_and_archives_everything(walk, wide_tree, tmp_path, run, read_ahead):
     r = walk.run("walktar", [wide_tree.root], cwd=tmp_path, timeout=RUN_TIMEOUT,
-                 args=["--batch-files", "20", "--local-queue-max", "2"])
+                 args=["--batch-files", "20", "--local-queue-max", "2", "--read-ahead", read_ahead])
     assert not r.timed_out, f"run {run} hung:\n{r.report()}"
     assert r.returncode == 0, r.report()
     assert r.total_count() == wide_tree.nitems, f"run {run} lost entries:\n{r.report()}"
