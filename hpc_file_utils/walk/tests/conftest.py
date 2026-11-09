@@ -112,6 +112,15 @@ class WalkResult:
         m = COUNT_RE.search(self.stdout)
         return int(m.group(1).replace(",", "")) if m else None
 
+    def ints(self, regex):
+        """The integers the groups of 'regex' (a pattern or a string) match in stdout,
+        '1,234' included; the test fails with this run's report if it does not match."""
+        if isinstance(regex, str):
+            regex = re.compile(regex, re.M)
+        m = regex.search(self.stdout)
+        assert m, self.report()
+        return tuple(int(x.replace(",", "")) for x in m.groups())
+
     def summary(self, prefix="output"):
         return (self.cwd / f"summary-{prefix}").read_text(errors="surrogateescape")
 
@@ -378,14 +387,18 @@ def build_golden_tree(root):
                 nitems=nitems, nfiles=len(when))
 
 
+def _unlock(root):
+    """Make the golden tree's read-only subtree writable again, so pytest can clean it up."""
+    for p in [root / "readonly", root / "readonly/sub"]:
+        p.chmod(0o755)
+
+
 @pytest.fixture(scope="session")
 def golden_tree(tmp_path_factory):
     root = tmp_path_factory.mktemp("golden") / "tree"
     root.mkdir()
-    tree = build_golden_tree(root)
-    yield tree
-    for p in [root / "readonly", root / "readonly/sub"]:   # let pytest clean up
-        p.chmod(0o755)
+    yield build_golden_tree(root)
+    _unlock(root)
 
 
 @pytest.fixture
@@ -395,10 +408,8 @@ def private_golden_tree(tmp_path):
     the dates in the shared tree's golden output."""
     root = tmp_path / "private" / "tree"
     root.mkdir(parents=True)
-    tree = build_golden_tree(root)
-    yield tree
-    for p in [root / "readonly", root / "readonly/sub"]:
-        p.chmod(0o755)
+    yield build_golden_tree(root)
+    _unlock(root)
 
 
 WIDE_SUBDIRS = 2000

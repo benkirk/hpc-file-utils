@@ -30,22 +30,14 @@ RANK_ROW_RE = re.compile(r"^\s+(\d+)\s+\S+\s+[\d,]+\s+([\d,]+)\s", re.M)
 DIR_ATTRS_RE = re.compile(r"^\.d\.\.[.t][.p]\.\.\.[.a]\. ")
 
 
-def _int(s):
-    return int(s.replace(",", ""))
-
-
 def sync_counts(r):
     """(new, changed, unchanged, extraneous) from a run's summary."""
-    m = SYNC_RE.search(r.stdout)
-    assert m, r.report()
-    return tuple(map(_int, m.groups()))
+    return r.ints(SYNC_RE)
 
 
 def copied(r):
     """(entries copied, rsync batches, failed batches)."""
-    m = COPIED_RE.search(r.stdout)
-    assert m, r.report()
-    return tuple(map(_int, m.groups()))
+    return r.ints(COPIED_RE)
 
 
 def oracle(src, dest, *extra, delete=True, final=False):
@@ -228,11 +220,11 @@ def test_big_directory_is_copied_by_several_ranks(walk, big_dir, dest, tmp_path)
     assert r.ok, r.report()
     assert copied(r)[0] == NFILES + 1, r.report()
     # each rank's 'files' column is what it copied; how many take part depends on timing
-    files = {int(rank): _int(n) for rank, n in RANK_ROW_RE.findall(r.stdout)}
+    files = {int(rank): int(n.replace(",", "")) for rank, n in RANK_ROW_RE.findall(r.stdout)}
     assert sum(files.values()) == NFILES + 1, f"{files}\n{r.report()}"
     assert sum(1 for n in files.values() if n) >= 2, f"{files}\n{r.report()}"
-    m = re.search(r"--> Batches: ([\d,]+) received in share replies", r.stdout)
-    assert m and _int(m.group(1)) > 0, r.report()
+    (shared,) = r.ints(r"--> Batches: ([\d,]+) received in share replies")
+    assert shared > 0, r.report()
     assert oracle(big_dir, dest) == []
 
 
