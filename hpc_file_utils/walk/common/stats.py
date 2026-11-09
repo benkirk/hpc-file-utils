@@ -8,7 +8,7 @@ break on the path), so the job combines its ranks' stats with one tree reduction
 import grp
 import pwd
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from functools import partial
 from typing import NamedTuple
 
@@ -144,6 +144,9 @@ class WalkStats:
         # walkstat: directories whose entries were split over several stat batches, path ->
         # DirTotals; their parts are added up here, and listed by finish_directories()
         self.partial_dirs = {}
+        # a tool's own totals (walksync: new, changed, copied bytes, rsync batches, ...),
+        # summed by merge()
+        self.counters = Counter()
 
     def merge(self, other):
         """Add 'other' into this one (in place); returns self."""
@@ -170,6 +173,7 @@ class WalkStats:
                     continue
                 self.user_heaps[name][uid].merge(heap)
         self.ranks += other.ranks
+        self.counters.update(other.counters)
         for path, totals in other.partial_dirs.items():
             if path in self.partial_dirs:
                 self.partial_dirs[path].add(totals)

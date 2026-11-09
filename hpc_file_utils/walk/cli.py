@@ -1,4 +1,4 @@
-"""Console scripts: walkstat and walktar (see [project.scripts] in pyproject.toml).
+"""Console scripts: walkstat, walktar and walksync (see [project.scripts] in pyproject.toml).
 
 Rank 0 runs the Manager, every other rank a worker of the requested tool.
 """
@@ -17,6 +17,9 @@ def make_worker(app):
     if app == 'walktar':
         from hpc_file_utils.walk.tar.worker import TarWorker
         return TarWorker()
+    if app == 'walksync':
+        from hpc_file_utils.walk.sync.worker import SyncWorker
+        return SyncWorker()
     raise NotImplementedError('unrecognized tool: {}'.format(app))
 
 
@@ -77,8 +80,16 @@ def main(app, argv=None):
             print('All Options: {}'.format(args))
         else:
             print('Processing Directories: {}'.format(args.dirs))
+        if app == 'walksync':
+            print('Syncing {}/ -> {}/{}'.format(args.dirs[0], args.dest, ' (dry run: copying nothing)' if args.dry_run else ''))
+            if args.rsync_note:
+                print('rsync: {}'.format(args.rsync_note))
+            for missing in args.rsync_missing:
+                print('WARNING: {} was built without {}: they are not copied'.format(args.rsync, missing))
         if args.filters is not None:
             print('Filters: {}'.format(args.filters.describe()))
+            if app == 'walksync' and args.filters.selects:
+                print('    a partial copy: only the files the filters select (every directory is created)')
         print('Running {} on {} MPI ranks'.format(app, size))
         sys.stdout.flush()
         walker = Manager(options=args)
@@ -86,15 +97,18 @@ def main(app, argv=None):
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
     if 0 == rank:
-        report(walker, stats)
+        report(walker, stats, app)
 
-    # exit-status policy: collect() summed the error counts on every rank
+    # exit-status policy: collect() summed the error counts on every rank. walksync
+    # always fails on errors: an incomplete copy must not look like a finished one.
+    if app == 'walksync' and walker.total_errors:
+        return 1
     if walker.options.fail_on_errors and walker.total_errors:
         return 2
     return 0
 
 
-def report(manager, stats):
+def report(manager, stats, app='walkstat'):
     """Rank 0, after the walk: the reports, and a cross-check of the counts."""
     from hpc_file_utils.walk.stat.report import balance_lines, rank_lines, write_reports
 
@@ -110,7 +124,13 @@ def report(manager, stats):
         print('\n'.join(rank_lines(stats)))
     sys.stdout.flush()
 
-    write_reports(stats, options)
+    if app == 'walksync':
+        from hpc_file_utils.walk.sync.report import sync_lines
+        print('\n'.join(sync_lines(stats, manager.walk_elapsed, options)))
+        sys.stdout.flush()
+    # walksync writes walkstat's reports (of what it compared) only when asked to
+    if app != 'walksync' or options.summary_prefix or options.spreadsheet:
+        write_reports(stats, options)
 
     if stats.num_errors:
         print('--> {} entries could not be scanned (see stderr)'.format(format_number(stats.num_errors)))
@@ -124,3 +144,7 @@ def walkstat():
 
 def walktar():
     return main('walktar')
+
+
+def walksync():
+    return main('walksync')
