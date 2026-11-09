@@ -9,7 +9,8 @@ plan for a fresh session. **No code has changed yet.**
 Part of PR #11 (walksync, phase 6), rebased onto main at `fe6daa1`, which holds phase 5.5 (PR #12,
 walktar's reader threads). Every `file:line` below is against the rebased PR #11, under
 `hpc_file_utils/walk/` unless a path says otherwise. Section 0 records what phase 5.5 and walksync's
-derecho smoke run measured, and what they change in this plan. The work starts once PR #11 merges.
+derecho smoke run measured, and what they change in this plan; 0.4 (added after PR #11 merged) splits
+walksync's per-file cost and decides for K rsyncs in flight per rank. The code work starts with Part A.
 
 Read first:
 - The module docstring of `common/manager.py`: the protocol and the termination argument.
@@ -78,8 +79,8 @@ Contents:
   before read-ahead.
   - On `manyfiles` that is 67 ms per file: 464 s, against walktar's 54 s with read-ahead on the
     same tree.
-  - About 35 ms of that is the cold read (0.1). What the rest is (creating the file on Lustre,
-    setting mode, ACL, xattrs and times, rsync's own stats of both sides) was not measured.
+  - About 35 ms of that is the cold read (0.1). The rest is split in 0.4: about 8 ms to create,
+    write and set a 1 MiB file on Lustre, under 1 ms of it for ACLs, xattrs and times.
 
 ### 0.3 What it changes here
 - **Part B moves up,** from "deferred: plan only" to the next step after A2–A3, which make it
@@ -104,26 +105,25 @@ Contents:
 - **O_NOATIME** (phase 5.5 question 6: open each source with `O_NOATIME`, falling back on
   `EPERM`) belongs in `open_member()`, next to Part C. With both, a root walktar leaves atimes
   alone and still records the found one.
-- **Measure walksync's per-file cost before A5** (no code change), as question 1 did for walktar:
-  - one rsync over 1,000 files, timed, and `strace -c` of it;
-  - the same files over N rsyncs side by side;
-  - the read side alone against the destination side alone;
-  - the same with the source or the destination on `/glade/campaign/flash_test/csg`, a small GPFS
-    flash fileset. Flash takes the disk out of the per-file cost and leaves software (rsync,
-    Python, the GPFS client). It is a profiling aid only: the baseline must perform on the
-    normal pools.
-    - It is fileset `flash_test` (pool `system`, 699 TiB of flash disks) with a 600 TiB quota.
-      Stay below one third of that: 200 TiB.
-    - It is not in `gladequota`. Check its use with
-      `/usr/lpp/mmfs/bin/mmlsquota --block-size auto -j flash_test csfs1`.
-    - Remove everything after each run.
+- **walksync's per-file cost is measured (0.4, 2026-11-09, no code change),** as question 1 did
+  for walktar: one rsync over 1,000 files, timed and under `strace -c`; the same files over N
+  rsyncs side by side; the read side alone against the destination side alone; and the same with
+  the source or the destination on `/glade/campaign/flash_test/csg`, a small GPFS flash fileset,
+  which takes the disk out of the per-file cost and leaves software (rsync, the GPFS client).
+  Flash is a profiling aid only: the baseline must perform on the normal pools.
+  - It is fileset `flash_test` (pool `system`, 699 TiB of flash disks) with a 600 TiB quota.
+    Stay below one third of that: 200 TiB.
+  - It is not in `gladequota`. Check its use with
+    `/usr/lpp/mmfs/bin/mmlsquota --block-size auto -j flash_test csfs1`.
+  - Remove everything after each run.
 
-  If N rsyncs scale as walktar's readers did, the fix is several rsyncs in flight per rank. A5's
-  `sync/rsync.py` run-and-poll loop should then be built for N from the start.
-- **A common "in flight" piece for A3, if the measurement points there.** walktar's readers and
-  walksync's concurrent rsyncs would be one idea: K units of I/O in flight per rank, results taken
-  in order, with `share` and progress answered between them. One piece in `common/`, next to
-  `entries()` and `ticked()`, beats two tool-specific mechanisms.
+  N rsyncs scale as walktar's readers did, so the fix is several rsyncs in flight per rank:
+  A5's `sync/rsync.py` run-and-poll loop is built for K rsyncs from the start (0.4 says how).
+- **A common "in flight" piece for A3: the measurement points there (0.4).** walktar's readers and
+  walksync's concurrent rsyncs are one idea: K units of I/O in flight per rank, with `share` and
+  progress answered while waiting. One piece in `common/`, next to `entries()` and `ticked()`,
+  beats two tool-specific mechanisms. What differs: walktar's units are files whose results are
+  taken in order, walksync's are K processes awaited together.
 - **A `--profile` option (A3):** each rank writes a cProfile file (`profile-r{rank}.prof`). It
   costs little when off. Phase 5.5's per-file split needed a separate script.
 - **Still open from phase 5.5,** for after Part B:
@@ -133,6 +133,94 @@ Contents:
   - 5, multi-node scaling on GDEX.
 
   Part B's re-measure may also answer why the scan slowed on GPFS.
+
+### 0.4 walksync's per-file cost, measured (2026-11-09, no code change)
+
+Job 8125066 on derecho (`dec1528`, one node, no MPI), `/usr/bin/rsync` 3.2.7 with walksync's exact
+command (`-aAX --numeric-ids --chmod=Du+w --files-from --from0 SRC/ DEST/`) over 1,000-file
+slices, a fresh slice for every cold measurement. Scratch's servers were flushed first by reading
+the 1 TiB `bigdir`; the probe row says how cold each tree was. Every row ran pinned to one CPU with
+`taskset`, as PALS pins a rank, except those marked free. Scripts in `hfu-bench/`: `syncprof.pbs`
+(the job), `syncprof-stage.sh` (the flash slices, copied from a login node so the compute node's
+GPFS client had never seen them), `syncprof-lib.sh` (the slices) and `syncprof-table.py` (these
+tables from `hfu-bench/syncprof/8125066/results.tsv` and `strace-*.txt`). Nothing was left on
+scratch, flash or csg.
+
+Trees: `tartree/manyfiles` (1 MiB files, scratch, Lustre; slice k is its sorted names
+[1000k, 1000k+1000)) and GDEX `exchange/.Radiosonde` (80 KB files, campaign GPFS; one station
+directory per slice, its first 1,000 names; the 173 stations with at least 1,000 files qualify).
+
+**Where a file's time goes** (ms per file; one rsync, or one process, pinned):
+
+| | manyfiles, 1 MiB, scratch | .Radiosonde, 80 KB, campaign |
+|---|---:|---:|
+| coldness probe: 20 files, one `cat`, one after another | 56.9 | 20.2 |
+| **one rsync, cold source → scratch** (the smoke run: 67 / 17.8) | **48.9** (16% CPU) | **20.0** (8% CPU) |
+| the read side alone: one `cat` over the slice | 41.2 | 18.6 |
+| the read side through rsync: cold source → `/dev/shm` | 51.9 | 19.6 |
+| the write side alone: `/dev/shm` → scratch, `-aAX` | 8.6 (the first such run: 14.2) | 3.2 |
+| … `-aA` / `-aX` / `-a` / `-rlpgoD` (no times) | 8.1 / 8.5 / 8.1 / 7.7 | 3.0 / 3.3 / 2.9 / 2.9 |
+| rsync's own floor: `/dev/shm` → `/dev/shm` | 4.5 (99% CPU) | 0.5 (93% CPU) |
+| source on GPFS flash (client cold) → scratch | 10.3 | 3.9 |
+| `/dev/shm` → GPFS flash, `-aAX` / `-a` | 5.0 / 5.9 | 1.25 / 1.35 |
+| 16 `cat`s at a time (`xargs -P 16`) | 2.9 | 1.3 |
+
+- **The cold read is the cost,** as for walktar (0.1): 41 of 49 ms on scratch, 18.6 of 20 on
+  campaign. The whole destination side (create, write, mode, owner, ACL, xattrs, times, rsync's
+  stats of both sides) is ~8 ms per 1 MiB file on Lustre and ~3 ms per 80 KB file, and `-A`, `-X`
+  and `-t` together are within the noise (≤ 0.9 ms). Dropping them would buy nothing.
+- **It is the media, not the software.** With the source on the flash fileset the same rsync
+  takes 10.3 and 3.9 ms; writing onto flash costs 0.5–1.4 ms over rsync's own floor. GPFS and
+  Lustre add a few ms of metadata round trips (below); the disks add the rest.
+- **strace** (`-f -w -c`: wall time in syscalls, summed over rsync's three processes; 50.9 / 21.9 s
+  wall), ms per file: `read` 46.3 / 19.3 (the sender's file reads, and the receiver's pipe reads
+  that wait on them); `pselect6` 91.5 / 37.2 (the processes waiting on one another, not on
+  storage); the metadata calls together 4.6 / 5.0: `openat` 0.95 / 0.90, `newfstatat` 0.80 / 0.94,
+  `close` 0.68 / 0.29, `rename` 0.59 / 0.61, `fchmod` 0.54 / 1.48, `utimensat` 0.37 / 0.29,
+  `llistxattr` 0.34 / 0.20, `chmod` 0.30 / 0.25; `write` 2.07 / 0.37.
+- **rsync's CPU is not free:** 7.7 ms of CPU per 1 MiB file (user 4.0, sys 3.7: three processes,
+  two pipes, a whole-file checksum), 1.6 ms per 80 KB file. That caps the pinned scaling below.
+- The 32-rank smoke run saw 67 ms per file where one rsync sees 49: its 31 streams at ~15 files/s
+  each made ~460 files/s in all, far under what scratch gave walktar's 31 × 16 readers (3,700).
+- One outlier, not pursued: a serial `cat` of the flash slice took 18 ms per 1 MiB file, nearly
+  all system time (15.3 of 18.2 s), while rsync read a like slice from flash at 10.3.
+
+**N rsyncs side by side** (one slice split N ways, all started at once; ms per file of the group,
+and the CPU share of the wall):
+
+| N | manyfiles, pinned to one CPU | manyfiles, free | .Radiosonde, pinned | .Radiosonde, free |
+|---:|---:|---:|---:|---:|
+| 1 | 49.7 (16%) | 45.6 (18%) | 17.7 (9%) | 20.4 (8%) |
+| 2 | 24.2 (32%) | 23.5 (34%) | 9.3 (16%) | 9.7 (17%) |
+| 4 | 12.0 (62%) | 10.8 (72%) | 5.1 (31%) | 4.7 (36%) |
+| 8 | **8.1 (91%)** | 5.6 (141%) | **2.6 (60%)** | 3.0 (59%) |
+| 16 | 8.3 (91%) | **3.1 (259%)** | 2.3 (74%) | **1.6 (123%)** |
+
+- They scale as walktar's readers did: linear to N = 4 on both trees and both bindings. Pinned to
+  one CPU, manyfiles saturates at N = 8 (6.1×), where that CPU is 91% busy with rsync's 7.7 ms per
+  file; .Radiosonde reaches 6.7× at 8 and 7.9× at 16 (1.6 ms of CPU per file leaves room). With the
+  CPUs free, 16 rsyncs reach 3.1 and 1.6 ms per file, 15× and 13×: the same rate as 16 parallel
+  `cat`s (2.9 and 1.3), which is the storage's parallel read rate, as read-ahead 16 reached for
+  walktar.
+
+**Decision: yes, K rsyncs in flight per rank.**
+- A5's `sync/rsync.py` gets the loop as a function: split the copy batch's paths into K lists,
+  start K rsyncs at once (each `--files-from` one list, the same options), poll them together,
+  answer `share` and progress between polls, and the batch is done when all K have exited. No
+  protocol change: a batch stays one unit of work with one accounting, and a failing rsync fails
+  the batch as today. `rsyncn()` in `syncprof.pbs` is exactly this shape.
+- **Default K = 8**, an option (`--rsyncs K`; 1 is today's behaviour): 6× on 1 MiB files and 7× on
+  80 KB files under PALS's one-CPU binding, with that CPU at ~90%. 4 is the safe floor (4×
+  everywhere); 16 pays only with `--cpu-bind depth`. To be measured at 1 × 32 with Part B's
+  benches: manyfiles should go from 464 s toward ~60 (32 × 125 files/s ≈ 4,000 files/s, walktar's
+  read-ahead rate), .Radiosonde from 367 toward ~60.
+- The A3 common piece (0.3) is confirmed: one `common/` helper for "wait on K things in flight,
+  answering `share` and progress meanwhile", with walktar's readers and walksync's K rsyncs as
+  its two callers.
+- Once K ≥ 8 on one CPU, rsync's CPU per file matters as much as latency: Part B's bench records
+  user+sys per rank, and `--cpu-bind depth` gets a row there (phase 5.5 question 2 lists it).
+- Bench hygiene confirmed: the probe row is the coldness check (scratch's warm re-read is ~5 ms,
+  0.1); campaign GPFS has no cheap flush, and its probe at 20 ms was cold by itself.
 
 ---
 
@@ -331,8 +419,8 @@ Six commits. "Done" for the whole part:
   - `RSYNC_OPTS`, `parse_rsync_capabilities`, `rsync_capabilities` and `rsync_base_opts`, from
     `common/options.py`
   - `rsync_command(options)`, from `SyncWorker.__init__`
-  - possibly the run-and-poll loop of `copy_batch` (`sync/worker.py:291-336`), if it reads better
-    as a function that takes a "while waiting" callback
+  - the run-and-poll loop of `copy_batch` (`sync/worker.py:291-336`), as a function that runs K
+    rsyncs over K slices of the batch and takes a "while waiting" callback (0.4: K = 8 by default)
 - **`common/report.py`:** `SEP`, `_columns`, `rank_lines` and `balance_lines`, from
   `stat/report.py`, which imports them back.
 - **Tests and docs:** update the imports in `tests/test_options.py` and `tests/test_walksync.py`,
@@ -660,11 +748,11 @@ Counts are from the non-test package at `cd32aac`. Mechanical commits go in a ne
 
 ## 8. Order, and how each step is checked
 
-walksync's per-file measurement (0.3, no code) → A (sweep, shaped by it) → B (walktar on stat
-batches, with its derecho re-measure) → walksync's in-flight rsyncs, if the measurement calls for
-them (sharing B's bench runs) → E1/E2 (mechanical, dead code) → D (logging) → E3/E4 → C (indexes,
-with O_NOATIME). Each part is its own PR, stacked on the one before. Phase 5.5's remaining
-questions (0.3) follow Part B.
+walksync's per-file measurement (0.4, done, no code) → A (sweep, shaped by it: A5's loop takes K
+rsyncs, A3 gets the common in-flight piece) → B (walktar on stat batches, with its derecho
+re-measure) → walksync's K rsyncs in flight (0.4 calls for them; it shares B's bench runs) →
+E1/E2 (mechanical, dead code) → D (logging) → E3/E4 → C (indexes, with O_NOATIME). Each part is
+its own PR, stacked on the one before. Phase 5.5's remaining questions (0.3) follow Part B.
 
 The original order put B last. It moved up because phase 5.5 measured it as walktar's limit on GPFS
 (0.1), and A2–A3 already make it small. The walksync step follows B for the same reason: it
