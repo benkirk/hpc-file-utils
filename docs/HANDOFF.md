@@ -211,6 +211,9 @@ and [walksync.md](walksync.md):
 ---
 
 ## After the phases: deployment
+- **Before deploying, the sweep:** [HANDOFF-sweep.md](HANDOFF-sweep.md) is the retrospective on
+  phases 3–6: what to consolidate (one scan, one accounting routine, typed batches, tool classes),
+  optional per-rank and per-tar indexes, logging, and the old idioms to retire.
 - **Shared install** at `/glade/work/csgteam/hpc-file-utils`: one env per host via
   `etc/config_env.sh`, and `make bytecode` after each pull.
 - **Move the scans cron and the `sync/` run dirs** to it.
