@@ -214,6 +214,9 @@ and the CPU share of the wall):
   everywhere); 16 pays only with `--cpu-bind depth`. To be measured at 1 × 32 with Part B's
   benches: manyfiles should go from 464 s toward ~60 (32 × 125 files/s ≈ 4,000 files/s, walktar's
   read-ahead rate), .Radiosonde from 367 toward ~60.
+  - **Measured at 1 × 32 in Part A (section 2, "`--rsyncs` at scale"): 1.1× on manyfiles, 2.4×
+    on .Radiosonde.** The option exists with default 1; the default flips once the shared
+    ceiling at scale is understood.
 - The A3 common piece (0.3) is confirmed: one `common/` helper for "wait on K things in flight,
   answering `share` and progress meanwhile", with walktar's readers and walksync's K rsyncs as
   its two callers.
@@ -330,6 +333,114 @@ Six commits. "Done" for the whole part:
 - The non-test package is smaller than today's ≈3,350 lines.
 - A fourth tool would be one `tool.py` and one `worker.py`, with no edits to `cli.py` or
   `options.py`.
+
+### Part A, done (2026-11-09, branch `sweep-A`, one commit per step)
+- `grep "app =="` finds nothing; a fourth tool is one `<tool>/tool.py` and one
+  `<tool>/worker.py`, added to `walk/tools.py`. The golden output never changed
+  (`HFU_UPDATE_GOLDEN` was never needed); `make test` 486 passed, `make test-pbs` on derecho
+  326 passed, CI green.
+- **Size:** by `wc -l` of the non-test package, main was 3,030 lines, A1–A4 brought it to
+  3,000, and A5's `Tool` classes (seven small modules, docstrings included) took it to 3,181.
+  The "smaller than today" target is E1's (54 bare returns, ~110 banner lines), not Part A's.
+- **A3's performance check** (job 8126155, 1 × 32, `hfu-bench/benchA.pbs`): walkstat, main
+  (`hfu-bench/mainA`, 5ad81a9) against the branch, three rotated rounds after a warm-up, best of
+  three. A 1,000,000-empty-file directory (`tartree/million`, made by the job; delete it with
+  `tartree`): main 1.874 s, branch 1.898 s. `tartree/manyfiles` (200,000 files): 0.587 against
+  0.597 s. The warm-up itself (the directory just made, client cache cold) took 31.5 s. Both
+  trees were cached for the timed rounds, which is the strictest case for a per-entry cost:
+  the generator in the hot loop is within noise (≤ 2%), so `entries()` stays in `StatWorker`.
+- **`--rsyncs` at scale** (the same job, 1 × 32, `/usr/bin/rsync`, copies onto scratch, the
+  oracle clean, each copy deleted):
+
+  | tree | K = 1 | K = 8 | gain | aggregate |
+  |---|---:|---:|---:|---|
+  | `manyfiles`: 200,000 × 1 MiB, one directory, scratch → scratch | 443 s | 400 s | 1.1× | 452 → 505 files/s |
+  | `.Radiosonde`: 584,851 × 80 KB, 292 directories, campaign → scratch | 912 s | 382 s | 2.4× | 641 → 1,531 files/s |
+
+  - 0.4's one-rank 6× does not carry to 31 ranks: something shared caps the copy. On one big
+    directory the aggregate is ~500 files/s whatever K is (the smoke run's 31 × 1 rsync made
+    460); on 292 directories K = 8 still gains 2.4×. A login-node probe (32 streams × 1,000
+    create + rename + chmod on scratch) took 26.5 s into one directory and 14.1 s into 32, so
+    the destination directory is part of it, not all of it (that probe's 1,200 files/s is above
+    walksync's ~500: rsync's two xattr lists, the chown, the 1 MiB write and the utimes per
+    file add up).
+  - Campaign GPFS varies with the center's load: this K = 1 copy of `.Radiosonde` took 912 s
+    where the morning's smoke run (0.2) took 367. During this job the production scans
+    (csgteam's `scan_dirs` array, the old walkstat, 8 subjobs of 1 × 128 at once over campaign
+    filesets) were running: eight nodes of stat traffic on GPFS's metadata. Only pairs from one
+    job compare, and a bench on campaign should say what else was running (`qstat -u csgteam`).
+  - So the "walksync's K rsyncs" step of section 8 is not just the default flip: first find
+    the ceiling at 1 × 32 (a create + write probe in one directory against many, 80 KB against
+    1 MiB files, K = 1/4/8; and `--cpu-bind depth` for the 8 × 31 rsyncs' CPU), then set the
+    default. It shares Part B's bench runs, as planned.
+- **The same on Casper** (the same scripts and slices; Casper mounts the same filesystems
+  over its own network, and ran these on a 34-core node held by a sleep job, `crhtc98`, with
+  the test copy's `conda-env-casper`: mpi4py on the host's Open MPI 5.0.8). To work on a Casper
+  node interactively: `qsub -q casper -l select=1:ncpus=34:mpiprocs=32:mem=200GB -- /bin/sleep
+  9000`, then `ssh <node>` from a login node attaches to the job; `pbsnodes -a` shows which
+  node sizes are free (34-core nodes were, 62-core were not).
+  - `manyfiles` → scratch, 1 × 32: K = 1 805 s, K = 8 398 s (2.0×). **K = 8 lands where
+    derecho's did (400 s, ~505 files/s)**: two clients on two networks meet at one number, so
+    the ceiling on one big directory of 1 MiB files is the storage's, and Casper's slower
+    per-stream path (K = 1 twice derecho's 443 s) is what K recovers.
+  - **Step 0 on Casper** (`syncprof.pbs`'s body run on the held node, `PBS_JOBID` exported;
+    `hfu-bench/syncprof/6586743/`), `manyfiles` rows, ms per file, Casper against derecho:
+    the coldness probe 161 against 57; one rsync 117–157 against 49; a serial `cat` 58
+    against 41; 16 `cat`s at once **2.98 against 2.90**; the write side (`/dev/shm` →
+    scratch) 8.1–9.7 against 8.1–8.6; `/dev/shm` → `/dev/shm` 3.9 against 4.5; the flash rows
+    equal (11.9 against 10.3, 5.1 against 5.0). strace: `read` 101 against 46 ms per file,
+    and every metadata call about twice derecho's (`openat` 1.66 against 0.95, `rename` 1.13
+    against 0.59, `fchmod` 0.95 against 0.54; 8.8 against 4.6 ms per file in all). So
+    Casper's path to Lustre doubles each round trip and leaves the parallel capacity as it
+    is, which is why K matters more there: N rsyncs pinned to one CPU 117 → 55 → 28 → 12.5 →
+    8.1 ms (N = 1, 2, 4, 8, 16: 9.4× at 8, the one-CPU floor at 16), free 105 → 53 → 24 →
+    11.2 → 4.9. The write side and GPFS flash are the same from both machines.
+  - **`.Radiosonde` (campaign GPFS) is the same from Casper**: one rsync 20.7 against 20.0 ms
+    per file, a serial `cat` 21 against 18.6, 16 `cat`s 1.39 against 1.28, N rsyncs pinned
+    20.5 → 10.7 → 5.3 → 3.1 → 2.4 (derecho 17.7 → 9.3 → 5.1 → 2.6 → 2.3); strace `read` 20.7
+    against 19.3. Only the rows that write onto scratch pay Casper's Lustre latency (`/dev/shm`
+    → scratch 4.4 against 3.2 ms; flash → scratch 5.7 against 3.9). So the extra latency is
+    on Casper's path to Lustre (LNet routers), not to GPFS.
+  - `.Radiosonde` → scratch, 1 × 32: K = 1 402 s, K = 8 362 s (1.1×); derecho's pair was 912
+    and 382 under the production scans. **Both machines and both trees meet at the same K = 8
+    numbers**: ~500 files/s for 1 MiB files into one directory (398–400 s), ~1,550 files/s for
+    80 KB files across 292 directories (362–382 s). K = 1 sits 1.1× to 2.4× below that,
+    depending on per-stream latency and the day's load. So at 1 × 32 the scratch's small-file
+    create and write path is the ceiling, K = 8 reaches it from either machine, and K buys the
+    most where per-stream latency is high (Casper to Lustre, or a loaded GPFS). That is the
+    brief for the "K rsyncs" step: measure that ceiling (creates per second into one directory
+    against many, by file size, from both machines), not K alone.
+  - **Casper's host Open MPI 5.0.8 launcher segfaults under the test suite.** `make test-pbs`
+    there (the same script, `-q casper -l select=1:ncpus=34:mpiprocs=34:mem=200GB`) gave 14, 4
+    and 6 failures in three runs, every one `exit -11` within 0.2 s with no output at all:
+    `mpiexec` itself, before any rank ran, on random tests. Not `TMPDIR` (the same with it on
+    `/local_scratch`, the node's tmpfs), and not reproducible outside pytest (1,000 launches of
+    `mpiexec -n 4 hostname` and of walkstat, serial, 8 at a time, and with the PBS variables
+    set: 0 failures). With the conda-forge Open MPI instead (`HFU_MPI=conda`, built in a
+    separate checkout `hpc-file-utils-condampi` so the test copy's `conda-env-casper` stayed
+    the host-MPI one): **326 passed, 2 skipped, no `exit -11`**, derecho's result. On Casper,
+    use `HFU_MPI=conda`; whether the Makefile's `auto` should pick it there is a site decision.
+- **Shape decisions that differ from the plan above:**
+  - `in_flight(items, start, depth, discard)` is the common piece of 0.4, in `BaseWorker`:
+    walktar's `read_ahead()` is it with the reader threads, walksync's `copy_batch()` is it
+    with K `Rsync` processes (`sync/rsync.py`), each yielded handle waited for in turn and
+    `tick()` (share + progress) between the polls.
+  - `--rsyncs K` exists and `copy_batch()` runs K rsyncs over `split()`'s K parts of a batch,
+    the batch still one unit of work that fails if any part does. **The default is 1** (today's
+    behaviour: Part A changes none) until the measurement at scale below confirms 8; the
+    "walksync's K rsyncs" step of section 8 is then the one-line default change plus its
+    README row.
+  - `--profile` is in `cli.run_walker()`, around `walker.run()` on every rank (the Manager
+    included), not in the worker.
+  - `Tool.banner()` prints the `Filters:` line too, so walksync's "partial copy" note can
+    follow it as before; `Tool.report()` is the tool's part of `cli.report()` between the
+    balance lines and the last lines.
+  - `BaseWorker.process_file()` is now defined (the hook walktar overrides); it was only
+    ever called before.
+  - `common/report.py`'s `columns()` is public; `stat/report.py` imports it as `_columns`.
+- **Not done, on purpose:** `MPIClass.collect` still calls `finish_directories` for every
+  tool (section 7); E3's `make_options()` test helper; the README's phase notes beyond the
+  Layout table, the `--profile` and `--rsyncs` entries.
 
 ### A1. Duplicates and leftovers
 - `sync/worker.py` uses `printable()`, and `show()` goes. The dry-run lists change only for names
@@ -748,11 +859,12 @@ Counts are from the non-test package at `cd32aac`. Mechanical commits go in a ne
 
 ## 8. Order, and how each step is checked
 
-walksync's per-file measurement (0.4, done, no code) → A (sweep, shaped by it: A5's loop takes K
-rsyncs, A3 gets the common in-flight piece) → B (walktar on stat batches, with its derecho
-re-measure) → walksync's K rsyncs in flight (0.4 calls for them; it shares B's bench runs) →
-E1/E2 (mechanical, dead code) → D (logging) → E3/E4 → C (indexes, with O_NOATIME). Each part is
-its own PR, stacked on the one before. Phase 5.5's remaining questions (0.3) follow Part B.
+walksync's per-file measurement (0.4, done, no code) → A (done: the sweep, A5's loop takes K
+rsyncs, A3 has the common in-flight piece) → B (walktar on stat batches, with its derecho
+re-measure) → walksync's K rsyncs: find the ceiling at scale and set the default (section 2,
+"`--rsyncs` at scale"; it shares B's bench runs) → E1/E2 (mechanical, dead code) → D (logging)
+→ E3/E4 → C (indexes, with O_NOATIME). Each part is its own PR, stacked on the one before.
+Phase 5.5's remaining questions (0.3) follow Part B.
 
 The original order put B last. It moved up because phase 5.5 measured it as walktar's limit on GPFS
 (0.1), and A2–A3 already make it small. The walksync step follows B for the same reason: it

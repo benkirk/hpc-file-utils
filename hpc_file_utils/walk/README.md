@@ -184,6 +184,12 @@ rerun with nothing changed copies nothing: it costs only the walk.
   the worker polls it every 0.5 s and still answers `share` requests and sends progress.
   `--chmod=Du+w` is needed for two reasons: ranks' batches create the same parent
   directories, and a read-only source's directories would refuse the next batch's files.
+- **`--rsyncs K`** [1]: K rsyncs side by side over one copy batch, each over a K-th of its
+  files, the batch still one unit of work (it fails if any of them does). A cold file costs
+  one storage round trip whatever rsync does with it, and K rsyncs overlap those round trips
+  as walktar's `--read-ahead` does; `docs/HANDOFF-sweep.md` 0.4 measured 8 as the sweet spot
+  with one CPU per rank (6× on 1 MiB files, 7× on 80 KB files). The default stays 1 until
+  that is confirmed at scale.
 - **Which rsync:** `--rsync` if given. Otherwise rsync on PATH, unless it lacks ACLs or xattrs
   and `/usr/bin/rsync` explicitly lists both, in which case the banner says it uses
   `/usr/bin/rsync` and why.
