@@ -332,7 +332,7 @@ or on an idle one the Manager's `share` hands it to. Batches move exactly as wal
 - **Where a small file's ~40 ms went:** a profile of `tar.add()` on 300 `manyfiles` members
   (1 MiB each, derecho login node) gave 38.8 ms per file.
   - 35 ms of it is the source file's one `read()`: the storage's latency on a cold read. It
-    is the same on campaign GPFS (37.5 ms per ~5 MiB file of the GDEX VIT zarr).
+    is the same on campaign GPFS (37.5 ms per ~4 MiB file of the GDEX VIT zarr).
   - lstat, open, close and the tar header together cost about 1.2 ms. The owner and group
     name lookups cost 0.04 ms.
   - Reading in parallel scales almost linearly: 16 threads read 500 files/s on scratch and
@@ -350,9 +350,33 @@ or on an idle one the Manager's `share` hands it to. Batches move exactly as wal
   | **16 (default)** | 417.9, 427.9 s | **54.2, 53.4 s (3.64 GiB/s, 5.0×)** |
   | 32 | 424.1, 421.1 s | 57.4, 54.7 s |
 
-  - Big files are unchanged within the noise (408–430 s for every setting): a big file's
-    time is its transfer, not the start of its read.
-  - With read-ahead, 31 streams read small files from scratch at 3.6 GiB/s. Phase 5's
-    2.4–2.9 GiB/s "Lustre read cap" was partly this latency.
-  - These runs used PALS's default binding, which pins each rank to one CPU (`taskset`
-    showed ranks on CPUs 0, 1, 2, ...), so a rank's reader threads share that CPU.
+  - Big files are unchanged within the noise: 408–430 s for every setting.
+  - With read-ahead 16, 31 streams read small files from scratch at 3.6 GiB/s. Phase 5's 31
+    streams reached 2.4–2.9 GiB/s reading scratch.
+- **On campaign GPFS**, GDEX VIT zarr (333,110 files, ~4 MiB each, one directory) → csg, 1
+  node × 32, two rounds each (two jobs):
+
+  | `--read-ahead` | wall | write rate |
+  |---|---|---|
+  | phase 5 (`tar.add()`) | 422.7, 425.9 s | 3.03–3.06 GiB/s |
+  | 4 | 380.3, 374.3 s | 3.40–3.45 GiB/s |
+  | 8 | 366.6, 372.3 s | 3.47–3.52 GiB/s |
+  | 16 (default) | 378.8, 360.6, 377.8, 380.7 s | 3.39–3.58 GiB/s |
+
+  - Every setting is 10–15% faster than phase 5, and the thread count makes no difference.
+  - **The scan sets the pace.** walktar's scanning rank stats every file before it batches
+    it. Phase 5's scanner had 320k entries by its first progress line (30 s) and all 333k
+    by its second (60 s). With read-ahead 4, 8 or 16 it made ~900–1,000 entries/s and was
+    still scanning in the run's last 30 s. Meanwhile the other ranks were idle with one or
+    two batches queued.
+  - Why the scanner's stats slow down while the other ranks read was not determined.
+- These runs used PALS's default binding, which pins each rank to one CPU (`taskset` showed
+  ranks on CPUs 0, 1, 2, ...), so a rank's reader threads share that CPU.
+- **Deferred** (the scan sweep; see the phase 5.5 PR):
+  - walktar's scan as walkstat's: names from `scandir` without a stat, batches cut by
+    count, each file stat'ed and filtered by the rank that archives it. `--batch-size` would
+    then need the archiving rank to split a batch.
+  - Or parallel stats in the scanning rank.
+  - `--read-ahead` with `--cpu-bind depth`.
+  - Per-filesystem defaults, if a later measurement needs them.
+  - Why the scan slows on GPFS.

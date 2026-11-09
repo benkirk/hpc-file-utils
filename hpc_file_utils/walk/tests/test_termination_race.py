@@ -18,7 +18,10 @@ Phase 5 adds two batch variants: walkstat with tiny stat batches (lqm2-statbatch
 lost batch there loses its entries from the Total Count), and walktar with tiny batches, so the busy rank's share
 replies carry batches as well as directories. A lost batch would not show in the Total
 Count (the scan counted it), only in the tars, so it checks that their union is the tree.
-Phase 5.5 runs it with the reader threads (--read-ahead, default 16) and without (0).
+Phase 5.5 runs it with the reader threads (--read-ahead, default 16) and without (0). The
+storm archives 20,000 files on 3 ranks: on derecho scratch, with 16 test workers at once,
+phase 5's tar.add() path (0) takes 45-58 s, so it gets HFU_RACE_TAR_TIMEOUT (default 120 s).
+A hang never finishes, so the longer limit still catches one.
 """
 
 import os
@@ -27,6 +30,7 @@ import pytest
 
 RUNS = int(os.environ.get("HFU_RACE_RUNS", "50"))
 RUN_TIMEOUT = int(os.environ.get("HFU_RACE_TIMEOUT", "60"))
+TAR_TIMEOUT = int(os.environ.get("HFU_RACE_TAR_TIMEOUT", "120"))
 
 
 @pytest.mark.mpi
@@ -43,11 +47,11 @@ def test_wide_directory_terminates_and_counts_everything(walk, wide_tree, tmp_pa
 
 
 @pytest.mark.mpi
-@pytest.mark.timeout(RUN_TIMEOUT + 60)
+@pytest.mark.timeout(TAR_TIMEOUT + 60)
 @pytest.mark.parametrize("read_ahead", ["16", "0"], ids=["readahead16", "readahead0"])
 @pytest.mark.parametrize("run", range(RUNS))
 def test_batch_storm_terminates_and_archives_everything(walk, wide_tree, tmp_path, run, read_ahead):
-    r = walk.run("walktar", [wide_tree.root], cwd=tmp_path, timeout=RUN_TIMEOUT,
+    r = walk.run("walktar", [wide_tree.root], cwd=tmp_path, timeout=TAR_TIMEOUT,
                  args=["--batch-files", "20", "--local-queue-max", "2", "--read-ahead", read_ahead])
     assert not r.timed_out, f"run {run} hung:\n{r.report()}"
     assert r.returncode == 0, r.report()
