@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from hpc_file_utils.walk.common.options import choose_rsync
+from hpc_file_utils.walk.sync.rsync import choose_rsync
 
 pytestmark = [
     pytest.mark.mpi,
@@ -105,9 +105,11 @@ def dest(tmp_path):
             os.chmod(os.path.join(dirpath, n), 0o755)
 
 
-def test_copy_passes_the_oracle_and_a_rerun_copies_nothing(walk, private_golden_tree, dest, tmp_path):
+@pytest.mark.parametrize("rsyncs", ["1", "3"], ids=["one-rsync", "three-rsyncs"])
+def test_copy_passes_the_oracle_and_a_rerun_copies_nothing(walk, private_golden_tree, dest, tmp_path, rsyncs):
+    """One rsync per copy batch, or --rsyncs side by side over its parts: the same copy."""
     src = private_golden_tree.root
-    r = sync(walk, src, dest, tmp_path / "run1", "--batch-files", "5")
+    r = sync(walk, src, dest, tmp_path / "run1", "--batch-files", "5", "--rsyncs", rsyncs)
     assert r.ok, r.report()
     new, changed, unchanged, extra = sync_counts(r)
     assert (new, changed, unchanged, extra) == (private_golden_tree.nitems, 0, 0, 0), r.report()
@@ -234,8 +236,9 @@ def test_big_directory_is_copied_by_several_ranks(walk, big_dir, dest, tmp_path)
     assert oracle(big_dir, dest) == []
 
 
-def test_a_failing_rsync_fails_the_run(walk, big_dir, dest, tmp_path):
-    r = sync(walk, big_dir, dest, tmp_path / "run", "--rsync-opts=--no-such-rsync-option")
+@pytest.mark.parametrize("rsyncs", ["1", "3"], ids=["one-rsync", "three-rsyncs"])
+def test_a_failing_rsync_fails_the_run(walk, big_dir, dest, tmp_path, rsyncs):
+    r = sync(walk, big_dir, dest, tmp_path / "run", "--rsync-opts=--no-such-rsync-option", "--rsyncs", rsyncs)
     assert not r.timed_out, r.report()
     assert walk.exit_status_matches(r.returncode, 1), r.report()
     assert copied(r)[2] > 0 and copied(r)[0] == 0, r.report()

@@ -1,96 +1,22 @@
-"""Command-line options for walkstat, walktar and walksync (no MPI; parsed on rank 0 only)."""
+"""Command-line options for the walk tools (no MPI; parsed on rank 0 only): the common
+ones here, each tool's own from its Tool (walk/tools.py, common/tool.py)."""
 
 import argparse
 import os
-import re
-import shlex
-import shutil
-import subprocess
 
 from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters, parse_size_option
-
-DESCRIPTIONS = {
-    'walkstat': 'Walk directory trees in parallel (MPI) and summarize their usage.',
-    'walktar':  'Walk directory trees in parallel (MPI) and archive them: one tar file per batch of files, plus one per rank for the directories.',
-    'walksync': 'Walk a directory tree in parallel (MPI) and copy what is new or changed to a destination, '
-                'with batched rsync --files-from. Never deletes; hard links, deletions and final '
-                'directory modes and times are left to a final serial rsync -aHAX --delete.',
-}
-
-# walksync's rsync for each copy batch; --rsync-opts are appended. Du+w: batches on
-# different ranks create the same parent directories, and a read-only source's would
-# refuse the files of the next batch.
-RSYNC_OPTS = ['-aAX', '--numeric-ids', '--chmod=Du+w']
+from hpc_file_utils.walk.tools import TOOLS
 
 
-def parse_rsync_capabilities(version_text):
-    """(acls, xattrs) from 'rsync --version': False only for an explicit 'no ACLs' /
-    'no xattrs' in its Capabilities list (conda-forge's Linux rsync has no ACLs); an
-    unfamiliar format counts as supported, and rsync itself will say if it is not."""
-    acls = not re.search(r'\bno ACLs\b', version_text)
-    xattrs = not re.search(r'\bno xattrs\b', version_text)
-    return acls, xattrs
-
-
-def rsync_version(rsync):
-    """'rsync --version' of the rsync at path 'rsync', or '' if it would not run."""
-    try:
-        return subprocess.run([rsync, '--version'], capture_output=True, text=True, errors='replace',
-                              timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        return ''
-
-
-def rsync_capabilities(rsync):
-    """(acls, xattrs) the rsync at path 'rsync' was built with."""
-    return parse_rsync_capabilities(rsync_version(rsync))
-
-
-# Where walksync looks when rsync on PATH lacks ACLs or xattrs. On derecho, config_env.sh puts the
-# env's conda-forge rsync (no ACLs) first on PATH, while /usr/bin/rsync (3.2.7) has both.
-RSYNC_ALTERNATIVES = ('/usr/bin/rsync',)
-
-
-def choose_rsync(requested=None, alternatives=RSYNC_ALTERNATIVES):
-    """(path, acls, xattrs, note): the rsync walksync runs.
-
-    An explicit --rsync is used as given. Otherwise rsync on PATH, unless it lacks ACLs or
-    xattrs and an alternative's --version explicitly lists both. Explicitly: macOS's
-    /usr/bin/rsync (openrsync) prints no Capabilities list, which parse_rsync_capabilities()
-    would count as supported. note says why an alternative was chosen; path is None if
-    no rsync was found."""
-    path = shutil.which(requested or 'rsync')
-    acls, xattrs = rsync_capabilities(path) if path else (False, False)
-    if requested is not None or (acls and xattrs):
-        return path, acls, xattrs, ''
-    for alt in alternatives:
-        alt_path = shutil.which(alt)
-        if not alt_path or (path and os.path.realpath(alt_path) == os.path.realpath(path)):
-            continue
-        text = rsync_version(alt_path)
-        if (re.search(r'\bACLs\b', text) and re.search(r'\bxattrs\b', text)
-                and parse_rsync_capabilities(text) == (True, True)):
-            lacks = ' and '.join(name for name, ok in (('ACLs', acls), ('xattrs', xattrs)) if not ok)
-            why = 'rsync on PATH ({}) has no {}'.format(path, lacks) if path else 'no rsync on PATH'
-            return alt_path, True, True, 'using {}, which has ACLs and xattrs: {}'.format(alt_path, why)
-    return path, acls, xattrs, ''
-
-
-def rsync_base_opts(acls, xattrs):
-    """RSYNC_OPTS without -A / -X where rsync lacks them."""
-    flags = '-a' + ('A' if acls else '') + ('X' if xattrs else '')
-    return [flags] + RSYNC_OPTS[1:]
-
-
-def parse_options(appname=None, argv=None):
-    """Parse argv (default: sys.argv[1:]).
+def parse_options(appname, argv=None):
+    """Parse argv (default: sys.argv[1:]) for the tool named appname; args.app names it.
 
     Usage errors and --help raise SystemExit, as argparse does; a --dirs entry that is
     not a directory raises FileNotFoundError.
     """
+    tool = TOOLS[appname]
     # allow_abbrev=False: '--summary x' used to be taken silently as '--summary-prefix x'
-    parser = argparse.ArgumentParser(prog=appname, description=DESCRIPTIONS.get(appname),
-                                     allow_abbrev=False)
+    parser = argparse.ArgumentParser(prog=appname, description=tool.description, allow_abbrev=False)
 
     # common arguments first
     parser.add_argument('-d', '--dirs', nargs='+', help='List of Directories', required=True)
@@ -104,23 +30,18 @@ def parse_options(appname=None, argv=None):
     parser.add_argument('--local-queue-max', default=1000, type=int, required=False, help='Subdirectories a worker keeps for itself; past this it sends the oldest half to the manager (default: 1000)')
     parser.add_argument('--dirs-per-dispatch', default=8, type=int, required=False, help='Directories the manager hands an idle worker at once (default: 8)')
     parser.add_argument('--batch-files', default=1000, type=int, required=False, help='Files per batch, the unit of work idle ranks can take: walkstat stats a batch, walktar writes it as one tar, walksync compares one and copies one with one rsync (default: 1000)')
+    if tool.batches_bytes:
+        parser.add_argument('--batch-size', default='16GiB', type=str, required=False, help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own (default: 16GiB)')
     parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be scanned (default: exit 0, errors are only counted)')
     parser.add_argument('--profile', action='store_true', help='Every rank writes a cProfile of its run to profile-r{rank}.prof in the working directory (read with python -m pstats)')
 
     add_filter_options(parser)
 
-    # tool-specific arguments follow
-    if appname in ('walktar', 'walksync'):
-        parser.add_argument('--batch-size', default='16GiB', type=str, required=False, help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own (default: 16GiB)')
-    if 'walktar' == appname:
-        parser.add_argument('--read-ahead', default=16, type=int, required=False, help='Files each rank opens and reads (whole, up to 16 MiB) ahead of the one it is archiving, in as many reader threads: a small file costs one storage round trip, ~35 ms on campaign GPFS and scratch, and these overlap them (default: 16; 0 reads one file at a time)')
-    if 'walksync' == appname:
-        parser.add_argument('--dest', required=True, help='Destination directory: the source --dirs DIR is copied into it (rsync DIR/ DEST/)')
-        parser.add_argument('-n', '--dry-run', action='store_true', help='Copy nothing: list what would be copied (N new, C changed) and what is only in the destination (X), one file per rank: walksync-dryrun-r*.txt')
-        parser.add_argument('--rsync', default=None, help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
-        parser.add_argument('--rsync-opts', default='', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to {})'.format(' '.join(RSYNC_OPTS)))
+    # the tool's own arguments follow
+    tool.add_arguments(parser)
 
     args = parser.parse_args(argv)
+    args.app = appname
 
     # consistency checks
     if args.local_queue_max < 2:
@@ -129,16 +50,14 @@ def parse_options(appname=None, argv=None):
         parser.error('--dirs-per-dispatch must be at least 1')
     if args.heap_size < 1:
         parser.error('--heap-size must be at least 1')
-
     if args.batch_files < 1:
         parser.error('--batch-files must be at least 1')
+
     try:
-        if appname in ('walktar', 'walksync'):
+        if tool.batches_bytes:
             args.batch_size = parse_size_option(args.batch_size, '--batch-size')
             if args.batch_size < 1:
                 parser.error('--batch-size must be at least 1 byte')
-        if 'walktar' == appname and args.read_ahead < 0:
-            parser.error('--read-ahead must be at least 0')
 
         if 0 >= args.progress:
             args.progress = float('inf')
@@ -152,47 +71,9 @@ def parse_options(appname=None, argv=None):
     except ValueError as e:
         parser.error(str(e))
 
-    if 'walksync' == appname:
-        check_sync_options(parser, args)
-
     for d in args.dirs:
         if not os.path.isdir(d):
             raise FileNotFoundError('no such directory: {}'.format(d))
 
-    if 'walksync' == appname:
-        check_sync_paths(parser, args)
-
+    tool.check(parser, args)
     return args
-
-
-def check_sync_options(parser, args):
-    """walksync: one source, its own rsync and filter rules."""
-    if len(args.dirs) != 1:
-        parser.error('walksync copies one directory: give one --dirs (got {})'.format(len(args.dirs)))
-    try:
-        args.rsync_opts = shlex.split(args.rsync_opts)
-    except ValueError as e:
-        parser.error('--rsync-opts: {}'.format(e))
-    rsync, acls, xattrs, args.rsync_note = choose_rsync(args.rsync)
-    if rsync is None:
-        parser.error('--rsync: no such program: {}'.format(args.rsync or 'rsync'))
-    args.rsync = rsync
-    # an rsync built without ACLs (or xattrs) refuses -A (-X) outright: drop it, and say so
-    args.rsync_base = rsync_base_opts(acls, xattrs)
-    args.rsync_missing = [name for name, ok in (('ACLs', acls), ('xattrs', xattrs)) if not ok]
-    # the progress line and the Manager's last line say what the batches did
-    args.written_verb, args.written_units = 'copied', 'rsync batches'
-    return
-
-
-def check_sync_paths(parser, args):
-    """walksync: the source and destination exist and neither holds the other."""
-    if not os.path.isdir(args.dest):
-        raise FileNotFoundError('no such destination directory: {}'.format(args.dest))
-    # paths as the walk will build them: no trailing '/', so a relative path is a suffix
-    args.dirs = [os.path.normpath(args.dirs[0])]
-    args.dest = os.path.normpath(args.dest)
-    src, dest = os.path.realpath(args.dirs[0]), os.path.realpath(args.dest)
-    if src == dest or dest.startswith(src.rstrip('/') + '/') or src.startswith(dest.rstrip('/') + '/'):
-        parser.error('the source and the destination must not hold each other: {} -> {}'.format(src, dest))
-    return

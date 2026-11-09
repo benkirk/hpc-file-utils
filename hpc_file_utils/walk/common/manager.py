@@ -84,6 +84,7 @@ from collections import deque
 from hpc_file_utils.walk.common.formatting import format_number, format_size
 from hpc_file_utils.walk.common.mpiclass import MPIClass
 from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
+from hpc_file_utils.walk.tools import TOOLS
 
 def _ms(seconds):
     return '{:.3f} ms'.format(1e3 * seconds)
@@ -106,6 +107,8 @@ class Manager(MPIClass):
         self.share_pending = set()                     # workers with an unanswered 'share'
         self.progress = ProgressTally(self.nranks)
         self.progress_time = self.start_time = MPI.Wtime()
+        # what the tool's batches do, for the progress line and the last line (walkstat: nothing)
+        self.verb, self.units = TOOLS[self.options.app].writes or ('wrote', 'archives')
 
         # where the Manager's directories came from (printed after every walk)
         self.ndispatches = 0         # 'execute' messages
@@ -164,10 +167,9 @@ class Manager(MPIClass):
         if written is None:
             return ''
         nbytes = written[0]
-        verb = getattr(self.options, 'written_verb', 'wrote')
         if interval is None:
-            return written_status(nbytes, elapsed, verb=verb)
-        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches), verb)
+            return written_status(nbytes, elapsed, verb=self.verb)
+        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches), self.verb)
         self.last_written = nbytes
         return status
 
@@ -328,9 +330,8 @@ class Manager(MPIClass):
                 format_number(self.nbatches_shared), format_number(self.nbatch_dispatches))
             if written is not None:
                 line += '; {} {} files, {} ({} bytes) in {} {}'.format(
-                    getattr(self.options, 'written_verb', 'wrote'),
-                    format_number(written[1]), format_size(written[0]), format_number(written[0]),
-                    format_number(written[2]), getattr(self.options, 'written_units', 'archives'))
+                    self.verb, format_number(written[1]), format_size(written[0]), format_number(written[0]),
+                    format_number(written[2]), self.units)
             print(line)
         if self.options.verbose:
             self.print_counters()

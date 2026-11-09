@@ -18,11 +18,12 @@ which a 'share' can hand to idle ranks (see manager.py):
            open copy batch, which carries over between directories, so changed files
            from many small directories make one rsync; it closes at --batch-files names
            or --batch-size bytes.
-  copy     a FileBatch(relpaths, nbytes): one
+  copy     a FileBatch(relpaths, nbytes): --rsyncs K of
            rsync -aAX --numeric-ids --chmod=Du+w --files-from=- --from0 [--rsync-opts] SRC/ DEST/
-           (-A / -X dropped, with a warning, if this rsync was built without them)
-           With --files-from rsync does not recurse, so a directory listed is created
-           (with u+w: other ranks' batches write into it) but not filled from here.
+           side by side, each over a K-th of the batch (rsync.py; -A / -X dropped, with a
+           warning, if this rsync was built without them). With --files-from rsync does
+           not recurse, so a directory listed is created (with u+w: other ranks' batches
+           write into it) but not filled from here.
 
 A compare batch creates copy batches; they stay on this rank's list and are processed
 before its next 'ready' (manager.py, point 1), so the termination argument holds.
@@ -33,19 +34,15 @@ What is left to a final serial rsync -aHAX --delete SRC/ DEST/: deletions, hard 
 
 import os
 import stat
-import subprocess
 import sys
-import tempfile
 import time
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.formatting import printable
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy
+from hpc_file_utils.walk.sync.rsync import RSYNC_VANISHED, Rsync, rsync_command, split
 
-RSYNC_POLL_SECONDS = 0.5   # while an rsync runs, look for a 'share' and send progress this often
-RSYNC_VANISHED = 24        # rsync's "some source files vanished": a warning, not a failure
-STDERR_TAIL = 4000         # bytes of a failed rsync's stderr to print
 DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'
 
 
@@ -66,8 +63,8 @@ class SyncWorker(BaseWorker):
         self.dest = o.dest
         self.src_prefix = len(self.src.rstrip('/')) + 1
         self.dry_run = o.dry_run
-        self.cmd = [o.rsync, *o.rsync_base, '--files-from=-', '--from0', *o.rsync_opts,
-                    self.src.rstrip('/') + '/', self.dest.rstrip('/') + '/']
+        self.cmd = rsync_command(o)
+        self.rsyncs = o.rsyncs                # rsyncs side by side over one copy batch
         self.copied_bytes = 0                 # in rsync batches that finished (progress_extra)
         self.copied_files = 0
         self.nrsync = 0
@@ -251,44 +248,47 @@ class SyncWorker(BaseWorker):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def start_rsync(self, paths):
+        """One rsync over a part of a copy batch, started (in_flight()'s start)."""
+        return Rsync(self.cmd, paths)
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def copy_batch(self, paths, nbytes):
-        """One rsync for a batch of relative paths. While it runs we look for a 'share'
-        and send our counts, so a long copy does not keep our queued work from idle ranks."""
+        """One copy batch of relative paths: --rsyncs rsyncs side by side, each over its
+        part of the batch, waited for in turn. While they run we look for a 'share' and
+        send our counts, so a long copy does not keep our queued work from idle ranks.
+        The batch is one unit: it fails if any of its rsyncs does."""
         c = self.stats.counters
         t0 = time.monotonic()
-        with tempfile.TemporaryFile() as err:
-            try:
-                proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err)
-            except OSError as error:
-                c['rsync_failures'] += 1
-                self.error('run rsync', error)
-                return
-            try:
-                proc.stdin.write(b'\0'.join(os.fsencode(p) for p in paths) + b'\0')
-                proc.stdin.close()
-            except BrokenPipeError:
-                pass                  # rsync quit early: its exit status and stderr say why
-            while True:
-                try:
-                    rc = proc.wait(timeout=RSYNC_POLL_SECONDS)
-                    break
-                except subprocess.TimeoutExpired:
-                    self.tick()
+        parts = split(paths, self.rsyncs)
+        failed = vanished = False
+        try:
+            for part, rsync in self.in_flight(parts, self.start_rsync, len(parts), Rsync.kill):
+                rc = rsync.wait(self.tick)
+                if rc == RSYNC_VANISHED:
+                    vanished = True
+                    print('[{:3d}] rsync: some source files vanished (exit {})'.format(self.rank, rc), file=sys.stderr)
+                elif rc != 0:
+                    failed = True
+                    tail = rsync.tail()
+                    self.error('copy a batch of {} entries: rsync exit {}'.format(len(part), rc),
+                               '\n' + tail if tail else '(no output)')
+                rsync.close()
+        except OSError as error:              # rsync would not start
+            c['rsync_failures'] += 1
+            self.error('run rsync', error)
+            return
 
-            self.nrsync += 1
-            c['rsync_batches'] += 1
-            c['rsync_seconds'] += time.monotonic() - t0
-            if rc == RSYNC_VANISHED:
-                c['rsync_vanished'] += 1
-                print('[{:3d}] rsync: some source files vanished (exit {})'.format(self.rank, rc), file=sys.stderr)
-            elif rc != 0:
-                c['rsync_failures'] += 1
-                err.seek(0, os.SEEK_END)
-                err.seek(max(0, err.tell() - STDERR_TAIL))
-                tail = err.read().decode(errors='replace').rstrip()
-                self.error('copy a batch of {} entries: rsync exit {}'.format(len(paths), rc),
-                           '\n' + tail if tail else '(no output)')
-                return
+        self.nrsync += 1
+        c['rsync_batches'] += 1
+        c['rsync_seconds'] += time.monotonic() - t0
+        if vanished:
+            c['rsync_vanished'] += 1
+        if failed:
+            c['rsync_failures'] += 1
+            return
 
         self.copied_bytes += nbytes
         self.copied_files += len(paths)

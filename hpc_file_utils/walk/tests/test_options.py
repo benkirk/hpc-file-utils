@@ -2,7 +2,9 @@
 
 import pytest
 
-from hpc_file_utils.walk.common.options import choose_rsync, parse_options, parse_rsync_capabilities, rsync_base_opts
+from hpc_file_utils.walk.common.options import parse_options
+from hpc_file_utils.walk.sync.rsync import choose_rsync, parse_rsync_capabilities, rsync_base_opts
+from hpc_file_utils.walk.tools import TOOLS
 
 
 def test_defaults(tmp_path):
@@ -77,7 +79,9 @@ def test_walksync_options(tmp_path):
     assert a.dirs == [str(src)] and a.dest == str(dest)          # normalized: no trailing '/'
     assert (a.batch_files, a.batch_size) == (1000, 16 * 1024 ** 3)
     assert a.rsync_opts == ["--inplace", "-v"] and not a.dry_run
-    assert a.written_verb == "copied"
+    assert a.app == "walksync" and a.rsyncs == 1
+    assert TOOLS["walksync"].writes == ("copied", "rsync batches") and TOOLS["walkstat"].writes is None
+    assert parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--rsyncs", "8"]).rsyncs == 8
     a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "-n", "--mtime-newer", "1y",
                                    "--exclude", "COLD_STORAGE*", "--batch-size", "1GiB"])
     assert a.dry_run and a.filters.selects and a.batch_size == 1024 ** 3
@@ -91,6 +95,7 @@ def test_walksync_options(tmp_path):
     ["--dest", "{src}/inner"],                        # inside the source
     ["--dest", "{dest}", "--rsync", "no-such-rsync-here"],
     ["--dest", "{dest}", "--rsync-opts", "'unbalanced"],
+    ["--dest", "{dest}", "--rsyncs", "0"],
 ])
 def test_walksync_usage_errors(tmp_path, args, capsys):
     src, dest = tmp_path / "src", tmp_path / "dest"
