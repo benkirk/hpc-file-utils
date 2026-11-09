@@ -107,7 +107,16 @@ Contents:
 - **Measure walksync's per-file cost before A5** (no code change), as question 1 did for walktar:
   - one rsync over 1,000 files, timed, and `strace -c` of it;
   - the same files over N rsyncs side by side;
-  - the read side alone against the destination side alone.
+  - the read side alone against the destination side alone;
+  - the same with the source or the destination on `/glade/campaign/flash_test/csg`, a small GPFS
+    flash fileset. Flash takes the disk out of the per-file cost and leaves software (rsync,
+    Python, the GPFS client). It is a profiling aid only: the baseline must perform on the
+    normal pools.
+    - It is fileset `flash_test` (pool `system`, 699 TiB of flash disks) with a 600 TiB quota.
+      Stay below one third of that: 200 TiB.
+    - It is not in `gladequota`. Check its use with
+      `/usr/lpp/mmfs/bin/mmlsquota --block-size auto -j flash_test csfs1`.
+    - Remove everything after each run.
 
   If N rsyncs scale as walktar's readers did, the fix is several rsyncs in flight per rank. A5's
   `sync/rsync.py` run-and-poll loop should then be built for N from the start.
