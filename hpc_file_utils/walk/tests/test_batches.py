@@ -22,10 +22,6 @@ BATCHES_RE = re.compile(r"--> Batches: ([\d,]+) received in share replies, ([\d,
 TAR_RE = re.compile(r"^output-r(\d+)-(b\d+|dirs)\.tar$")
 
 
-def _int(s):
-    return int(s.replace(",", ""))
-
-
 @pytest.fixture(scope="session")
 def big_dir_tree(tmp_path_factory):
     """One directory of 400 x 64 KiB files, plus a few small directories beside it."""
@@ -77,9 +73,7 @@ def test_big_directory_is_spread_over_every_rank(walk, big_dir_tree, tmp_path):
     assert min(n for n, _ in files.values()) >= 10, f"{dict(files)}\n{r.report()}"
     assert sum(len(v) for v in dirs.values()) == 5     # tree, big, a, a/b, c: one -dirs tar each walker
 
-    m = BATCHES_RE.search(r.stdout)
-    assert m, r.report()
-    shared, handed, written_files, written_bytes, archives = map(_int, m.groups())
+    shared, handed, written_files, written_bytes, archives = r.ints(BATCHES_RE)
     assert shared > 0 and handed > 0, r.report()      # the work moved by sharing batches
     assert written_files == nfiles
     batch_tars = [t for t in tmp_path.glob("output-r*-b*.tar")]
@@ -110,9 +104,9 @@ def test_walkstat_stats_a_big_directory_on_every_rank(walk, big_dir_tree, tmp_pa
     assert r.total_count() == NFILES + 3 + 4, r.report()       # files, and big, a, a/b, c
     # local stats take microseconds, so how many ranks take part depends on timing: at
     # least the scanning rank and one that took a shared batch
-    files = {int(rank): _int(n) for rank, n in RANK_ROW_RE.findall(r.stdout)}
+    files = {int(rank): int(n.replace(",", "")) for rank, n in RANK_ROW_RE.findall(r.stdout)}
     assert sorted(files) == [1, 2, 3], f"{files}\n{r.report()}"
     assert sum(1 for n in files.values() if n) >= 2, f"{files}\n{r.report()}"
-    m = re.search(r"--> Batches: ([\d,]+) received in share replies", r.stdout)
-    assert m and _int(m.group(1)) > 0, r.report()
+    (shared,) = r.ints(r"--> Batches: ([\d,]+) received in share replies")
+    assert shared > 0, r.report()
     assert " | wrote " not in r.stdout

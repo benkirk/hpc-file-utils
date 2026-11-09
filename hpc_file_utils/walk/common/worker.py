@@ -1,16 +1,55 @@
-#!/usr/bin/env python3
+"""BaseWorker: scans the directories the Manager hands it (see manager.py for the protocol).
 
-"""BaseWorker: scans the directories the Manager hands it (see manager.py for the protocol)."""
+The scaffolding every tool's worker shares: entries() is the scan of one directory with
+the progress and 'share' checks and --exclude; ticked() and tick() are the same checks
+inside a batch; in_flight() keeps I/O started ahead of its use (walktar's reader threads,
+walksync's rsyncs); error() and vanished() count and print; push_dir() feeds the local
+stack; a RankFile is a per-rank output opened at its first write and closed by run().
+"""
+
+import collections
+import os
+import stat
+import sys
+from typing import NamedTuple
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
-from hpc_file_utils.walk.common.stats import DirTotals, FileEntry
-import os, sys, stat
+from hpc_file_utils.walk.common.stats import DirTotals
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
-SHARE_CHECK_INCREMENT = 1000 # entries of one directory between looks for a 'share'
+SHARE_CHECK_INCREMENT = 1000 # entries of one directory (or items of one batch) between looks for a 'share'
 WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages, whatever --progress
                              # (that is the screen's interval): the Manager's progress line and its
                              # choice of whom to ask for a 'share' use the stack lengths they carry
+
+
+
+class FileBatch(NamedTuple):
+    """A closed batch of selected files (close_batch()): walktar writes it as one tar,
+    walksync copies it with one rsync. Batches are module-level NamedTuples so they
+    pickle in a share_reply; the Manager treats every kind as one opaque unit of work."""
+    paths  : list   # the files' paths (walktar) or paths relative to the source root (walksync)
+    nbytes : int    # their st_size total
+
+
+class RankFile:
+    """A text file one rank writes (walksync's dry-run list): opened at its first write, so
+    a rank that writes nothing leaves no file; closed by the worker's run(), which knows
+    the ones made with BaseWorker.rank_file()."""
+
+    def __init__(self, name):
+        self.name = name
+        self.file = None
+
+    def write(self, text):
+        if self.file is None:
+            self.file = open(self.name, 'w', encoding='utf-8')
+        self.file.write(text)
+
+    def close(self):
+        if self.file is not None:
+            self.file.close()
+            self.file = None
 
 
 
@@ -25,12 +64,13 @@ class BaseWorker(MPIClass):
         MPIClass.__init__(self)
 
         self.local_dirs = []          # directories still to walk, a stack (phase 3.5)
-        self.local_batches = []       # closed batches still to process, (paths, nbytes) (phase 5)
+        self.local_batches = []       # closed batches still to process (phase 5): FileBatch, or the tool's own kind
         self.batch = []               # the open batch: paths of selected files, across directories
         self.batch_bytes = 0          # ... and their st_size total
         self.max_local_dirs = 0       # its high-water mark
         self.wait_time = 0.0          # waiting for the Manager to answer 'ready' with work
         self.last_progress_time = self.MPI.Wtime()
+        self.files = []               # RankFiles (rank_file()), closed by run()
 
         # the filters rank 0 compiled, as this rank's callables (None: no cost in the loop)
         filters = getattr(self.options, 'filters', None)
@@ -42,158 +82,187 @@ class BaseWorker(MPIClass):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_directory(self, dirname):
-
-        # last-minute check for a race condition:
-        if not os.path.exists(dirname):
-            print('[{:3d}] directory \'{}\' vanished'.format(self.rank, dirname), file=sys.stderr)
-            return
-
-        st = self.stats
-        heaps = st.heaps
-        user_heaps = st.user_heaps
-        exclude = self.exclude
-        select = self.select
-
-        st.num_dirs += 1
-        # with a selecting filter, directories are counted as entries that match (below), as find
-        # does; without one, every directory walked, the roots included, as before phase 4
-        if select is None: st.st_modes['dir'] += 1
-
-        #print('[{:3d}](d) {}'.format(self.rank, dirname))
-
-        try:
-            thisdir_nitems = 0
-            thisdir_nbytes = 0
-            thisdir_max_mtime = -1
-            thisdir_max_ctime = -1
-            thisdir_max_atime = -1
-
-            thisdir_uids = set()
-
-            dirdepth = dirname.count(os.path.sep)
-
-            for nscanned, di in enumerate(os.scandir(dirname), 1):
-
-                # send a progress update periodically
-                # (in production we have many directories with 1M+ files, this ensures some progress is
-                # detected and reported by Manager even for huge dirs)
-                if 0 == nscanned%PROGRESS_INCREMENT:
-                    self.report_progress()
-                # and look for a 'share' from the Manager, so a huge directory does not
-                # keep the subdirectories we have already queued from the idle ranks.
-                # Both count entries scanned, not counted: a filter may match few of them.
-                if 0 == nscanned%SHARE_CHECK_INCREMENT:
-                    self.check_share()
-
-                # --exclude: by name, before the stat; never counted or descended
-                if exclude is not None and exclude(di.name):
-                    st.num_excluded += 1
-                    continue
-
-                pathname = di.path
-
-                statinfo = di.stat(follow_symlinks=False)
-                fmode = statinfo.st_mode
-
-                # selecting filters: an entry that fails is not counted (nor archived),
-                # but a directory that fails is still walked, for the entries inside that pass
-                if select is not None and not select(statinfo):
-                    st.num_unmatched += 1
-                    if stat.S_ISDIR(fmode):
-                        self.local_dirs.append(pathname)
-                        if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
-                    continue
-
-                # about statinfo.st_size: we can't always trust it.
-                # for sparse files, or files migrated to tape via HSM,
-                # the size is not what is occupied on disk.
-                # a better metric is (number of blocks * fs_block_size);
-                # however the block size is variable across filesystems / GPFS file sets
-                # for regular, uncompressed, unmigrated files; size <= (n_blocks*fs_block_size)
-                item_size = statinfo.st_size
-                item_nblocks = statinfo.st_blocks
-                for bs in [ 512 ]: item_size = min(statinfo.st_size, statinfo.st_blocks*bs)
-
-                thisdir_nitems += 1
-                thisdir_nbytes += item_size
-                st.num_items += 1
-                st.total_size += item_size
-
-                thisdir_uids.add(statinfo.st_uid)
-
-                u = st.uids[statinfo.st_uid]
-                u.set_id(statinfo.st_uid)
-                u.nitems += 1
-                u.nbytes += item_size
-
-                g = st.gids[statinfo.st_gid]
-                g.set_id(statinfo.st_gid)
-                g.nitems += 1
-                g.nbytes += item_size
-
-                # decode file type
-                if stat.S_ISDIR(fmode):
-                    if select is not None: st.st_modes['dir'] += 1
-                    self.local_dirs.append(pathname)
-                    if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
-                else:
-                    st.num_files += 1
-
-                    if   stat.S_ISREG(fmode):  st.st_modes['reg']   += 1
-                    elif stat.S_ISLNK(fmode):  st.st_modes['link']  += 1
-                    elif stat.S_ISBLK(fmode):  st.st_modes['block'] += 1
-                    elif stat.S_ISCHR(fmode):  st.st_modes['char']  += 1
-                    elif stat.S_ISFIFO(fmode): st.st_modes['fifo']  += 1
-                    elif stat.S_ISSOCK(fmode): st.st_modes['sock']  += 1
-
-                    # track the *maximum mtime/ctime/atime for this directories contents (not the dir itself though)
-                    thisdir_max_mtime = max(thisdir_max_mtime, statinfo.st_mtime)
-                    thisdir_max_ctime = max(thisdir_max_ctime, statinfo.st_ctime)
-                    thisdir_max_atime = max(thisdir_max_atime, statinfo.st_atime)
-
-                    fe = FileEntry(pathname, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
-
-                    # track the size & count of this file in our top heap
-                    heaps['nbytes_files'].add((item_size, fe))
-                    user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
-
-                    # --------------------------------------------------------------------------
-                    # additional file processing - simply a placeholder stub for derived classes
-                    # to do additional work on this file.
-                    self.process_file(pathname, statinfo)
-                    #------------------------------------
+    def rank_info(self):
+        return MPIClass.rank_info(self)._replace(wait_time=self.wait_time, max_local_dirs=self.max_local_dirs)
 
 
-            # with a selecting filter, a directory holding no matching entries goes in no list
-            if select is None or thisdir_nitems:
-                self.record_directory(dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
-                                      thisdir_max_ctime, thisdir_max_atime, thisdir_uids)
 
-        except Exception as error:
-            st.num_errors += 1
-            print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def rank_file(self, pattern):
+        """A RankFile named pattern.format(rank) (e.g. 'walksync-dryrun-r{:03d}.txt'), in the
+        working directory, closed by run()."""
+        f = RankFile(pattern.format(self.rank))
+        self.files.append(f)
+        return f
 
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def error(self, what, error):
+        """Count what could not be done (an entry scanned, stat'ed, archived or copied) and
+        say so on stderr: '[rank] Cannot <what>: <error>'."""
+        self.stats.num_errors += 1
+        print('[{:3d}] Cannot {}: {}'.format(self.rank, what, error), file=sys.stderr)
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def record_directory(self, dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
-                         thisdir_max_ctime, thisdir_max_atime, thisdir_uids):
-        """A walked directory's own (non-recursive) totals, into the directory lists."""
-        totals = DirTotals()
-        totals.nitems, totals.nbytes = thisdir_nitems, thisdir_nbytes
-        totals.max_mtime, totals.max_ctime, totals.max_atime = thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime
-        totals.uids = thisdir_uids
-        self.stats.record_directory(dirname, totals, self.options.threshold_count, self.options.threshold_size)
+    def vanished(self, dirname):
+        """True, after saying so, if a directory we were handed is gone: a last-minute
+        check for a race with whoever is changing the tree."""
+        if os.path.exists(dirname):
+            return False
+        print('[{:3d}] directory \'{}\' vanished'.format(self.rank, dirname), file=sys.stderr)
+        return True
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def push_dir(self, path):
+        """A subdirectory onto the local stack; past --local-queue-max, the oldest half
+        goes to the Manager."""
+        self.local_dirs.append(path)
+        if len(self.local_dirs) >= self.options.local_queue_max:
+            self.ship_overflow()
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def entries(self, dirname):
+        """One scandir of a directory: its entries, less those --exclude prunes by name
+        (counted; never stat'ed, counted or descended). Progress goes out every
+        PROGRESS_INCREMENT entries scanned and a 'share' is looked for every
+        SHARE_CHECK_INCREMENT: a huge directory must still report, and must not keep the
+        subdirectories already queued here from the idle ranks. Both count entries scanned,
+        not kept: a filter may match few of them. The caller catches the errors
+        (error('scan', ...)): the directory's partial totals are still listed."""
+        st = self.stats
+        exclude = self.exclude
+        with os.scandir(dirname) as it:
+            for nscanned, di in enumerate(it, 1):
+                if 0 == nscanned % PROGRESS_INCREMENT:
+                    self.report_progress()
+                if 0 == nscanned % SHARE_CHECK_INCREMENT:
+                    self.check_share()
+                if exclude is not None and exclude(di.name):
+                    st.num_excluded += 1
+                    continue
+                yield di
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def tick(self):
+        """Between units of work that may take a while (a batch's files, a poll of a
+        running rsync): answer a 'share' if one is waiting, and send our counts when due."""
+        self.check_share()
+        self.report_progress(only_if_due=True)
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def ticked(self, items):
+        """The items of a batch, with tick() before every SHARE_CHECK_INCREMENT-th one: a stat
+        or a compare costs a system call, so every item would be too often (walktar ticks
+        after every file: a file costs a read)."""
+        for i, item in enumerate(items, 1):
+            if 0 == i % SHARE_CHECK_INCREMENT:
+                self.tick()
+            yield item
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def in_flight(self, items, start, depth, discard=None):
+        """Yield (item, handle) in order, keeping up to 'depth' items started ahead of the
+        one yielded: handle = start(item) begins the item's I/O (a reader thread's Future,
+        an rsync process) and the caller waits on each handle in turn, ticking between
+        them. With depth 0 nothing is started: (item, None). Handles started but never
+        yielded (an error ended the caller's loop) go to discard(handle)."""
+        if depth == 0:
+            for item in items:
+                yield item, None
+            return
+        pending = collections.deque()
+        try:
+            for item in items:
+                pending.append((item, start(item)))
+                if len(pending) > depth:
+                    yield pending.popleft()
+            while pending:
+                yield pending.popleft()
+        finally:
+            if discard is not None:
+                for _, handle in pending:
+                    discard(handle)
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def process_directory(self, dirname):
+        """The inline scan (walktar's): stat every entry, count what the filters select,
+        hand each selected file to process_file() and push each subdirectory."""
+        if self.vanished(dirname):
+            return
+
+        st = self.stats
+        select = self.select
+
+        st.num_dirs += 1
+        # with a selecting filter, directories are counted as entries that match (in count()),
+        # as find does; without one, every directory walked, the roots included, as before phase 4
+        if select is None: st.st_modes['dir'] += 1
+
+        totals = DirTotals()      # this directory's own (non-recursive) totals
+        try:
+            for di in self.entries(dirname):
+                pathname = di.path
+                statinfo = di.stat(follow_symlinks=False)
+                is_dir = stat.S_ISDIR(statinfo.st_mode)
+
+                # selecting filters: an entry that fails is not counted (nor archived), but a
+                # directory that fails is still walked, for the entries inside that pass
+                if select is not None and not select(statinfo):
+                    st.num_unmatched += 1
+                else:
+                    st.count(pathname, statinfo, totals, select is not None)
+                    if not is_dir:
+                        self.process_file(pathname, statinfo)
+                if is_dir:
+                    self.push_dir(pathname)
+
+        except Exception as error:
+            self.error('scan', error)
+
+        self.list_directory(dirname, totals)
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def process_file(self, filename, statinfo):
+        """The inline scan's hook for a selected file (walktar: into the open batch)."""
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def list_directory(self, dirname, totals):
+        """A walked directory's complete totals, into the directory lists (none, with a
+        selecting filter, if nothing in it matched)."""
+        if self.select is None or totals.nitems:
+            self.stats.record_directory(dirname, totals, self.options.threshold_count,
+                                        self.options.threshold_size)
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def add_to_batch(self, path, size):
-        """Tools with a process_batch() (walktar): put a selected file in the open batch.
+        """Tools with a process_batch() (walktar, walksync): put a selected file in the open batch.
 
         Past --batch-files files or --batch-size bytes the batch closes onto our list of
         batches to process, which a 'share' can hand to idle ranks. The open batch carries
@@ -210,9 +279,9 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def close_batch(self):
-        """Move the open batch, if it holds anything, onto our list of batches."""
+        """Move the open batch, if it holds anything, onto our list of batches as a FileBatch."""
         if self.batch:
-            self.local_batches.append((self.batch, self.batch_bytes))
+            self.local_batches.append(FileBatch(self.batch, self.batch_bytes))
             self.batch, self.batch_bytes = [], 0
         return
 
@@ -220,7 +289,7 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """Tools that call add_to_batch(): process one (paths, nbytes) batch, ours or shared."""
+        """Process one batch, ours or shared: a FileBatch from add_to_batch(), or the tool's own kind."""
         raise NotImplementedError
 
 
@@ -356,4 +425,6 @@ class BaseWorker(MPIClass):
             self.local_batches.extend(batches)
             self.drain_local_work()
 
+        for f in self.files:
+            f.close()
         return

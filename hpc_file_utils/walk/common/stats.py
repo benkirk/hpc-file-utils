@@ -7,6 +7,7 @@ break on the path), so the job combines its ranks' stats with one tree reduction
 
 import grp
 import pwd
+import stat
 import time
 from collections import Counter, defaultdict
 from functools import partial
@@ -110,6 +111,10 @@ DIR_HEAPS = ('nbytes_dirs', 'nbytes_dirs_3yrs', 'nbytes_dirs_5yrs', 'nbytes_dirs
 FILE_HEAPS = ('nbytes_files',)
 HEAPS = DIR_HEAPS + FILE_HEAPS
 
+# an entry's type bits (S_IFMT) -> its name in the summary's type counts (directories apart)
+TYPE_NAMES = {stat.S_IFREG: 'reg', stat.S_IFLNK: 'link', stat.S_IFBLK: 'block', stat.S_IFCHR: 'char',
+              stat.S_IFIFO: 'fifo', stat.S_IFSOCK: 'sock'}
+
 
 class RankInfo(NamedTuple):
     """One rank's own counts, for --verbose."""
@@ -120,6 +125,15 @@ class RankInfo(NamedTuple):
     nbytes    : int
     wait_time : float   # waiting for the Manager to answer 'ready' with work
     max_local_dirs : int  # high-water mark of its local stack
+
+
+def _add_into(mine, theirs):
+    """Add the dict 'theirs' into 'mine': a key both hold is add()ed, a new one taken."""
+    for k, v in theirs.items():
+        if k in mine:
+            mine[k].add(v)
+        else:
+            mine[k] = v
 
 
 class WalkStats:
@@ -148,6 +162,52 @@ class WalkStats:
         # summed by merge()
         self.counters = Counter()
 
+    def count(self, path, statinfo, totals, count_dirs):
+        """Count one entry that passed the filters: the walk's accounting, into these
+        totals and into its directory's 'totals' (a DirTotals). Every tool's walk keeps
+        it. count_dirs: whether a directory counts in the type counts here (with a
+        selecting filter, directories are counted as entries that match, as find does;
+        without one, the scan counts every directory it walks, the roots included)."""
+        fmode = statinfo.st_mode
+
+        # about statinfo.st_size: we can't always trust it. for sparse files, or files
+        # migrated to tape via HSM, the size is not what is occupied on disk.
+        item_size = min(statinfo.st_size, statinfo.st_blocks * 512)
+
+        self.num_items += 1
+        self.total_size += item_size
+        totals.nitems += 1
+        totals.nbytes += item_size
+        totals.uids.add(statinfo.st_uid)
+
+        u = self.uids[statinfo.st_uid]
+        u.set_id(statinfo.st_uid)
+        u.nitems += 1
+        u.nbytes += item_size
+
+        g = self.gids[statinfo.st_gid]
+        g.set_id(statinfo.st_gid)
+        g.nitems += 1
+        g.nbytes += item_size
+
+        if stat.S_ISDIR(fmode):
+            if count_dirs: self.st_modes['dir'] += 1
+            return
+
+        self.num_files += 1
+        name = TYPE_NAMES.get(stat.S_IFMT(fmode))
+        if name is not None:
+            self.st_modes[name] += 1
+
+        # the *maximum* mtime/ctime/atime of the directory's contents (not the dir itself)
+        totals.max_mtime = max(totals.max_mtime, statinfo.st_mtime)
+        totals.max_ctime = max(totals.max_ctime, statinfo.st_ctime)
+        totals.max_atime = max(totals.max_atime, statinfo.st_atime)
+
+        fe = FileEntry(path, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
+        self.heaps['nbytes_files'].add((item_size, fe))
+        self.user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
+
     def merge(self, other):
         """Add 'other' into this one (in place); returns self."""
         self.num_files += other.num_files
@@ -159,12 +219,8 @@ class WalkStats:
         self.num_unmatched += other.num_unmatched
         for k, v in other.st_modes.items():
             self.st_modes[k] += v
-        for mine, theirs in ((self.uids, other.uids), (self.gids, other.gids)):
-            for k, v in theirs.items():
-                if k in mine:
-                    mine[k].add(v)
-                else:
-                    mine[k] = v
+        _add_into(self.uids, other.uids)
+        _add_into(self.gids, other.gids)
         for name, heap in other.heaps.items():
             self.heaps[name].merge(heap)
         for name, per_user in other.user_heaps.items():
@@ -174,19 +230,12 @@ class WalkStats:
                 self.user_heaps[name][uid].merge(heap)
         self.ranks += other.ranks
         self.counters.update(other.counters)
-        for path, totals in other.partial_dirs.items():
-            if path in self.partial_dirs:
-                self.partial_dirs[path].add(totals)
-            else:
-                self.partial_dirs[path] = totals
+        _add_into(self.partial_dirs, other.partial_dirs)
         return self
 
     def add_partial_dir(self, path, totals):
         """Part of a directory's totals, from one stat batch; listed once all are merged."""
-        if path in self.partial_dirs:
-            self.partial_dirs[path].add(totals)
-        else:
-            self.partial_dirs[path] = totals
+        _add_into(self.partial_dirs, {path: totals})
 
     def record_directory(self, path, totals, threshold_count, threshold_size):
         """A walked directory's own (non-recursive) totals, into the directory lists."""

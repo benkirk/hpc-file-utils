@@ -17,16 +17,14 @@ WAIT_RE = re.compile(r"^--> Workers waited for the Manager ([\d.]+)% of the walk
 SHARED_RE = re.compile(r"directories received as overflow: ([\d,]+), shared: ([\d,]+) \(([\d,]+) share requests", re.M)
 
 
-def per_rank(stdout):
-    m = PER_RANK_RE.search(stdout)
-    assert m, stdout[-3000:]
-    return [int(x.replace(",", "")) for x in m.groups()]
+def per_rank(r):
+    """(min, mean, max) directories per rank."""
+    return r.ints(PER_RANK_RE)
 
 
-def shared(stdout):
-    m = SHARED_RE.search(stdout)
-    assert m, stdout[-3000:]
-    return [int(x.replace(",", "")) for x in m.groups()]
+def shared(r):
+    """(directories received as overflow, shared, share requests)."""
+    return r.ints(SHARED_RE)
 
 
 @pytest.fixture(scope="session")
@@ -57,10 +55,10 @@ def test_every_rank_gets_work_through_sharing(walk, binary_tree, tmp_path, args)
     r = walk.run("walkstat", [root], cwd=tmp_path, nranks=4, args=args)
     assert r.ok, r.report()
     assert r.total_count() == nitems, r.report()
-    lo, mean, hi = per_rank(r.stdout)
+    lo, mean, hi = per_rank(r)
     assert lo >= 1, r.report()
     assert abs(mean * 3 - (ndirs + 1)) < 3, r.report()   # 3 workers walked each directory once
-    overflow, nshared, nrequests = shared(r.stdout)
+    overflow, nshared, nrequests = shared(r)
     if "--local-queue-max" not in args:
         assert overflow == 0, r.report()          # never overflowed...
         assert nshared > 0 and nrequests > 0, r.report()   # ... so the work moved by sharing
@@ -72,8 +70,8 @@ def test_single_worker_never_shares(walk, binary_tree, tmp_path):
     r = walk.run("walkstat", [root], cwd=tmp_path, nranks=2)
     assert r.ok, r.report()
     assert r.total_count() == nitems, r.report()
-    assert per_rank(r.stdout) == [ndirs + 1, ndirs + 1, ndirs + 1]
-    assert shared(r.stdout)[2] == 0
+    assert per_rank(r) == (ndirs + 1, ndirs + 1, ndirs + 1)
+    assert shared(r)[2] == 0
 
 
 def test_wait_fraction_is_reported(walk, golden_tree, tmp_path):

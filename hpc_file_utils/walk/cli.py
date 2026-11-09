@@ -1,6 +1,7 @@
 """Console scripts: walkstat, walktar and walksync (see [project.scripts] in pyproject.toml).
 
-Rank 0 runs the Manager, every other rank a worker of the requested tool.
+Rank 0 runs the Manager, every other rank a worker of the requested tool. What differs
+between the tools comes from their Tool (walk/tools.py, common/tool.py).
 """
 
 import sys
@@ -8,24 +9,13 @@ from datetime import datetime
 
 from hpc_file_utils.walk.common.formatting import format_number
 from hpc_file_utils.walk.common.options import parse_options
-
-
-def make_worker(app):
-    if app == 'walkstat':
-        from hpc_file_utils.walk.stat.worker import StatWorker
-        return StatWorker()
-    if app == 'walktar':
-        from hpc_file_utils.walk.tar.worker import TarWorker
-        return TarWorker()
-    if app == 'walksync':
-        from hpc_file_utils.walk.sync.worker import SyncWorker
-        return SyncWorker()
-    raise NotImplementedError('unrecognized tool: {}'.format(app))
+from hpc_file_utils.walk.tools import TOOLS
 
 
 def main(app, argv=None):
     from mpi4py import MPI
 
+    tool = TOOLS[app]
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -70,8 +60,7 @@ def main(app, argv=None):
 
     # workers on ranks [1,size)
     if rank:
-        walker = make_worker(app)
-        walker.run()
+        walker = tool.make_worker()
 
     # manager on rank 0
     else:
@@ -80,37 +69,42 @@ def main(app, argv=None):
             print('All Options: {}'.format(args))
         else:
             print('Processing Directories: {}'.format(args.dirs))
-        if app == 'walksync':
-            print('Syncing {}/ -> {}/{}'.format(args.dirs[0], args.dest, ' (dry run: copying nothing)' if args.dry_run else ''))
-            if args.rsync_note:
-                print('rsync: {}'.format(args.rsync_note))
-            for missing in args.rsync_missing:
-                print('WARNING: {} was built without {}: they are not copied'.format(args.rsync, missing))
-        if args.filters is not None:
-            print('Filters: {}'.format(args.filters.describe()))
-            if app == 'walksync' and args.filters.selects:
-                print('    a partial copy: only the files the filters select (every directory is created)')
+        for line in tool.banner(args):
+            print(line)
         print('Running {} on {} MPI ranks'.format(app, size))
         sys.stdout.flush()
         walker = Manager(options=args)
-        walker.run()
+
+    run_walker(walker, rank)
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
     if 0 == rank:
-        report(walker, stats, app)
+        report(walker, stats, tool)
 
-    # exit-status policy: collect() summed the error counts on every rank. walksync
-    # always fails on errors: an incomplete copy must not look like a finished one.
-    if app == 'walksync' and walker.total_errors:
-        return 1
-    if walker.options.fail_on_errors and walker.total_errors:
-        return 2
-    return 0
+    # exit-status policy: collect() summed the error counts on every rank
+    return tool.exit_status(walker.total_errors, walker.options)
 
 
-def report(manager, stats, app='walkstat'):
-    """Rank 0, after the walk: the reports, and a cross-check of the counts."""
-    from hpc_file_utils.walk.stat.report import balance_lines, rank_lines, write_reports
+def run_walker(walker, rank):
+    """The rank's walk (the Manager's loop, or a worker's), under cProfile with --profile:
+    profile-r{rank}.prof in the working directory, for python -m pstats."""
+    if not walker.options.profile:
+        walker.run()
+        return
+    import cProfile
+    profile = cProfile.Profile()
+    profile.enable()
+    try:
+        walker.run()
+    finally:
+        profile.disable()
+        profile.dump_stats('profile-r{:03d}.prof'.format(rank))
+
+
+def report(manager, stats, tool):
+    """Rank 0, after the walk: a cross-check of the counts, the balance lines, the
+    tool's own reports, and the last lines."""
+    from hpc_file_utils.walk.common.report import balance_lines, rank_lines
 
     options = manager.options
     # every worker's last 'ready' carried its final counts, so these must agree
@@ -124,13 +118,7 @@ def report(manager, stats, app='walkstat'):
         print('\n'.join(rank_lines(stats)))
     sys.stdout.flush()
 
-    if app == 'walksync':
-        from hpc_file_utils.walk.sync.report import sync_lines
-        print('\n'.join(sync_lines(stats, manager.walk_elapsed, options)))
-        sys.stdout.flush()
-    # walksync writes walkstat's reports (of what it compared) only when asked to
-    if app != 'walksync' or options.summary_prefix or options.spreadsheet:
-        write_reports(stats, options)
+    tool.report(manager, stats)
 
     if stats.num_errors:
         print('--> {} entries could not be scanned (see stderr)'.format(format_number(stats.num_errors)))

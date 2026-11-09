@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """The Manager (rank 0) hands directories and file batches to the workers until the walk is done.
 
 Workers walk their own local stack of directories, depth-first, and talk to the Manager
@@ -8,10 +6,11 @@ only when it overflows, when it runs dry, or when the Manager asks them to share
 
 Phase 5: the workers also turn a directory's files into batches, kept on the scanning
 worker's own list and processed there, batches before directories: walktar's are
-(paths, nbytes), archived into one tar each; walkstat's are (dirname, names, tail), the
-names still to stat (stat/worker.py). A batch leaves its worker only in a share_reply,
-and the Manager hands batches out before directories. To the Manager and to this
-argument, a batch is opaque: one unit of work.
+FileBatch(paths, nbytes), archived into one tar each; walkstat's are StatBatch(dirname,
+names, tail), the names still to stat (stat/worker.py); walksync's are CompareBatch
+and FileBatch (sync/worker.py). A batch leaves its worker only in a share_reply, and
+the Manager hands batches out before directories. To the Manager and to this argument,
+a batch is opaque: one unit of work.
 
 Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tuple):
 
@@ -85,6 +84,7 @@ from collections import deque
 from hpc_file_utils.walk.common.formatting import format_number, format_size
 from hpc_file_utils.walk.common.mpiclass import MPIClass
 from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
+from hpc_file_utils.walk.tools import TOOLS
 
 def _ms(seconds):
     return '{:.3f} ms'.format(1e3 * seconds)
@@ -107,6 +107,8 @@ class Manager(MPIClass):
         self.share_pending = set()                     # workers with an unanswered 'share'
         self.progress = ProgressTally(self.nranks)
         self.progress_time = self.start_time = MPI.Wtime()
+        # what the tool's batches do, for the progress line and the last line (walkstat: nothing)
+        self.verb, self.units = TOOLS[self.options.app].writes or ('wrote', 'archives')
 
         # where the Manager's directories came from (printed after every walk)
         self.ndispatches = 0         # 'execute' messages
@@ -123,8 +125,7 @@ class Manager(MPIClass):
         self.wait_time = 0.0         # blocked in recv, waiting for any message
         self.busy_time = 0.0         # handling messages and answering 'ready's
         self.max_handle_time = 0.0
-        self.nexecute = 0            # 'ready' answered with a directory
-        self.sum_ready_wait = 0.0    # ... and how long each was held first
+        self.sum_ready_wait = 0.0    # how long each 'ready' was held before its 'execute'
         self.max_ready_wait = 0.0
         self.max_terminate_wait = 0.0
         return
@@ -140,7 +141,7 @@ class Manager(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def update_progress(self, rank, payload):
-        """payload: the (items, bytes, extra) every worker message carries (protocol.py)."""
+        """payload: the (items, bytes, queued, extra) every worker message carries (protocol.py)."""
         self.progress.update(rank, payload)
         return
 
@@ -166,10 +167,9 @@ class Manager(MPIClass):
         if written is None:
             return ''
         nbytes = written[0]
-        verb = getattr(self.options, 'written_verb', 'wrote')
         if interval is None:
-            return written_status(nbytes, elapsed, verb=verb)
-        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches), verb)
+            return written_status(nbytes, elapsed, verb=self.verb)
+        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches), self.verb)
         self.last_written = nbytes
         return status
 
@@ -263,7 +263,6 @@ class Manager(MPIClass):
             self.comm.send(give, dest=rank, tag=self.tags['execute']); self.nsends += 1
             self.ndispatches += 1
             wait = self.MPI.Wtime() - when
-            self.nexecute += 1
             self.sum_ready_wait += wait
             self.max_ready_wait = max(self.max_ready_wait, wait)
         return
@@ -331,9 +330,8 @@ class Manager(MPIClass):
                 format_number(self.nbatches_shared), format_number(self.nbatch_dispatches))
             if written is not None:
                 line += '; {} {} files, {} ({} bytes) in {} {}'.format(
-                    getattr(self.options, 'written_verb', 'wrote'),
-                    format_number(written[1]), format_size(written[0]), format_number(written[0]),
-                    format_number(written[2]), getattr(self.options, 'written_units', 'archives'))
+                    self.verb, format_number(written[1]), format_size(written[0]), format_number(written[0]),
+                    format_number(written[2]), self.units)
             print(line)
         if self.options.verbose:
             self.print_counters()
@@ -363,7 +361,7 @@ class Manager(MPIClass):
         print('  --> Manager blocked in recv: {:.2f} s of {:.2f} s in the loop ({:.1f}%)'.format(
             self.wait_time, loop_time, 100 * self.wait_time / loop_time if loop_time else 0))
         print('  --> Manager ready -> execute: {} answered, held {} mean, {} max (includes waiting for work)'.format(
-            format_number(self.nexecute), _ms(self.sum_ready_wait / max(self.nexecute, 1)),
+            format_number(self.ndispatches), _ms(self.sum_ready_wait / max(self.ndispatches, 1)),
             _ms(self.max_ready_wait)))
         sys.stdout.flush()
         return

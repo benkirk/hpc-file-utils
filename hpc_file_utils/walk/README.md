@@ -4,14 +4,16 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 
 | | |
 |---|---|
-| `cli.py` | the `walkstat`, `walktar` and `walksync` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports |
-| `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, and how two ranks' combine), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
-| `stat/` | walkstat: `worker.py` (StatWorker), `report.py` (summary and userlists), `spreadsheet.py` |
-| `tar/` | walktar: `worker.py` (TarWorker) |
-| `sync/` | walksync: `worker.py` (SyncWorker), `compare.py` (the copy decision, pure), `report.py` |
+| `cli.py` | the `walkstat`, `walktar` and `walksync` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports; everything tool-specific comes from the tool's `Tool` |
+| `tools.py` | `TOOLS`, the tools by name |
+| `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker: the scan, the batch and in-flight scaffolding, `FileBatch`, `RankFile`), `tool.py` (`Tool`: what a tool adds — options, banner, report, exit status, worker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, `count()`, and how two ranks' combine), `report.py` (the balance and per-rank lines), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
+| `stat/` | walkstat: `tool.py`, `worker.py` (StatWorker, `StatBatch`), `report.py` (summary and userlists), `spreadsheet.py` |
+| `tar/` | walktar: `tool.py`, `worker.py` (TarWorker) |
+| `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
 
 Only `manager.py`, `worker.py`, `mpiclass.py` and `cli.py` touch MPI, and they import mpi4py when
-called rather than when imported, so the rest unit-tests without it.
+called rather than when imported, so the rest unit-tests without it. A fourth tool is one
+`<tool>/tool.py` and one `<tool>/worker.py`, added to `TOOLS`.
 
 Outputs (in the working directory, written by rank 0):
 - `summary-<prefix>` (`summary-output` without `--summary-prefix`), also echoed to stdout. The
@@ -24,6 +26,8 @@ Outputs (in the working directory, written by rank 0):
   by the workers (see [File batches](#file-batches-phase-5)).
 - walksync: `walksync-dryrun-r{rank}.txt` with `--dry-run`, one per worker. No summary or
   userlists unless `--summary-prefix` or `--spreadsheet` is given.
+- `--profile`: `profile-r{rank}.prof`, a cProfile of every rank's run (the Manager's loop,
+  each worker's walk), for `python -m pstats`.
 
 ## Filtering (phase 4)
 
@@ -180,6 +184,12 @@ rerun with nothing changed copies nothing: it costs only the walk.
   the worker polls it every 0.5 s and still answers `share` requests and sends progress.
   `--chmod=Du+w` is needed for two reasons: ranks' batches create the same parent
   directories, and a read-only source's directories would refuse the next batch's files.
+- **`--rsyncs K`** [1]: K rsyncs side by side over one copy batch, each over a K-th of its
+  files, the batch still one unit of work (it fails if any of them does). A cold file costs
+  one storage round trip whatever rsync does with it, and K rsyncs overlap those round trips
+  as walktar's `--read-ahead` does; `docs/HANDOFF-sweep.md` 0.4 measured 8 as the sweet spot
+  with one CPU per rank (6× on 1 MiB files, 7× on 80 KB files). The default stays 1 until
+  that is confirmed at scale.
 - **Which rsync:** `--rsync` if given. Otherwise rsync on PATH, unless it lacks ACLs or xattrs
   and `/usr/bin/rsync` explicitly lists both, in which case the banner says it uses
   `/usr/bin/rsync` and why.

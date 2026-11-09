@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from hpc_file_utils.walk.common.options import choose_rsync
+from hpc_file_utils.walk.sync.rsync import choose_rsync
 
 pytestmark = [
     pytest.mark.mpi,
@@ -30,22 +30,14 @@ RANK_ROW_RE = re.compile(r"^\s+(\d+)\s+\S+\s+[\d,]+\s+([\d,]+)\s", re.M)
 DIR_ATTRS_RE = re.compile(r"^\.d\.\.[.t][.p]\.\.\.[.a]\. ")
 
 
-def _int(s):
-    return int(s.replace(",", ""))
-
-
 def sync_counts(r):
     """(new, changed, unchanged, extraneous) from a run's summary."""
-    m = SYNC_RE.search(r.stdout)
-    assert m, r.report()
-    return tuple(map(_int, m.groups()))
+    return r.ints(SYNC_RE)
 
 
 def copied(r):
     """(entries copied, rsync batches, failed batches)."""
-    m = COPIED_RE.search(r.stdout)
-    assert m, r.report()
-    return tuple(map(_int, m.groups()))
+    return r.ints(COPIED_RE)
 
 
 def oracle(src, dest, *extra, delete=True, final=False):
@@ -105,9 +97,11 @@ def dest(tmp_path):
             os.chmod(os.path.join(dirpath, n), 0o755)
 
 
-def test_copy_passes_the_oracle_and_a_rerun_copies_nothing(walk, private_golden_tree, dest, tmp_path):
+@pytest.mark.parametrize("rsyncs", ["1", "3"], ids=["one-rsync", "three-rsyncs"])
+def test_copy_passes_the_oracle_and_a_rerun_copies_nothing(walk, private_golden_tree, dest, tmp_path, rsyncs):
+    """One rsync per copy batch, or --rsyncs side by side over its parts: the same copy."""
     src = private_golden_tree.root
-    r = sync(walk, src, dest, tmp_path / "run1", "--batch-files", "5")
+    r = sync(walk, src, dest, tmp_path / "run1", "--batch-files", "5", "--rsyncs", rsyncs)
     assert r.ok, r.report()
     new, changed, unchanged, extra = sync_counts(r)
     assert (new, changed, unchanged, extra) == (private_golden_tree.nitems, 0, 0, 0), r.report()
@@ -226,16 +220,17 @@ def test_big_directory_is_copied_by_several_ranks(walk, big_dir, dest, tmp_path)
     assert r.ok, r.report()
     assert copied(r)[0] == NFILES + 1, r.report()
     # each rank's 'files' column is what it copied; how many take part depends on timing
-    files = {int(rank): _int(n) for rank, n in RANK_ROW_RE.findall(r.stdout)}
+    files = {int(rank): int(n.replace(",", "")) for rank, n in RANK_ROW_RE.findall(r.stdout)}
     assert sum(files.values()) == NFILES + 1, f"{files}\n{r.report()}"
     assert sum(1 for n in files.values() if n) >= 2, f"{files}\n{r.report()}"
-    m = re.search(r"--> Batches: ([\d,]+) received in share replies", r.stdout)
-    assert m and _int(m.group(1)) > 0, r.report()
+    (shared,) = r.ints(r"--> Batches: ([\d,]+) received in share replies")
+    assert shared > 0, r.report()
     assert oracle(big_dir, dest) == []
 
 
-def test_a_failing_rsync_fails_the_run(walk, big_dir, dest, tmp_path):
-    r = sync(walk, big_dir, dest, tmp_path / "run", "--rsync-opts=--no-such-rsync-option")
+@pytest.mark.parametrize("rsyncs", ["1", "3"], ids=["one-rsync", "three-rsyncs"])
+def test_a_failing_rsync_fails_the_run(walk, big_dir, dest, tmp_path, rsyncs):
+    r = sync(walk, big_dir, dest, tmp_path / "run", "--rsync-opts=--no-such-rsync-option", "--rsyncs", rsyncs)
     assert not r.timed_out, r.report()
     assert walk.exit_status_matches(r.returncode, 1), r.report()
     assert copied(r)[2] > 0 and copied(r)[0] == 0, r.report()
