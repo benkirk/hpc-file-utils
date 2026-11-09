@@ -32,14 +32,48 @@ def parse_rsync_capabilities(version_text):
     return acls, xattrs
 
 
+def rsync_version(rsync):
+    """'rsync --version' of the rsync at path 'rsync', or '' if it would not run."""
+    try:
+        return subprocess.run([rsync, '--version'], capture_output=True, text=True, errors='replace',
+                              timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
 def rsync_capabilities(rsync):
     """(acls, xattrs) the rsync at path 'rsync' was built with."""
-    try:
-        out = subprocess.run([rsync, '--version'], capture_output=True, text=True, errors='replace',
-                             timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        out = ''
-    return parse_rsync_capabilities(out)
+    return parse_rsync_capabilities(rsync_version(rsync))
+
+
+# Where walksync looks when rsync on PATH lacks ACLs or xattrs. On derecho, config_env.sh puts the
+# env's conda-forge rsync (no ACLs) first on PATH, while /usr/bin/rsync (3.2.7) has both.
+RSYNC_ALTERNATIVES = ('/usr/bin/rsync',)
+
+
+def choose_rsync(requested=None, alternatives=RSYNC_ALTERNATIVES):
+    """(path, acls, xattrs, note): the rsync walksync runs.
+
+    An explicit --rsync is used as given. Otherwise rsync on PATH, unless it lacks ACLs or
+    xattrs and an alternative's --version explicitly lists both. Explicitly: macOS's
+    /usr/bin/rsync (openrsync) prints no Capabilities list, which parse_rsync_capabilities()
+    would count as supported. note says why an alternative was chosen; path is None if
+    no rsync was found."""
+    path = shutil.which(requested or 'rsync')
+    acls, xattrs = rsync_capabilities(path) if path else (False, False)
+    if requested is not None or (acls and xattrs):
+        return path, acls, xattrs, ''
+    for alt in alternatives:
+        alt_path = shutil.which(alt)
+        if not alt_path or (path and os.path.realpath(alt_path) == os.path.realpath(path)):
+            continue
+        text = rsync_version(alt_path)
+        if (re.search(r'\bACLs\b', text) and re.search(r'\bxattrs\b', text)
+                and parse_rsync_capabilities(text) == (True, True)):
+            lacks = ' and '.join(name for name, ok in (('ACLs', acls), ('xattrs', xattrs)) if not ok)
+            why = 'rsync on PATH ({}) has no {}'.format(path, lacks) if path else 'no rsync on PATH'
+            return alt_path, True, True, 'using {}, which has ACLs and xattrs: {}'.format(alt_path, why)
+    return path, acls, xattrs, ''
 
 
 def rsync_base_opts(acls, xattrs):
@@ -82,7 +116,7 @@ def parse_options(appname=None, argv=None):
     if 'walksync' == appname:
         parser.add_argument('--dest', required=True, help='Destination directory: the source --dirs DIR is copied into it (rsync DIR/ DEST/)')
         parser.add_argument('-n', '--dry-run', action='store_true', help='Copy nothing: list what would be copied (N new, C changed) and what is only in the destination (X), one file per rank: walksync-dryrun-r*.txt')
-        parser.add_argument('--rsync', default='rsync', help='The rsync to run (default: rsync on PATH)')
+        parser.add_argument('--rsync', default=None, help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
         parser.add_argument('--rsync-opts', default='', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to {})'.format(' '.join(RSYNC_OPTS)))
 
     args = parser.parse_args(argv)
@@ -146,12 +180,11 @@ def check_sync_options(parser, args):
         args.rsync_opts = shlex.split(args.rsync_opts)
     except ValueError as e:
         parser.error('--rsync-opts: {}'.format(e))
-    rsync = shutil.which(args.rsync)
+    rsync, acls, xattrs, args.rsync_note = choose_rsync(args.rsync)
     if rsync is None:
-        parser.error('--rsync: no such program: {}'.format(args.rsync))
+        parser.error('--rsync: no such program: {}'.format(args.rsync or 'rsync'))
     args.rsync = rsync
     # an rsync built without ACLs (or xattrs) refuses -A (-X) outright: drop it, and say so
-    acls, xattrs = rsync_capabilities(rsync)
     args.rsync_base = rsync_base_opts(acls, xattrs)
     args.rsync_missing = [name for name, ok in (('ACLs', acls), ('xattrs', xattrs)) if not ok]
     # the progress line and the Manager's last line say what the batches did

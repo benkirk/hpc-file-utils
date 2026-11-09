@@ -2,7 +2,7 @@
 
 import pytest
 
-from hpc_file_utils.walk.common.options import parse_options, parse_rsync_capabilities, rsync_base_opts
+from hpc_file_utils.walk.common.options import choose_rsync, parse_options, parse_rsync_capabilities, rsync_base_opts
 
 
 def test_defaults(tmp_path):
@@ -140,3 +140,42 @@ def test_walksync_without_acls_drops_A(tmp_path):
     src.mkdir(), dest.mkdir()
     a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--rsync", str(fake)])
     assert a.rsync_base[0] == "-aX" and a.rsync_missing == ["ACLs"]
+
+
+def _fake_rsync(path, capabilities):
+    """A stand-in rsync whose --version prints the given Capabilities text."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\necho 'rsync  version 9  protocol version 31'\necho 'Capabilities:'\necho '    {capabilities}'\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_walksync_prefers_an_rsync_with_acls(tmp_path, monkeypatch):
+    """rsync on PATH without ACLs (derecho's conda env): an alternative that lists ACLs and
+    xattrs is chosen and the reason given; one that lists them only vaguely is not."""
+    _fake_rsync(tmp_path / "bin" / "rsync", "symlinks, no ACLs, xattrs")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    full = _fake_rsync(tmp_path / "usr" / "rsync", "symlinks, ACLs, xattrs")
+    vague = tmp_path / "mac" / "rsync"
+    vague.parent.mkdir()
+    vague.write_text("#!/bin/sh\necho 'openrsync: protocol version 29'\n")
+    vague.chmod(0o755)
+
+    path, acls, xattrs, note = choose_rsync(alternatives=(str(vague), full))
+    assert (path, acls, xattrs) == (full, True, True)
+    assert note.startswith(f"using {full}") and "has no ACLs" in note
+
+    path, acls, xattrs, note = choose_rsync(alternatives=(str(vague),))     # no capable alternative
+    assert (path, acls, xattrs, note) == (str(tmp_path / "bin" / "rsync"), False, True, "")
+
+    path, acls, xattrs, note = choose_rsync("rsync", alternatives=(full,))  # an explicit --rsync
+    assert (path, acls, note) == (str(tmp_path / "bin" / "rsync"), False, "")
+
+
+def test_walksync_keeps_a_capable_rsync_on_path(tmp_path, monkeypatch):
+    on_path = _fake_rsync(tmp_path / "bin" / "rsync", "symlinks, ACLs, xattrs")
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    other = _fake_rsync(tmp_path / "usr" / "rsync", "symlinks, ACLs, xattrs")
+    assert choose_rsync(alternatives=(other,)) == (on_path, True, True, "")
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))                  # none on PATH
+    assert choose_rsync(alternatives=(other,))[0] == other

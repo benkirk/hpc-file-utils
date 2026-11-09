@@ -82,6 +82,8 @@ def main(app, argv=None):
             print('Processing Directories: {}'.format(args.dirs))
         if app == 'walksync':
             print('Syncing {}/ -> {}/{}'.format(args.dirs[0], args.dest, ' (dry run: copying nothing)' if args.dry_run else ''))
+            if args.rsync_note:
+                print('rsync: {}'.format(args.rsync_note))
             for missing in args.rsync_missing:
                 print('WARNING: {} was built without {}: they are not copied'.format(args.rsync, missing))
         if args.filters is not None:

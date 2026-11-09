@@ -180,10 +180,16 @@ rerun with nothing changed copies nothing: it costs only the walk.
   the worker polls it every 0.5 s and still answers `share` requests and sends progress.
   `--chmod=Du+w` is needed for two reasons: ranks' batches create the same parent
   directories, and a read-only source's directories would refuse the next batch's files.
+- **Which rsync:** `--rsync` if given. Otherwise rsync on PATH, unless it lacks ACLs or xattrs
+  and `/usr/bin/rsync` explicitly lists both, in which case the banner says it uses
+  `/usr/bin/rsync` and why.
+  - On derecho this matters: `config_env.sh` puts the env's conda-forge rsync, which has no
+    ACLs, first on PATH, while `/usr/bin/rsync` has both.
+  - macOS's `/usr/bin/rsync` (openrsync) lists no Capabilities, so it is never chosen this way.
 - **rsync without ACLs or xattrs:** rank 0 reads `rsync --version` once. If the Capabilities
-  list says `no ACLs` or `no xattrs` (conda-forge's Linux rsync has no ACLs), `-A`/`-X` are
-  dropped, since rsync would refuse them. The banner warns, and the summary says the final
-  serial rsync (with a capable rsync) must copy them.
+  list says `no ACLs` or `no xattrs`, `-A`/`-X` are dropped, since rsync would refuse them.
+  The banner warns, and the summary says the final serial rsync (with a capable rsync) must
+  copy them.
 - **Termination:** a compare batch creates copy batches. They stay on the rank that
   processed it, which handles them before its next `ready`, so the Manager's argument
   (manager.py, point 1) is unchanged.

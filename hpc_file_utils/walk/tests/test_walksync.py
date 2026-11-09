@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from hpc_file_utils.walk.common.options import rsync_capabilities
+from hpc_file_utils.walk.common.options import choose_rsync
 
 pytestmark = [
     pytest.mark.mpi,
@@ -46,11 +46,12 @@ def copied(r):
 
 
 def oracle(src, dest, *extra, delete=True):
-    """rsync's own itemized dry run: every line that is not a directory's time. -A and -X
-    only where this rsync has them, as walksync does (conda-forge's Linux rsync has no ACLs)."""
-    acls, xattrs = rsync_capabilities(shutil.which("rsync"))
+    """rsync's own itemized dry run: every line that is not a directory's time. The rsync
+    walksync chooses, with -A and -X only where it has them (conda-forge's Linux rsync has no
+    ACLs; on derecho walksync then takes /usr/bin/rsync)."""
+    rsync, acls, xattrs, _ = choose_rsync()
     flags = "-nax" + ("A" if acls else "") + ("X" if xattrs else "")
-    cmd = ["rsync", flags, "-i", "--chmod=Du+w", *extra] + (["--delete"] if delete else [])
+    cmd = [rsync, flags, "-i", "--chmod=Du+w", *extra] + (["--delete"] if delete else [])
     out = subprocess.run(cmd + [f"{src}/", f"{dest}/"], capture_output=True, check=True).stdout
     lines = out.decode(errors="surrogateescape").splitlines()
     return [line for line in lines if not DIR_TIME_RE.match(line)]
