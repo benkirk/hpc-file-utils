@@ -17,78 +17,16 @@ each batch's files.
   (WalkStats.finish_directories()). Only big directories go there.
 """
 
-import os, stat, sys
+import os, sys
 
 from hpc_file_utils.walk.common import worker as base
-from hpc_file_utils.walk.common.stats import DirTotals, FileEntry
+from hpc_file_utils.walk.common.stats import DirTotals
 from hpc_file_utils.walk.common.worker import BaseWorker
 
 
 
 ################################################################################
 class StatWorker(BaseWorker):
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def count(self, path, statinfo, totals):
-        """Count one entry that passed the filters (walkstat's accounting), into the
-        walk's totals and its directory's 'totals'."""
-        st = self.stats
-        fmode = statinfo.st_mode
-
-        # about statinfo.st_size: we can't always trust it. for sparse files, or files
-        # migrated to tape via HSM, the size is not what is occupied on disk.
-        item_size = min(statinfo.st_size, statinfo.st_blocks * 512)
-
-        st.num_items += 1
-        st.total_size += item_size
-        totals.nitems += 1
-        totals.nbytes += item_size
-        totals.uids.add(statinfo.st_uid)
-
-        u = st.uids[statinfo.st_uid]
-        u.set_id(statinfo.st_uid)
-        u.nitems += 1
-        u.nbytes += item_size
-
-        g = st.gids[statinfo.st_gid]
-        g.set_id(statinfo.st_gid)
-        g.nitems += 1
-        g.nbytes += item_size
-
-        if stat.S_ISDIR(fmode):
-            if self.select is not None: st.st_modes['dir'] += 1
-            return
-
-        st.num_files += 1
-        if   stat.S_ISREG(fmode):  st.st_modes['reg']   += 1
-        elif stat.S_ISLNK(fmode):  st.st_modes['link']  += 1
-        elif stat.S_ISBLK(fmode):  st.st_modes['block'] += 1
-        elif stat.S_ISCHR(fmode):  st.st_modes['char']  += 1
-        elif stat.S_ISFIFO(fmode): st.st_modes['fifo']  += 1
-        elif stat.S_ISSOCK(fmode): st.st_modes['sock']  += 1
-
-        # the *maximum* mtime/ctime/atime of the directory's contents (not the dir itself)
-        totals.max_mtime = max(totals.max_mtime, statinfo.st_mtime)
-        totals.max_ctime = max(totals.max_ctime, statinfo.st_ctime)
-        totals.max_atime = max(totals.max_atime, statinfo.st_atime)
-
-        fe = FileEntry(path, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
-        st.heaps['nbytes_files'].add((item_size, fe))
-        st.user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def list_directory(self, dirname, totals):
-        """A directory's complete totals, into the lists (none, with a selecting filter,
-        if nothing in it matched)."""
-        if self.select is None or totals.nitems:
-            self.stats.record_directory(dirname, totals, self.options.threshold_count,
-                                        self.options.threshold_size)
-        return
-
-
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def error(self, what, error):
@@ -153,7 +91,7 @@ class StatWorker(BaseWorker):
                 if select is not None and not select(statinfo):
                     st.num_unmatched += 1
                     continue
-                self.count(di.path, statinfo, subdirs)
+                st.count(di.path, statinfo, subdirs, select is not None)
 
         except Exception as error:
             self.error('scan', error)
@@ -191,7 +129,7 @@ class StatWorker(BaseWorker):
             if select is not None and not select(statinfo):
                 st.num_unmatched += 1
                 continue
-            self.count(path, statinfo, totals)
+            st.count(path, statinfo, totals, select is not None)
 
         if tail is None:                        # one part of a split directory
             st.add_partial_dir(dirname, totals)

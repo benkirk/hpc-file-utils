@@ -1,7 +1,7 @@
 """BaseWorker: scans the directories the Manager hands it (see manager.py for the protocol)."""
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
-from hpc_file_utils.walk.common.stats import DirTotals, FileEntry
+from hpc_file_utils.walk.common.stats import DirTotals
 import os, sys, stat
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
@@ -48,38 +48,25 @@ class BaseWorker(MPIClass):
             return
 
         st = self.stats
-        heaps = st.heaps
-        user_heaps = st.user_heaps
         exclude = self.exclude
         select = self.select
 
         st.num_dirs += 1
-        # with a selecting filter, directories are counted as entries that match (below), as find
-        # does; without one, every directory walked, the roots included, as before phase 4
+        # with a selecting filter, directories are counted as entries that match (in count()),
+        # as find does; without one, every directory walked, the roots included, as before phase 4
         if select is None: st.st_modes['dir'] += 1
 
+        totals = DirTotals()      # this directory's own (non-recursive) totals
         try:
-            thisdir_nitems = 0
-            thisdir_nbytes = 0
-            thisdir_max_mtime = -1
-            thisdir_max_ctime = -1
-            thisdir_max_atime = -1
-
-            thisdir_uids = set()
-
-            dirdepth = dirname.count(os.path.sep)
-
             for nscanned, di in enumerate(os.scandir(dirname), 1):
 
-                # send a progress update periodically
-                # (in production we have many directories with 1M+ files, this ensures some progress is
-                # detected and reported by Manager even for huge dirs)
-                if 0 == nscanned%PROGRESS_INCREMENT:
+                # progress, and a 'share' from the Manager, every so many entries scanned: a
+                # huge directory must still report, and must not keep the subdirectories we
+                # have queued from the idle ranks. Both count entries scanned, not counted:
+                # a filter may match few of them.
+                if 0 == nscanned % PROGRESS_INCREMENT:
                     self.report_progress()
-                # and look for a 'share' from the Manager, so a huge directory does not
-                # keep the subdirectories we have already queued from the idle ranks.
-                # Both count entries scanned, not counted: a filter may match few of them.
-                if 0 == nscanned%SHARE_CHECK_INCREMENT:
+                if 0 == nscanned % SHARE_CHECK_INCREMENT:
                     self.check_share()
 
                 # --exclude: by name, before the stat; never counted or descended
@@ -88,95 +75,37 @@ class BaseWorker(MPIClass):
                     continue
 
                 pathname = di.path
-
                 statinfo = di.stat(follow_symlinks=False)
-                fmode = statinfo.st_mode
+                is_dir = stat.S_ISDIR(statinfo.st_mode)
 
-                # selecting filters: an entry that fails is not counted (nor archived),
-                # but a directory that fails is still walked, for the entries inside that pass
+                # selecting filters: an entry that fails is not counted (nor archived), but a
+                # directory that fails is still walked, for the entries inside that pass
                 if select is not None and not select(statinfo):
                     st.num_unmatched += 1
-                    if stat.S_ISDIR(fmode):
-                        self.local_dirs.append(pathname)
-                        if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
-                    continue
-
-                # about statinfo.st_size: we can't always trust it. for sparse files, or files
-                # migrated to tape via HSM, the size is not what is occupied on disk.
-                item_size = min(statinfo.st_size, statinfo.st_blocks * 512)
-
-                thisdir_nitems += 1
-                thisdir_nbytes += item_size
-                st.num_items += 1
-                st.total_size += item_size
-
-                thisdir_uids.add(statinfo.st_uid)
-
-                u = st.uids[statinfo.st_uid]
-                u.set_id(statinfo.st_uid)
-                u.nitems += 1
-                u.nbytes += item_size
-
-                g = st.gids[statinfo.st_gid]
-                g.set_id(statinfo.st_gid)
-                g.nitems += 1
-                g.nbytes += item_size
-
-                # decode file type
-                if stat.S_ISDIR(fmode):
-                    if select is not None: st.st_modes['dir'] += 1
+                else:
+                    st.count(pathname, statinfo, totals, select is not None)
+                    if not is_dir:
+                        self.process_file(pathname, statinfo)   # the tool's hook (walktar: into the open batch)
+                if is_dir:
                     self.local_dirs.append(pathname)
                     if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
-                else:
-                    st.num_files += 1
-
-                    if   stat.S_ISREG(fmode):  st.st_modes['reg']   += 1
-                    elif stat.S_ISLNK(fmode):  st.st_modes['link']  += 1
-                    elif stat.S_ISBLK(fmode):  st.st_modes['block'] += 1
-                    elif stat.S_ISCHR(fmode):  st.st_modes['char']  += 1
-                    elif stat.S_ISFIFO(fmode): st.st_modes['fifo']  += 1
-                    elif stat.S_ISSOCK(fmode): st.st_modes['sock']  += 1
-
-                    # track the *maximum mtime/ctime/atime for this directories contents (not the dir itself though)
-                    thisdir_max_mtime = max(thisdir_max_mtime, statinfo.st_mtime)
-                    thisdir_max_ctime = max(thisdir_max_ctime, statinfo.st_ctime)
-                    thisdir_max_atime = max(thisdir_max_atime, statinfo.st_atime)
-
-                    fe = FileEntry(pathname, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
-
-                    # track the size & count of this file in our top heap
-                    heaps['nbytes_files'].add((item_size, fe))
-                    user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
-
-                    # --------------------------------------------------------------------------
-                    # additional file processing - simply a placeholder stub for derived classes
-                    # to do additional work on this file.
-                    self.process_file(pathname, statinfo)
-                    #------------------------------------
-
-
-            # with a selecting filter, a directory holding no matching entries goes in no list
-            if select is None or thisdir_nitems:
-                self.record_directory(dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
-                                      thisdir_max_ctime, thisdir_max_atime, thisdir_uids)
 
         except Exception as error:
             st.num_errors += 1
             print('[{:3d}] Cannot scan: {}'.format(self.rank, error), file=sys.stderr)
 
+        self.list_directory(dirname, totals)
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def record_directory(self, dirname, thisdir_nitems, thisdir_nbytes, thisdir_max_mtime,
-                         thisdir_max_ctime, thisdir_max_atime, thisdir_uids):
-        """A walked directory's own (non-recursive) totals, into the directory lists."""
-        totals = DirTotals()
-        totals.nitems, totals.nbytes = thisdir_nitems, thisdir_nbytes
-        totals.max_mtime, totals.max_ctime, totals.max_atime = thisdir_max_mtime, thisdir_max_ctime, thisdir_max_atime
-        totals.uids = thisdir_uids
-        self.stats.record_directory(dirname, totals, self.options.threshold_count, self.options.threshold_size)
+    def list_directory(self, dirname, totals):
+        """A walked directory's complete totals, into the directory lists (none, with a
+        selecting filter, if nothing in it matched)."""
+        if self.select is None or totals.nitems:
+            self.stats.record_directory(dirname, totals, self.options.threshold_count,
+                                        self.options.threshold_size)
         return
 
 

@@ -7,6 +7,7 @@ break on the path), so the job combines its ranks' stats with one tree reduction
 
 import grp
 import pwd
+import stat
 import time
 from collections import Counter, defaultdict
 from functools import partial
@@ -110,6 +111,10 @@ DIR_HEAPS = ('nbytes_dirs', 'nbytes_dirs_3yrs', 'nbytes_dirs_5yrs', 'nbytes_dirs
 FILE_HEAPS = ('nbytes_files',)
 HEAPS = DIR_HEAPS + FILE_HEAPS
 
+# an entry's type bits (S_IFMT) -> its name in the summary's type counts (directories apart)
+TYPE_NAMES = {stat.S_IFREG: 'reg', stat.S_IFLNK: 'link', stat.S_IFBLK: 'block', stat.S_IFCHR: 'char',
+              stat.S_IFIFO: 'fifo', stat.S_IFSOCK: 'sock'}
+
 
 class RankInfo(NamedTuple):
     """One rank's own counts, for --verbose."""
@@ -156,6 +161,52 @@ class WalkStats:
         # a tool's own totals (walksync: new, changed, copied bytes, rsync batches, ...),
         # summed by merge()
         self.counters = Counter()
+
+    def count(self, path, statinfo, totals, count_dirs):
+        """Count one entry that passed the filters: the walk's accounting, into these
+        totals and into its directory's 'totals' (a DirTotals). Every tool's walk keeps
+        it. count_dirs: whether a directory counts in the type counts here (with a
+        selecting filter, directories are counted as entries that match, as find does;
+        without one, the scan counts every directory it walks, the roots included)."""
+        fmode = statinfo.st_mode
+
+        # about statinfo.st_size: we can't always trust it. for sparse files, or files
+        # migrated to tape via HSM, the size is not what is occupied on disk.
+        item_size = min(statinfo.st_size, statinfo.st_blocks * 512)
+
+        self.num_items += 1
+        self.total_size += item_size
+        totals.nitems += 1
+        totals.nbytes += item_size
+        totals.uids.add(statinfo.st_uid)
+
+        u = self.uids[statinfo.st_uid]
+        u.set_id(statinfo.st_uid)
+        u.nitems += 1
+        u.nbytes += item_size
+
+        g = self.gids[statinfo.st_gid]
+        g.set_id(statinfo.st_gid)
+        g.nitems += 1
+        g.nbytes += item_size
+
+        if stat.S_ISDIR(fmode):
+            if count_dirs: self.st_modes['dir'] += 1
+            return
+
+        self.num_files += 1
+        name = TYPE_NAMES.get(stat.S_IFMT(fmode))
+        if name is not None:
+            self.st_modes[name] += 1
+
+        # the *maximum* mtime/ctime/atime of the directory's contents (not the dir itself)
+        totals.max_mtime = max(totals.max_mtime, statinfo.st_mtime)
+        totals.max_ctime = max(totals.max_ctime, statinfo.st_ctime)
+        totals.max_atime = max(totals.max_atime, statinfo.st_atime)
+
+        fe = FileEntry(path, item_size, statinfo.st_mtime, statinfo.st_ctime, statinfo.st_atime)
+        self.heaps['nbytes_files'].add((item_size, fe))
+        self.user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
 
     def merge(self, other):
         """Add 'other' into this one (in place); returns self."""
