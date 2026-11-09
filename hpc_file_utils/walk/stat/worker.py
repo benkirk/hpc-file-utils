@@ -2,10 +2,10 @@
 
 The scan of a directory reads its names and types from scandir (d_type: no stat on
 GPFS or Lustre) and stats only the subdirectories, which it must count and walk. The
-other names go into batches of --batch-files, (dirname, names, tail), and the stats
-happen in process_batch(): on this rank, or on an idle one the Manager's 'share' hands
-the batch to (see manager.py). A 1M-entry directory is no longer one rank's hour of
-stats while the others wait.
+other names go into batches of --batch-files, StatBatch(dirname, names, tail), and the
+stats happen in process_batch(): on this rank, or on an idle one the Manager's 'share'
+hands the batch to (see manager.py). A 1M-entry directory is no longer one rank's hour
+of stats while the others wait.
 
 A directory's own totals (its line in the directory lists) are assembled from its
 parts: the scan's subdirectories, carried by the directory's last batch as 'tail', and
@@ -18,9 +18,18 @@ each batch's files.
 """
 
 import os
+from typing import NamedTuple
 
 from hpc_file_utils.walk.common.stats import DirTotals
 from hpc_file_utils.walk.common.worker import BaseWorker
+
+
+class StatBatch(NamedTuple):
+    """One directory's names still to stat."""
+    dirname : str
+    names   : list
+    tail    : object   # None for a part of a split directory; else (subdirs: DirTotals, whole: bool),
+                       # the directory's last batch, which lists it (whole) or adds the last part
 
 
 
@@ -50,7 +59,7 @@ class StatWorker(BaseWorker):
                 if not di.is_dir(follow_symlinks=False):      # d_type: no stat
                     names.append(di.name)
                     if len(names) >= nbatch:
-                        self.local_batches.append((dirname, names, None))
+                        self.local_batches.append(StatBatch(dirname, names, None))
                         names, split = [], True
                     continue
 
@@ -74,7 +83,7 @@ class StatWorker(BaseWorker):
         # the directory's last batch carries its subdirectories' totals; with no names
         # left, they are listed (or kept as a part) here
         if names:
-            self.local_batches.append((dirname, names, (subdirs, not split)))
+            self.local_batches.append(StatBatch(dirname, names, (subdirs, not split)))
         elif split:
             st.add_partial_dir(dirname, subdirs)
         else:
@@ -85,7 +94,7 @@ class StatWorker(BaseWorker):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """Stat one batch of a directory's names, ours or shared, and count them."""
+        """Stat one StatBatch of a directory's names, ours or shared, and count them."""
         dirname, names, tail = batch
         st = self.stats
         select = self.select

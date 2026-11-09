@@ -11,6 +11,7 @@ import collections
 import os
 import stat
 import sys
+from typing import NamedTuple
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
 from hpc_file_utils.walk.common.stats import DirTotals
@@ -21,6 +22,14 @@ WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages
                              # (that is the screen's interval): the Manager's progress line and its
                              # choice of whom to ask for a 'share' use the stack lengths they carry
 
+
+
+class FileBatch(NamedTuple):
+    """A closed batch of selected files (close_batch()): walktar writes it as one tar,
+    walksync copies it with one rsync. Batches are module-level NamedTuples so they
+    pickle in a share_reply; the Manager treats every kind as one opaque unit of work."""
+    paths  : list   # the files' paths (walktar) or paths relative to the source root (walksync)
+    nbytes : int    # their st_size total
 
 
 class RankFile:
@@ -55,7 +64,7 @@ class BaseWorker(MPIClass):
         MPIClass.__init__(self)
 
         self.local_dirs = []          # directories still to walk, a stack (phase 3.5)
-        self.local_batches = []       # closed batches still to process, (paths, nbytes) (phase 5)
+        self.local_batches = []       # closed batches still to process (phase 5): FileBatch, or the tool's own kind
         self.batch = []               # the open batch: paths of selected files, across directories
         self.batch_bytes = 0          # ... and their st_size total
         self.max_local_dirs = 0       # its high-water mark
@@ -270,9 +279,9 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def close_batch(self):
-        """Move the open batch, if it holds anything, onto our list of batches."""
+        """Move the open batch, if it holds anything, onto our list of batches as a FileBatch."""
         if self.batch:
-            self.local_batches.append((self.batch, self.batch_bytes))
+            self.local_batches.append(FileBatch(self.batch, self.batch_bytes))
             self.batch, self.batch_bytes = [], 0
         return
 
@@ -280,7 +289,7 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """Tools that call add_to_batch(): process one (paths, nbytes) batch, ours or shared."""
+        """Process one batch, ours or shared: a FileBatch from add_to_batch(), or the tool's own kind."""
         raise NotImplementedError
 
 

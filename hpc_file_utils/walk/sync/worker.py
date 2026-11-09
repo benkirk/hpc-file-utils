@@ -9,16 +9,16 @@ which a 'share' can hand to idle ranks (see manager.py):
            the lookup for the whole directory. Subdirectories are walked; one the
            destination lacks (or has as a non-directory) goes on the copy list itself, so
            empty directories are created. The other names go into compare batches of
-           --batch-files, ('cmp', reldir, [(name, dest kind)]), and destination names the
-           source lacks are counted as extraneous (listed with --dry-run, never deleted).
+           --batch-files, CompareBatch(reldir, [(name, dest kind)]), and destination names
+           the source lacks are counted as extraneous (listed with --dry-run, never deleted).
            --dry-run lists to walksync-dryrun-r{rank}.txt in the working directory, one
            file per rank: lines from many ranks on one stdout get spliced together.
-  compare  ('cmp', ...): lstat each source name (and the destination's, if it has
+  compare  a CompareBatch: lstat each source name (and the destination's, if it has
            one), and needs_copy() (compare.py). What must be copied goes into the
            open copy batch, which carries over between directories, so changed files
            from many small directories make one rsync; it closes at --batch-files names
            or --batch-size bytes.
-  copy     ('copy', relpaths, nbytes): one
+  copy     a FileBatch(relpaths, nbytes): one
            rsync -aAX --numeric-ids --chmod=Du+w --files-from=- --from0 [--rsync-opts] SRC/ DEST/
            (-A / -X dropped, with a warning, if this rsync was built without them)
            With --files-from rsync does not recurse, so a directory listed is created
@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import NamedTuple
 
 from hpc_file_utils.walk.common.formatting import printable
 from hpc_file_utils.walk.common.worker import BaseWorker
@@ -46,6 +47,12 @@ RSYNC_POLL_SECONDS = 0.5   # while an rsync runs, look for a 'share' and send pr
 RSYNC_VANISHED = 24        # rsync's "some source files vanished": a warning, not a failure
 STDERR_TAIL = 4000         # bytes of a failed rsync's stderr to print
 DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'
+
+
+class CompareBatch(NamedTuple):
+    """One source directory's non-directory names still to compare with the destination's."""
+    reldir : str    # the directory, relative to the source root ('' for the root)
+    names  : list   # (name, kind): kind is None (the destination lacks it), True (a directory there) or False
 
 
 ################################################################################
@@ -146,7 +153,7 @@ class SyncWorker(BaseWorker):
                 if not di.is_dir(follow_symlinks=False):      # d_type: no stat
                     names.append((name, kind))
                     if len(names) >= nbatch:
-                        self.local_batches.append(('cmp', reldir, names))
+                        self.local_batches.append(CompareBatch(reldir, names))
                         names = []
                     continue
 
@@ -163,7 +170,7 @@ class SyncWorker(BaseWorker):
             self.error('scan', error)
 
         if names:
-            self.local_batches.append(('cmp', reldir, names))
+            self.local_batches.append(CompareBatch(reldir, names))
 
         extra = extraneous(src_names, dest, self.exclude)
         st.counters['extraneous'] += len(extra)
@@ -176,21 +183,11 @@ class SyncWorker(BaseWorker):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """A compare batch or a copy batch, ours or shared."""
-        if batch[0] == 'cmp':
-            self.compare_batch(batch[1], batch[2])
+        """A CompareBatch, or a FileBatch to copy, ours or shared."""
+        if isinstance(batch, CompareBatch):
+            self.compare_batch(batch.reldir, batch.names)
         else:
-            self.copy_batch(batch[1], batch[2])
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def close_batch(self):
-        """The open copy batch, if it holds anything, onto our list, tagged 'copy'."""
-        if self.batch:
-            self.local_batches.append(('copy', self.batch, self.batch_bytes))
-            self.batch, self.batch_bytes = [], 0
+            self.copy_batch(batch.paths, batch.nbytes)
         return
 
 

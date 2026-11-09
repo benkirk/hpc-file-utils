@@ -8,8 +8,8 @@ import pytest
 
 from hpc_file_utils.walk.common import worker as worker_mod
 from hpc_file_utils.walk.common.stats import WalkStats
-from hpc_file_utils.walk.common.worker import BaseWorker
-from hpc_file_utils.walk.stat.worker import StatWorker
+from hpc_file_utils.walk.common.worker import BaseWorker, FileBatch
+from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
 
 
 def _with_uid(s, uid):
@@ -225,7 +225,8 @@ def test_batches_close_at_n_files_or_b_bytes():
     w = _batch_worker(3, 100)
     for i in range(7):
         w.add_to_batch(f"f{i}", 1)
-    assert [p for p, _ in w.local_batches] == [["f0", "f1", "f2"], ["f3", "f4", "f5"]]
+    assert all(isinstance(b, FileBatch) for b in w.local_batches)
+    assert [b.paths for b in w.local_batches] == [["f0", "f1", "f2"], ["f3", "f4", "f5"]]
     assert (w.batch, w.batch_bytes) == (["f6"], 1)
     w.add_to_batch("big", 500)                 # over --batch-size: closes at once
     assert w.local_batches[-1] == (["f6", "big"], 501)
@@ -256,8 +257,10 @@ def test_walkstat_batches_names_not_paths(tmp_path):
     w = _worker()
     w.process_directory(str(tmp_path))
     assert w.stats.num_items == 1                    # sub, stat'ed by the scan
-    [(dirname, names, (subdirs, whole))] = w.local_batches
-    assert (dirname, sorted(names), subdirs.nitems, whole) == (str(tmp_path), [f"f{i}" for i in range(5)], 1, True)
+    [batch] = w.local_batches
+    assert isinstance(batch, StatBatch)
+    subdirs, whole = batch.tail
+    assert (batch.dirname, sorted(batch.names), subdirs.nitems, whole) == (str(tmp_path), [f"f{i}" for i in range(5)], 1, True)
     assert (w.batch, w.batch_bytes) == ([], 0)
     assert w.progress_payload()[2:] == (2, None)     # sub on the stack, one batch
 
@@ -328,7 +331,7 @@ def _share_worker(dirs, batches):
     (0, 0, 0, 0), (1, 1, 0, 1), (4, 3, 2, 2), (5, 4, 2, 2), (0, 5, 0, 3)])
 def test_share_gives_oldest_half_of_dirs_and_batches_rounded_up(ndirs, nbatches, gave_dirs, gave_batches):
     dirs = [f"d{i}" for i in range(ndirs)]
-    batches = [([f"b{i}"], 1) for i in range(nbatches)]
+    batches = [FileBatch([f"b{i}"], 1) for i in range(nbatches)]
     w, sent = _share_worker(dirs, batches)
     w.check_share()
     (gdirs, gbatches, payload), tag = sent[0]
@@ -344,7 +347,7 @@ def test_drain_processes_batches_first_then_the_open_batch(tmp_path):
         (tmp_path / name).write_bytes(b"x")
     w = _batch_worker(2, 1 << 30)
     order = []
-    w.process_batch = lambda batch: order.append(sorted(os.path.basename(p) for p in batch[0]))
+    w.process_batch = lambda batch: order.append(sorted(os.path.basename(p) for p in batch.paths))
     real = w.process_directory
     w.process_directory = lambda d: (order.append(os.path.basename(d)), real(d))
     w.local_dirs.append(str(tmp_path))
