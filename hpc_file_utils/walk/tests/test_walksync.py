@@ -24,7 +24,10 @@ pytestmark = [
 SYNC_RE = re.compile(r"--> Sync: ([\d,]+) new, ([\d,]+) changed, ([\d,]+) unchanged; ([\d,]+) only in the destination")
 COPIED_RE = re.compile(r"--> Copied ([\d,]+) entries, .* in ([\d,]+) rsync batches .*; ([\d,]+) failed")
 RANK_ROW_RE = re.compile(r"^\s+(\d+)\s+\S+\s+[\d,]+\s+([\d,]+)\s", re.M)
-DIR_TIME_RE = re.compile(r"^\.d\.\.t\.+ ")
+# A directory whose only differences are its time, permissions or ACL (YXcstpoguax): the final
+# serial rsync's job. --chmod=Du+w changes directories' modes, and with a default ACL rsync also
+# changes a new subdirectory's default ACL (plain serial rsync does too).
+DIR_ATTRS_RE = re.compile(r"^\.d\.\.[.t][.p]\.\.\.[.a]\. ")
 
 
 def _int(s):
@@ -45,16 +48,26 @@ def copied(r):
     return tuple(map(_int, m.groups()))
 
 
-def oracle(src, dest, *extra, delete=True):
-    """rsync's own itemized dry run: every line that is not a directory's time. The rsync
-    walksync chooses, with -A and -X only where it has them (conda-forge's Linux rsync has no
-    ACLs; on derecho walksync then takes /usr/bin/rsync)."""
+def oracle(src, dest, *extra, delete=True, final=False):
+    """rsync's own itemized dry run: every line that is not a directory's time, permissions or
+    ACL (DIR_ATTRS_RE). The rsync walksync chooses, with -A and -X only where it has them
+    (conda-forge's Linux rsync has no ACLs; on derecho walksync then takes /usr/bin/rsync).
+    final=True: after the final serial rsync, as -aHAX without --chmod, every line."""
     rsync, acls, xattrs, _ = choose_rsync()
-    flags = "-nax" + ("A" if acls else "") + ("X" if xattrs else "")
-    cmd = [rsync, flags, "-i", "--chmod=Du+w", *extra] + (["--delete"] if delete else [])
+    flags = "-nax" + ("H" if final else "") + ("A" if acls else "") + ("X" if xattrs else "")
+    chmod = [] if final else ["--chmod=Du+w"]
+    cmd = [rsync, flags, "-i", *chmod, *extra] + (["--delete"] if delete else [])
     out = subprocess.run(cmd + [f"{src}/", f"{dest}/"], capture_output=True, check=True).stdout
     lines = out.decode(errors="surrogateescape").splitlines()
-    return [line for line in lines if not DIR_TIME_RE.match(line)]
+    return lines if final else [line for line in lines if not DIR_ATTRS_RE.match(line)]
+
+
+def final_rsync(src, dest):
+    """The serial pass walksync leaves to the user: rsync -aHAX --delete (-A/-X where this rsync
+    has them). It restores the directories' modes, ACLs and times."""
+    rsync, acls, xattrs, _ = choose_rsync()
+    flags = "-aH" + ("A" if acls else "") + ("X" if xattrs else "")
+    subprocess.run([rsync, flags, "--delete", f"{src}/", f"{dest}/"], capture_output=True, check=True)
 
 
 def same_contents(src, dest, skip=lambda rel: False):
@@ -111,6 +124,13 @@ def test_copy_passes_the_oracle_and_a_rerun_copies_nothing(walk, private_golden_
     assert r.ok, r.report()
     assert sync_counts(r) == (0, 0, private_golden_tree.nitems, 0), r.report()
     assert copied(r)[:2] == (0, 0), r.report()
+
+    # the whole workflow: after the final serial rsync, the copy is the source, directories too
+    try:
+        final_rsync(src, dest)
+        assert oracle(src, dest, final=True) == []
+    finally:
+        subprocess.run(["chmod", "-R", "u+w", str(dest)], check=False)     # read-only dirs again
 
 
 def test_exclude_prunes_cold_storage(walk, private_golden_tree, dest, tmp_path):
