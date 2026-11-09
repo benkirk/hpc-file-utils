@@ -345,6 +345,15 @@ default in both tools.
   - Escape `\` as `\\`, `\n` `\t` `\r` as themselves, other control characters and undecodable bytes
     as `\xNN`.
   - Ship `decode_path()` next to the encoder.
+- **Decided: atime stays, and both tools write the same columns.** The scans exist to find stale
+  files, so the found atime is the point of walkstat's index. One format and one parser beat a
+  per-tool column set.
+  - For walktar, the atime recorded is the one *before* the file is read: the found atime, not
+    the one the archive run leaves behind. Whether a read updates atime depends on the mount
+    (`relatime` on Linux; GPFS has its own rules), and recording first makes the index independent
+    of that.
+  - `TarInfo` carries mode, uid, gid, size and mtime, but not atime, ctime, ino or nlink. So an
+    index line cannot come from the `TarInfo` alone (see 4.6).
 
 ### 4.5 Import contract (a parser for hpc-usage-queries `fs_scans/parsers`)
 - **The interface already fits.** `FilesystemParser.parse_line()` returns a `ParsedEntry`, mapped
@@ -367,13 +376,15 @@ default in both tools.
   That choice belongs to hpc-usage-queries. This doc fixes only the hfu side.
 
 ### 4.6 Where it plugs in (after Part A)
-- **`common/index.py`:** `IndexWriter(RankFile)`, which owns the per-file set and the `P` logic,
-  with `add_stat(path, statinfo, kind)` and `add_tarinfo(tarinfo, kind)`.
+- **`common/index.py`:** `IndexWriter(RankFile)`, which owns the written cache and the `P` logic,
+  with one entry point, `add(path, statinfo, kind, offsets=None)`. The stat is always a real
+  `lstat` result; `offsets` is walktar's `(offset, offset_data)` pair.
 - **walkstat** calls it next to `stats.count(...)`: for subdirectories at scan time, and for files
   in stat batches.
-- **walktar** calls it after each successful `tar.add`, where the `TarInfo` is `tar.members[-1]`.
-  After Part B it calls it from the stat already in hand. A batch's index opens and closes with its
-  tar, and the dirs index with the dirs tar.
+- **walktar** does one `os.lstat` *before* `tar.add`, then adds the member and writes the index line
+  from that stat plus the offsets of `tar.members[-1]`. The extra `lstat` is the price of the
+  pre-read atime until Part B, when the stat batch already holds it and the call goes away. A
+  batch's index opens and closes with its tar, and the dirs index with the dirs tar.
 - **Order:** C works today for walktar, through `TarInfo`. It is cheaper after Part B, but does not
   depend on it.
 
@@ -389,6 +400,9 @@ default in both tools.
   `test_filtering.find()`), including under filters.
 - **walktar.** Each index matches its tar's `getmembers()`, offsets included. Reading `size` bytes
   at `offset_data` returns the file's bytes.
+- **Found atime.** On a private golden tree, every `E` record's atime in walktar's index equals the
+  fixture's `ages` value for that path, set by `build_golden_tree()` before the run. This fails if
+  the index is ever written from a stat taken after the read.
 - **Encoding.** `decode_path(encode(p)) == p` for the golden tree's odd names and the non-UTF-8
   tree.
 - **Eviction.** The closure and exactly-once checks pass again with the written-cache cap set to
@@ -399,8 +413,8 @@ default in both tools.
 ### 4.8 Open questions
 - gzip the index (`--index=gz`)?
 - Give walksync an `--index` too, as a per-rank list of what it copied?
-- Is atime worth carrying? Reading through the tree for walktar changes it anyway.
-- A configurable column set, or a fixed v1?
+- A configurable column set, or a fixed v1? (Decided so far: atime is in, and both tools share
+  the columns; see 4.4.)
 
 ---
 
