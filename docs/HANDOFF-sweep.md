@@ -301,15 +301,31 @@ default in both tools.
   hold selected entries, appear only as `P`.
 
 ### 4.3 How a writer keeps the rule
-- **A set per file.** Each index file keeps the set of directory paths already written to it, as
+- **A "written" cache per file.** Each index file remembers directory paths it has written, as
   `E` or `P`.
-- **Before each record,** walk up from its parent to the first path in the set (or the root) and
-  write the missing ancestors top-down as `P`, with one `lstat` each. A directory that vanished
-  gets a `P` with `-` fields.
+- **Before each record,** walk up from its parent to the first path in the cache (or the root)
+  and write the missing ancestors top-down as `P`, with one `lstat` each. A directory that
+  vanished gets a `P` with `-` fields.
+- **The cache is bounded, because it is only a cache.** The two kinds of mistake are not
+  symmetric:
+  - A *false positive* (believing a parent was written when it was not) breaks the rule. The cache
+    must never produce one, so no Bloom filter and no hashing of paths.
+  - A *false negative* (forgetting a parent that was written) only costs a repeated `P` line.
+    So entries may be evicted freely.
+
+  Keep it as a recently-used dict (`dict` keeps insertion order; drop the oldest past a cap, say
+  100k paths, which is ~20 MB), reset when the file closes. Walks are depth-first and a directory's
+  batches are processed close together in time, so a small cache catches nearly all the repeats.
+  Without a cap, walkstat's one-file-per-rank index would keep every directory the rank ever
+  touched: on a 10M-directory fileset over 32 ranks that is ~300k paths per rank, ~60 MB per rank
+  and ~2 GB per node, and it grows with the tree. Walktar's cache is bounded anyway, since its
+  index rolls with each tar.
 - **Cost:**
   - walkstat's stat batches are all one directory: one check per batch.
   - A walktar batch spans directories: one check whenever the parent changes.
-  - The set holds only the directories one file touches.
+  - A cache miss costs one chain of `P` lines, at most the directory's depth.
+- **Tests (added to 4.7):** the closure checker must pass with the cap set to 1, which is the
+  worst case for repeats and the only way to exercise eviction on a small tree.
 
 ### 4.4 Format
 - **Header.** TSV, with a versioned header line:
@@ -375,6 +391,9 @@ default in both tools.
   at `offset_data` returns the file's bytes.
 - **Encoding.** `decode_path(encode(p)) == p` for the golden tree's odd names and the non-UTF-8
   tree.
+- **Eviction.** The closure and exactly-once checks pass again with the written-cache cap set to
+  1 (a test-only knob), so every record's parents are re-derived and repeated `P` lines are
+  exercised on a small tree.
 - **Off by default.** Without `--index`, no index files are written.
 
 ### 4.8 Open questions
