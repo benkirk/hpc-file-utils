@@ -105,6 +105,7 @@ def parse_options(appname=None, argv=None):
     parser.add_argument('--dirs-per-dispatch', default=8, type=int, required=False, help='Directories the manager hands an idle worker at once (default: 8)')
     parser.add_argument('--batch-files', default=1000, type=int, required=False, help='Files per batch, the unit of work idle ranks can take: walkstat stats a batch, walktar writes it as one tar, walksync compares one and copies one with one rsync (default: 1000)')
     parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be scanned (default: exit 0, errors are only counted)')
+    parser.add_argument('--profile', action='store_true', help='Every rank writes a cProfile of its run to profile-r{rank}.prof in the working directory (read with python -m pstats)')
 
     add_filter_options(parser)
 

@@ -71,7 +71,6 @@ def main(app, argv=None):
     # workers on ranks [1,size)
     if rank:
         walker = make_worker(app)
-        walker.run()
 
     # manager on rank 0
     else:
@@ -93,7 +92,8 @@ def main(app, argv=None):
         print('Running {} on {} MPI ranks'.format(app, size))
         sys.stdout.flush()
         walker = Manager(options=args)
-        walker.run()
+
+    run_walker(walker, rank)
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
     if 0 == rank:
@@ -106,6 +106,22 @@ def main(app, argv=None):
     if walker.options.fail_on_errors and walker.total_errors:
         return 2
     return 0
+
+
+def run_walker(walker, rank):
+    """The rank's walk (the Manager's loop, or a worker's), under cProfile with --profile:
+    profile-r{rank}.prof in the working directory, for python -m pstats."""
+    if not walker.options.profile:
+        walker.run()
+        return
+    import cProfile
+    profile = cProfile.Profile()
+    profile.enable()
+    try:
+        walker.run()
+    finally:
+        profile.disable()
+        profile.dump_stats('profile-r{:03d}.prof'.format(rank))
 
 
 def report(manager, stats, app='walkstat'):

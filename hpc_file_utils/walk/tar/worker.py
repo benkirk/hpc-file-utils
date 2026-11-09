@@ -15,7 +15,7 @@ thread writes the current one into the tar, in order. tarfile's own gettarinfo()
 addfile() build and write each member, so the members are exactly tar.add()'s.
 """
 
-import collections, io, os, stat, sys
+import io, os, stat
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -82,8 +82,7 @@ class TarWorker(BaseWorker):
             tar.add(path, recursive=False)
             return True
         except Exception as error:
-            self.stats.num_errors += 1
-            print('[{:3d}] Cannot add to tar file: {}'.format(self.rank, error), file=sys.stderr)
+            self.error('add to tar file', error)
             return False
 
 
@@ -97,8 +96,7 @@ class TarWorker(BaseWorker):
         try:
             member = opened.result()
         except Exception as error:
-            self.stats.num_errors += 1
-            print('[{:3d}] Cannot add to tar file: {}'.format(self.rank, error), file=sys.stderr)
+            self.error('add to tar file', error)
             return False
         if member is None:                      # not a regular file
             return self.add(tar, path)
@@ -120,39 +118,39 @@ class TarWorker(BaseWorker):
                     tar.addfile(tarinfo, f)
                 return True
             except Exception as error:
-                self.stats.num_errors += 1
-                print('[{:3d}] Cannot add to tar file: {}'.format(self.rank, error), file=sys.stderr)
+                self.error('add to tar file', error)
                 return False
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def read_ahead(self, paths):
-        """Yield (path, Future of open_member(path)) in order, keeping --read-ahead files
-        in the reader threads ahead of the one yielded; (path, None) with --read-ahead 0.
-        Files opened but never archived (an error broke the loop) are closed."""
+        """(path, Future of open_member(path)) in order, keeping --read-ahead files in the
+        reader threads ahead of the one yielded (in_flight()); (path, None) with
+        --read-ahead 0. Files opened but never archived (an error broke the loop) are closed."""
         depth = self.options.read_ahead
-        if depth == 0:
-            for path in paths:
-                yield path, None
-            return
-        if self.readers is None:
+        if depth and self.readers is None:
             self.readers = ThreadPoolExecutor(max_workers=depth, thread_name_prefix='reader')
-        pending, todo = collections.deque(), iter(paths)
-        try:
-            for path in todo:
-                pending.append((path, self.readers.submit(open_member, path)))
-                if len(pending) > depth:
-                    yield pending.popleft()
-            while pending:
-                yield pending.popleft()
-        finally:
-            for _, future in pending:
-                if future.cancel() or future.exception() is not None:
-                    continue
-                member = future.result()
-                if member is not None:
-                    member[0].close()
+        return self.in_flight(paths, self.open_ahead, depth, self.discard_member)
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def open_ahead(self, path):
+        """Start a reader on a file: its open_member() Future."""
+        return self.readers.submit(open_member, path)
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    @staticmethod
+    def discard_member(future):
+        """A reader's Future whose file will never be archived: close the file."""
+        if future.cancel() or future.exception() is not None:
+            return
+        member = future.result()
+        if member is not None:
+            member[0].close()
 
 
 
@@ -193,8 +191,7 @@ class TarWorker(BaseWorker):
             for path, opened in self.read_ahead(paths):
                 if self.add_member(tar, path, opened):
                     self.nwritten_files += 1
-                self.check_share()
-                self.report_progress(only_if_due=True)
+                self.tick()
             self.batch_tar = None
         self.nwritten_closed += os.path.getsize(name)
         return

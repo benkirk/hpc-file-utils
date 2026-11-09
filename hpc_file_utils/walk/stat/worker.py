@@ -17,9 +17,8 @@ each batch's files.
   (WalkStats.finish_directories()). Only big directories go there.
 """
 
-import os, sys
+import os
 
-from hpc_file_utils.walk.common import worker as base
 from hpc_file_utils.walk.common.stats import DirTotals
 from hpc_file_utils.walk.common.worker import BaseWorker
 
@@ -29,23 +28,11 @@ from hpc_file_utils.walk.common.worker import BaseWorker
 class StatWorker(BaseWorker):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def error(self, what, error):
-        self.stats.num_errors += 1
-        print('[{:3d}] Cannot {}: {}'.format(self.rank, what, error), file=sys.stderr)
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
-
-        # last-minute check for a race condition:
-        if not os.path.exists(dirname):
-            print('[{:3d}] directory \'{}\' vanished'.format(self.rank, dirname), file=sys.stderr)
+        if self.vanished(dirname):
             return
 
         st = self.stats
-        exclude = self.exclude
         select = self.select
         nbatch = self.options.batch_files
 
@@ -58,18 +45,7 @@ class StatWorker(BaseWorker):
         names = []                # its other entries, for the stat batches
         split = False             # has a batch of it closed already?
         try:
-            for nscanned, di in enumerate(os.scandir(dirname), 1):
-
-                # progress, and a 'share' from the Manager, every so many entries scanned
-                if 0 == nscanned % base.PROGRESS_INCREMENT:
-                    self.report_progress()
-                if 0 == nscanned % base.SHARE_CHECK_INCREMENT:
-                    self.check_share()
-
-                # --exclude: by name, before any stat; never counted or descended
-                if exclude is not None and exclude(di.name):
-                    st.num_excluded += 1
-                    continue
+            for di in self.entries(dirname):
 
                 if not di.is_dir(follow_symlinks=False):      # d_type: no stat
                     names.append(di.name)
@@ -86,8 +62,7 @@ class StatWorker(BaseWorker):
 
                 # a directory that fails a selecting filter is still walked, for the
                 # entries inside that pass
-                self.local_dirs.append(di.path)
-                if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
+                self.push_dir(di.path)
                 if select is not None and not select(statinfo):
                     st.num_unmatched += 1
                     continue
@@ -114,12 +89,8 @@ class StatWorker(BaseWorker):
         dirname, names, tail = batch
         st = self.stats
         select = self.select
-        share_every = base.SHARE_CHECK_INCREMENT
         totals = DirTotals()
-        for i, name in enumerate(names, 1):
-            if 0 == i % share_every:
-                self.check_share()
-                self.report_progress(only_if_due=True)
+        for name in self.ticked(names):
             path = os.path.join(dirname, name)
             try:
                 statinfo = os.lstat(path)

@@ -19,6 +19,25 @@ def _with_uid(s, uid):
     return types.SimpleNamespace(**fields)
 
 
+class _Scan:
+    """A stand-in for os.scandir()'s iterator, which is also a context manager."""
+
+    def __init__(self, entries):
+        self._it = iter(entries)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class _Entry:
     """A scandir entry whose stat() reports a different owner."""
 
@@ -52,7 +71,7 @@ def test_single_owner_dirs_are_listed_for_that_uid(tmp_path, monkeypatch, uid):
         (tmp_path / name).write_bytes(b"x" * 4096)
     real_scandir, real_lstat = os.scandir, os.lstat
     monkeypatch.setattr(worker_mod.os, "scandir",
-                        lambda d: (_Entry(e, uid) for e in real_scandir(d)))
+                        lambda d: _Scan(_Entry(e, uid) for e in real_scandir(d)))
     monkeypatch.setattr(worker_mod.os, "lstat", lambda p: _with_uid(real_lstat(p), uid))   # the stat batches
 
     w = _worker()
@@ -175,7 +194,7 @@ def test_excluded_entries_are_never_stated(tmp_path, monkeypatch):
     (tmp_path / "keep.dat").touch()
     real_scandir = os.scandir
     monkeypatch.setattr(worker_mod.os, "scandir",
-                        lambda d: (_Unstattable(e) if e.name.startswith("COLD") else e for e in real_scandir(d)))
+                        lambda d: _Scan(_Unstattable(e) if e.name.startswith("COLD") else e for e in real_scandir(d)))
     w = _filtered_worker(tmp_path, "--exclude", "COLD*")
     _walk(w, tmp_path)
     st = w.stats

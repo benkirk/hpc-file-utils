@@ -24,6 +24,8 @@ Outputs (in the working directory, written by rank 0):
   by the workers (see [File batches](#file-batches-phase-5)).
 - walksync: `walksync-dryrun-r{rank}.txt` with `--dry-run`, one per worker. No summary or
   userlists unless `--summary-prefix` or `--spreadsheet` is given.
+- `--profile`: `profile-r{rank}.prof`, a cProfile of every rank's run (the Manager's loop,
+  each worker's walk), for `python -m pstats`.
 
 ## Filtering (phase 4)
 

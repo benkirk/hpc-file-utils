@@ -28,6 +28,15 @@ class MPIClass:
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def rank_info(self):
+        """This rank's own counts for --verbose. The Manager waits for no work and keeps
+        no stack: zeros; the workers fill those in."""
+        return RankInfo(self.rank, platform.node(), self.stats.num_dirs, self.stats.num_files,
+                        self.stats.total_size, 0.0, 0)
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def collect(self):
         """Combine every rank's stats on rank 0 (collective: every rank calls it).
 
@@ -36,9 +45,7 @@ class MPIClass:
         two partial results capped at --heap-size per list, so no rank ever holds more
         than two ranks' worth, unlike gathering every rank's per-user lists at once.
         """
-        self.stats.ranks = [RankInfo(self.rank, platform.node(), self.stats.num_dirs,
-                                     self.stats.num_files, self.stats.total_size,
-                                     getattr(self, 'wait_time', 0.0), getattr(self, 'max_local_dirs', 0))]
+        self.stats.ranks = [self.rank_info()]
         self.total_errors = self.comm.allreduce(self.stats.num_errors)
         result = self.comm.reduce(self.stats, op=WalkStats.merged, root=0)
         if result is not None:

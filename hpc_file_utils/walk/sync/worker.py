@@ -38,7 +38,6 @@ import sys
 import tempfile
 import time
 
-from hpc_file_utils.walk.common import worker as base
 from hpc_file_utils.walk.common.formatting import printable
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy
@@ -65,7 +64,7 @@ class SyncWorker(BaseWorker):
         self.copied_bytes = 0                 # in rsync batches that finished (progress_extra)
         self.copied_files = 0
         self.nrsync = 0
-        self.dryrun_file = None               # walksync-dryrun-r{rank}.txt, opened at the first line
+        self.dryrun = self.rank_file(DRYRUN_FILE)   # --dry-run's list, a file at its first line
         return
 
 
@@ -74,14 +73,6 @@ class SyncWorker(BaseWorker):
     def rel(self, path):
         """A source path relative to the source root ('' for the root)."""
         return '' if path == self.src else path[self.src_prefix:]
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def error(self, what, error):
-        self.stats.num_errors += 1
-        print('[{:3d}] Cannot {}: {}'.format(self.rank, what, error), file=sys.stderr)
-        return
 
 
 
@@ -124,23 +115,17 @@ class SyncWorker(BaseWorker):
     def emit(self, lines):
         """--dry-run's lines, into this rank's own list."""
         if lines:
-            if self.dryrun_file is None:
-                self.dryrun_file = open(DRYRUN_FILE.format(self.rank), 'w', encoding='utf-8')
-            self.dryrun_file.write(''.join(lines))
+            self.dryrun.write(''.join(lines))
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
-
-        # last-minute check for a race condition:
-        if not os.path.exists(dirname):
-            print('[{:3d}] directory \'{}\' vanished'.format(self.rank, dirname), file=sys.stderr)
+        if self.vanished(dirname):
             return
 
         st = self.stats
-        exclude = self.exclude
         nbatch = self.options.batch_files
         join = os.path.join
 
@@ -152,40 +137,27 @@ class SyncWorker(BaseWorker):
         names = []                # non-directories, for the compare batches
         lines = []                # --dry-run
         try:
-            with os.scandir(dirname) as it:
-                for nscanned, di in enumerate(it, 1):
+            # --exclude (in entries()): never compared, copied or descended
+            for di in self.entries(dirname):
+                name = di.name
+                src_names.append(name)
+                kind = dest.get(name)        # None: missing; True: a directory; False: other
 
-                    # progress, and a 'share' from the Manager, every so many entries scanned
-                    if 0 == nscanned % base.PROGRESS_INCREMENT:
-                        self.report_progress()
-                    if 0 == nscanned % base.SHARE_CHECK_INCREMENT:
-                        self.check_share()
+                if not di.is_dir(follow_symlinks=False):      # d_type: no stat
+                    names.append((name, kind))
+                    if len(names) >= nbatch:
+                        self.local_batches.append(('cmp', reldir, names))
+                        names = []
+                    continue
 
-                    # --exclude: by name, before any stat; never compared, copied or descended
-                    if exclude is not None and exclude(di.name):
-                        st.num_excluded += 1
-                        continue
-
-                    name = di.name
-                    src_names.append(name)
-                    kind = dest.get(name)        # None: missing; True: a directory; False: other
-
-                    if not di.is_dir(follow_symlinks=False):      # d_type: no stat
-                        names.append((name, kind))
-                        if len(names) >= nbatch:
-                            self.local_batches.append(('cmp', reldir, names))
-                            names = []
-                        continue
-
-                    # a directory: walked whatever the selecting filters say, and created
-                    # if the destination lacks it
-                    st.num_items += 1
-                    self.local_dirs.append(di.path)
-                    if len(self.local_dirs) >= self.options.local_queue_max: self.ship_overflow()
-                    if kind is True:
-                        st.counters['unchanged'] += 1
-                    else:
-                        self.want_copy(join(reldir, name), 0, NEW if kind is None else TYPE, lines)
+                # a directory: walked whatever the selecting filters say, and created
+                # if the destination lacks it
+                st.num_items += 1
+                self.push_dir(di.path)
+                if kind is True:
+                    st.counters['unchanged'] += 1
+                else:
+                    self.want_copy(join(reldir, name), 0, NEW if kind is None else TYPE, lines)
 
         except Exception as error:
             self.error('scan', error)
@@ -193,7 +165,7 @@ class SyncWorker(BaseWorker):
         if names:
             self.local_batches.append(('cmp', reldir, names))
 
-        extra = extraneous(src_names, dest, exclude)
+        extra = extraneous(src_names, dest, self.exclude)
         st.counters['extraneous'] += len(extra)
         if self.dry_run:
             lines += ['X {}\n'.format(printable(join(reldir, n))) for n in extra]
@@ -232,13 +204,8 @@ class SyncWorker(BaseWorker):
         join = os.path.join
         srcdir = join(self.src, reldir) if reldir else self.src
         destdir = join(self.dest, reldir) if reldir else self.dest
-        share_every = base.SHARE_CHECK_INCREMENT
         lines = []
-        for i, (name, kind) in enumerate(names, 1):
-            if 0 == i % share_every:
-                self.check_share()
-                self.report_progress(only_if_due=True)
-
+        for name, kind in self.ticked(names):
             spath = join(srcdir, name)
             try:
                 s = os.lstat(spath)
@@ -309,8 +276,7 @@ class SyncWorker(BaseWorker):
                     rc = proc.wait(timeout=RSYNC_POLL_SECONDS)
                     break
                 except subprocess.TimeoutExpired:
-                    self.check_share()
-                    self.report_progress(only_if_due=True)
+                    self.tick()
 
             self.nrsync += 1
             c['rsync_batches'] += 1
@@ -343,13 +309,3 @@ class SyncWorker(BaseWorker):
         if self.dry_run:
             return None
         return (self.copied_bytes, self.copied_files, self.nrsync)
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def run(self):
-        super().run()
-        if self.dryrun_file is not None:
-            self.dryrun_file.close()
-            self.dryrun_file = None
-        return
