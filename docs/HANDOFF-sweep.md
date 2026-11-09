@@ -6,9 +6,10 @@ reshaping what was there. This note is the retrospective: what to consolidate no
 is clear, two features that the consolidation makes easy, and the old idioms to retire. It is a
 plan for a fresh session. **No code has changed yet.**
 
-Based on PR #11 (walksync, phase 6) at `cd32aac`. Every `file:line` below is against that commit,
-under `hpc_file_utils/walk/` unless a path says otherwise. The work can start once PR #11 merges,
-or stack on it.
+Part of PR #11 (walksync, phase 6), rebased onto main at `fe6daa1`, which holds phase 5.5 (PR #12,
+walktar's reader threads). Every `file:line` below is against the rebased PR #11, under
+`hpc_file_utils/walk/` unless a path says otherwise. Section 0 records what phase 5.5 and walksync's
+derecho smoke run measured, and what they change in this plan. The work starts once PR #11 merges.
 
 Read first:
 - The module docstring of `common/manager.py`: the protocol and the termination argument.
@@ -16,9 +17,10 @@ Read first:
 - [HANDOFF.md](HANDOFF.md), phases 5 and 6.
 
 Contents:
+0. What phase 5.5 and walksync's smoke run changed (re-evaluation, 2026-11-09)
 1. Findings
 2. Part A: the sweep (no behaviour change)
-3. Part B: walktar onto stat batches (deferred: plan only)
+3. Part B: walktar onto stat batches (next after A2–A3)
 4. Part C: optional indexes (new)
 5. Part D: logging and console output
 6. Part E: Pythonic cleanup, and what not to "modernize"
@@ -33,6 +35,95 @@ Contents:
 - **The Manager's protocol and termination argument stay as they are.** Part B leans on them as
   they stand, and nothing here edits manager.py's docstring argument.
 - **No new runtime dependency** without a line here saying why.
+
+---
+
+## 0. What phase 5.5 and walksync's smoke run changed (re-evaluation, 2026-11-09)
+
+### 0.1 What phase 5.5 measured (PR #12; the walk README's "Phase 5.5")
+- **A small file's ~40 ms was the storage's latency, not Python.** In a profile of `tar.add()` on
+  1 MiB files, 35 of 38.8 ms per file was the source's one `read()`. lstat, open, close and the
+  header cost ~1.2 ms. The owner and group name lookups cost 0.04 ms. Campaign GPFS is the same.
+- **`--read-ahead` [16] reader threads** read the batch's next files while the worker writes the
+  current one. `manyfiles` (200k × 1 MiB, scratch) went from 271 to 54 s (5.0×, 1 × 32).
+  `bigdir` (1 GiB files) is unchanged.
+- **On campaign GPFS** (GDEX VIT zarr: 333k files in one directory → csg), every read-ahead
+  setting (4, 8, 16) is only 10–15% faster.
+  - walktar's scanning rank stats every file before batching it. With read-ahead running, its
+    rate fell from phase 5's ~10,600 entries/s to ~900–1,000, and the other ranks waited for
+    batches.
+  - Why the stats slow down was not determined.
+- **Bench hygiene, which any re-measure here needs:**
+  - Scratch's servers answer a re-read of a recently read file in ~5 ms instead of ~35, so a
+    big tree goes between repeat small-file runs.
+  - PALS pins each rank to one CPU, which its reader threads share. `benchtar.pbs` takes
+    `MPIEXEC_ARGS` to try `--cpu-bind depth`.
+
+### 0.2 walksync's smoke run (PR #11, derecho, 2026-11-09)
+1 node × 32, `--rsync /usr/bin/rsync` (3.2.7, with ACLs and xattrs), destinations on scratch:
+
+| source | copy | rerun | rsync-seconds per file |
+|---|---|---|---|
+| GDEX `special_projects/earthmover_test`: 76,868 entries, 2.69 GiB, deep | 63 s, 103 batches | 2.5 s, nothing copied | 15.8 ms |
+| GDEX `exchange/.Radiosonde`: 584,851 entries, 43.9 GiB, wide | 367 s, 617 batches | 23 s | 17.8 ms |
+| scratch `tartree/manyfiles`: 200,000 × 1 MiB, one directory | 464 s, 200 batches | 9.6 s | 67 ms |
+
+- **Correct:** the oracle (`rsync -naxAX --delete -i --chmod=Du+w`) found nothing but the
+  destination root, which the script made and which the final rsync owns.
+- **No-ACL warning:** with the env's conda-forge rsync (3.5.2, "no ACLs") the banner warned and
+  `-A` was dropped. That rsync comes first on PATH after `config_env.sh`, so on derecho walksync
+  copies no ACLs unless given `--rsync /usr/bin/rsync`. This is a PR #11 follow-up.
+- **The ranks were busy, not waiting.** On `.Radiosonde`, rsync ran for 92% of the rank-seconds.
+- **walksync pays a fixed cost per file inside each serial rsync,** the same shape as walktar
+  before read-ahead.
+  - On `manyfiles` that is 67 ms per file: 464 s, against walktar's 54 s with read-ahead on the
+    same tree.
+  - About 35 ms of that is the cold read (0.1). What the rest is (creating the file on Lustre,
+    setting mode, ACL, xattrs and times, rsync's own stats of both sides) was not measured.
+
+### 0.3 What it changes here
+- **Part B moves up,** from "deferred: plan only" to the next step after A2–A3, which make it
+  small (section 8).
+  - It is the measured fix for the GPFS case: the per-file stats move from the scanning rank into
+    stat batches that every rank processes.
+  - Its two levels, stat batches closing file batches sized by the real `st_size`, keep
+    `--batch-size`. PR #12's deferred note had worried that a stat-free scan would lose it.
+- **Part B's "bonus" is corrected (section 3).** Since PR #12 the worker builds each `TarInfo`
+  with `gettarinfo(fileobj=)`, an fstat after the reader's read (0.018 ms). Saving that call is
+  not a performance item.
+- **Part C's walktar index gets the found atime for free (4.6).** Since PR #12, `open_member()`'s
+  reader lstats each file before it opens and reads it. Returning that stat gives the pre-read
+  atime with no extra call; only `--read-ahead 0` (`tar.add()`) still needs one.
+- **A3's `error()` also absorbs `TarWorker.add_member`'s prints:** `tar/worker.py` now prints
+  "Cannot add to tar file" in three places.
+  - `TarWorker.readers` (the thread pool, started at the first batch and shut down in `run()`)
+    has `RankFile`'s lifecycle but is not a file, so it stays as it is.
+- **E4's "resolve names once on rank 0"** is tidiness, not speed: a lookup costs 0.04–0.06 ms on
+  derecho (sssd's cache). The same holds for tarfile's own per-member lookups, so don't cache
+  them for speed.
+- **O_NOATIME** (phase 5.5 question 6: open each source with `O_NOATIME`, falling back on
+  `EPERM`) belongs in `open_member()`, next to Part C. With both, a root walktar leaves atimes
+  alone and still records the found one.
+- **Measure walksync's per-file cost before A5** (no code change), as question 1 did for walktar:
+  - one rsync over 1,000 files, timed, and `strace -c` of it;
+  - the same files over N rsyncs side by side;
+  - the read side alone against the destination side alone.
+
+  If N rsyncs scale as walktar's readers did, the fix is several rsyncs in flight per rank. A5's
+  `sync/rsync.py` run-and-poll loop should then be built for N from the start.
+- **A common "in flight" piece for A3, if the measurement points there.** walktar's readers and
+  walksync's concurrent rsyncs would be one idea: K units of I/O in flight per rank, results taken
+  in order, with `share` and progress answered between them. One piece in `common/`, next to
+  `entries()` and `ticked()`, beats two tool-specific mechanisms.
+- **A `--profile` option (A3):** each rank writes a cProfile file (`profile-r{rank}.prof`). It
+  costs little when off. Phase 5.5's per-file split needed a separate script.
+- **Still open from phase 5.5,** for after Part B:
+  - question 2, the Lustre read side for big files, including `--cpu-bind depth`;
+  - 3, LPT batch order;
+  - 4, share ping-pong at 4 nodes;
+  - 5, multi-node scaling on GDEX.
+
+  Part B's re-measure may also answer why the scan slowed on GPFS.
 
 ---
 
@@ -66,8 +157,9 @@ Contents:
 The batch loops repeat the "every `SHARE_CHECK_INCREMENT` items: share, progress" tick
 (`stat/worker.py:190-193`, `sync/worker.py:238-241`).
 
-`error()` exists twice (`stat/worker.py:103-106`, `sync/worker.py:82-85`). `BaseWorker` and
-`TarWorker.add` (`tar/worker.py:42-50`) count and print inline instead.
+`error()` exists twice (`stat/worker.py:103-106`, `sync/worker.py:82-85`). `BaseWorker`,
+`TarWorker.add` and `TarWorker.add_member` (`tar/worker.py:81-128`, three copies) count and print
+inline instead.
 
 Only `BaseWorker` uses a bare `os.scandir()` without `with`, so its directory handle lives until
 garbage collection.
@@ -81,9 +173,10 @@ garbage collection.
 
 ### 1.4 No "tool" abstraction
 - **`app ==` branches.** There are five `app == 'walksync'` branches in `cli.py` (lines 83, 89,
-  102, 125, 130) and five `appname` branches in `common/options.py` (lines 78, 80, 98, 124, 131).
+  102, 125, 130) and seven `appname` branches in `common/options.py` (lines 78, 80, 82, 100, 108, 128, 135; 80 and
+  108 are walktar's `--read-ahead`).
 - **Tool settings carried on `args`.** These are `written_verb` and `written_units`
-  (`common/options.py:154`) and `rsync_missing`. They are read back with
+  (`common/options.py:158`) and `rsync_missing`. They are read back with
   `getattr(options, ..., default)` in `common/manager.py:169,334-336` and `sync/report.py:25`.
 - **Code in the wrong module:**
   - The rsync capability code (`RSYNC_OPTS`, `parse_rsync_capabilities`, `rsync_capabilities`,
@@ -95,7 +188,7 @@ garbage collection.
   `if app ==` chain.
 
 ### 1.5 Per-rank output files, opened lazily, three ways
-`TarWorker.dirs_tar` (`tar/worker.py:60-62`, closed in `run()`), `SyncWorker.dryrun_file`
+`TarWorker.dirs_tar` (`tar/worker.py:166-170`, closed in `run()`), `SyncWorker.dryrun_file`
 (`sync/worker.py:125-131`, closed in `run()`), and glade_hsm's `LazyWriter`
 (`tools/glade_hsm/libexec/glade_hsm_scan_filelist.py:12`). The index (Part C) would be a fourth.
 
@@ -106,7 +199,7 @@ garbage collection.
   - `SECONDS_IN_YEAR` is defined in `common/stats.py:63` and `common/filters.py:33`. The comment
     there says "as common/worker.py", which is stale.
   - The `parse_size` / `InvalidSize` → parser-error wrapper appears three times:
-    `common/options.py:99-105`, `common/options.py:113-117` and `common/filters.py:163-168`.
+    `common/options.py:101-107`, `common/options.py:117-121` and `common/filters.py:163-168`.
   - In `WalkStats.merge`, the `partial_dirs` loop (`common/stats.py:177-181`) duplicates
     `add_partial_dir` (`:184-189`), and the uid/gid "add or assign" (`:162-167`) is the same
     pattern again.
@@ -183,7 +276,7 @@ Six commits. "Done" for the whole part:
   it, and the callers keep their own `try/except → self.error('scan', e)`.
 - `ticked(items)`: share and progress every `SHARE_CHECK_INCREMENT` items, for
   `StatWorker.process_batch` and `SyncWorker.compare_batch`. walktar keeps its per-file check
-  (`tar/worker.py:90-91`): a file read costs far more than an `iprobe`.
+  (`tar/worker.py:198-199`): a file read costs far more than an `iprobe`.
 - `rank_info()`: a `RankInfo` for `MPIClass.collect`, replacing the `getattr`s. Workers report
   their `wait_time` and `max_local_dirs`, and the Manager reports zeros.
 - `RankFile(pattern)`: a per-rank or per-batch file opened at its first write and closed by
@@ -245,9 +338,10 @@ Six commits. "Done" for the whole part:
 
 ---
 
-## 3. Part B: walktar onto stat batches (deferred: plan only)
+## 3. Part B: walktar onto stat batches (next after A2–A3)
 
-Decided during the sweep's planning: write it up, but don't do it in the sweep.
+The sweep's planning first left this as a plan only. Phase 5.5 measured the need (0.1): on one huge
+GPFS directory, walktar's scanning rank, which stats every file, sets the pace.
 
 - **What.** walktar becomes `StatWorker` plus tar batches:
   - The scan is walkstat's (d_type, with stats only for subdirectories).
@@ -259,14 +353,25 @@ Decided during the sweep's planning: write it up, but don't do it in the sweep.
   - The `-dirs` tar is still written at scan time, by the rank that walks the directory.
 - **Then delete** `BaseWorker.process_directory` and the `process_file` hook: every tool shares one
   scan.
-- **Bonus.** The batch already holds each file's lstat. `tar.addfile(tarinfo_from(statinfo),
-  fileobj)` saves tarfile's second lstat in `gettarinfo()`, and Part C's walktar index costs no
-  extra system calls.
+- **With the reader threads.** The stat batch's processing hands each selected file's lstat
+  along with its path.
+  - The reader in `open_member()` can then skip its own lstat. It keeps the `O_NOFOLLOW` open
+    and the fstat type check.
+  - Part C's index uses the same lstat.
+  - Building `TarInfo` from that lstat instead of `gettarinfo(fileobj=)` saves only an fstat
+    (0.018 ms), so it is not a reason to change. The members must stay `tar.add()`'s
+    (`tests/test_tar_members.py`).
 - **Risks and measurements:**
   - Stats move from the scanning rank to whichever rank takes the batch.
   - walktar's golden summary must not change.
-  - Re-measure on derecho against the phase 5 walktar numbers (same filesets, 1 node × 32 ranks)
-    before merging. Record the numbers in `walk/README.md`'s phase 5 section.
+  - Re-measure on derecho against the phase 5.5 walktar numbers, with read-ahead 16, 1 node × 32
+    ranks, before merging. The filesets:
+    - scratch `bigdir` and `manyfiles`, with a `bigdir` run between repeat `manyfiles` runs;
+    - the GDEX VIT zarr → csg, the case this is for.
+
+    Record the numbers in a "Part B" entry after the walk README's "Phase 5.5".
+  - Watch the stat batches' own rate under read load. If their stats slow as the scanner's did,
+    it shows up as per-batch time, not idle ranks.
 
 ---
 
@@ -381,9 +486,11 @@ default in both tools.
   `lstat` result; `offsets` is walktar's `(offset, offset_data)` pair.
 - **walkstat** calls it next to `stats.count(...)`: for subdirectories at scan time, and for files
   in stat batches.
-- **walktar** does one `os.lstat` *before* `tar.add`, then adds the member and writes the index line
-  from that stat plus the offsets of `tar.members[-1]`. The extra `lstat` is the price of the
-  pre-read atime until Part B, when the stat batch already holds it and the call goes away. A
+- **walktar** writes the index line from a pre-read lstat plus the offsets of `tar.members[-1]`.
+  - With `--read-ahead` (the default), the reader thread's lstat in `open_member()` already
+    precedes the read: return it with the file. No extra call.
+  - Only `--read-ahead 0` (`tar.add()`) needs one `os.lstat` before `tar.add`.
+  - After Part B the stat batch holds the lstat for both paths. A
   batch's index opens and closes with its tar, and the dirs index with the dirs tar.
 - **Order:** C works today for walktar, through `TarInfo`. It is cheaper after Part B, but does not
   depend on it.
@@ -544,8 +651,16 @@ Counts are from the non-test package at `cd32aac`. Mechanical commits go in a ne
 
 ## 8. Order, and how each step is checked
 
-A (sweep) → E1/E2 (mechanical, dead code) → D (logging) → E3/E4 → C (indexes) → B (walktar on stat
-batches, after its derecho re-measure). Each part is its own PR, stacked on the one before.
+walksync's per-file measurement (0.3, no code) → A (sweep, shaped by it) → B (walktar on stat
+batches, with its derecho re-measure) → walksync's in-flight rsyncs, if the measurement calls for
+them (sharing B's bench runs) → E1/E2 (mechanical, dead code) → D (logging) → E3/E4 → C (indexes,
+with O_NOATIME). Each part is its own PR, stacked on the one before. Phase 5.5's remaining
+questions (0.3) follow Part B.
+
+The original order put B last. It moved up because phase 5.5 measured it as walktar's limit on GPFS
+(0.1), and A2–A3 already make it small. The walksync step follows B for the same reason: it
+rides on A3's common pieces. E1's tree-wide mechanical changes wait until B has merged,
+so they never have to be rebased under it.
 
 - **Environment:** `source etc/config_env.sh`, or `pip install -e .[mpi,dev]` with conda-forge
   openmpi.
