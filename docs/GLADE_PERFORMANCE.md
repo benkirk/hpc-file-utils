@@ -88,6 +88,13 @@ one node however the files are made; and campaign's numbers move with the day's 
   subjobs of 1 × 128) running, the same `.Radiosonde` copy took 912 s against 367 s in the
   morning. Only pairs from one job compare; note `qstat -t -u csgteam | grep -c " R "` with
   any campaign number. Part A, Part B.
+- **Lustre honours `O_NOATIME`, and a per-entry line of output costs nothing.** walktar's
+  readers open with `O_NOATIME` (the owner or root); a full read of `manyfiles` left the
+  sampled atimes untouched. Writing an index line per entry (walkstat `--index`, walktar
+  `--index`: a dict lookup, a formatted line, a buffered write) was within the noise of
+  the same walks without it: 1,000,000 cached stats in 1.6–1.9 s either way, 200,000
+  1 MiB files archived in 52–57 s either way. `du` of a file just written on Lustre
+  under-reports its blocks for a while (16 KiB for a 25 MB file). Part C.
 
 ## 4. Writing and copying
 

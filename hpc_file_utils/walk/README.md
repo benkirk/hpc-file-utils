@@ -33,6 +33,9 @@ Outputs (in the working directory, written by rank 0):
   userlists unless `--summary-prefix` or `--spreadsheet` is given.
 - `--profile`: `profile-r{rank}.prof`, a cProfile of every rank's run (the Manager's loop,
   each worker's walk), for `python -m pstats`.
+- `--index`: walkstat's `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with
+  `--summary-prefix`), one per worker; walktar's `<tar>.idx` beside each tar (see
+  [Indexes](#indexes-the-sweeps-part-c)).
 
 ## Filtering (phase 4)
 
@@ -256,6 +259,85 @@ rerun with nothing changed copies nothing: it costs only the walk.
     entries, and `--dry-run` on the 2,000-subdirectory tree;
   - a big directory is copied by several ranks;
   - a failing rsync fails the run.
+
+## Indexes (the sweep's Part C)
+
+`--index` makes walkstat and walktar also write one line of metadata per entry, TSV,
+every rank in parallel with no coordination (`common/index.py`). Off by default; walksync
+has none.
+
+- **walkstat:** `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with `--summary-prefix`)
+  in the working directory, every entry the rank counted: a parallel metadata dump at walk
+  speed, like a GPFS policy-engine list or `find -ls`. A rank that counted nothing leaves
+  no file.
+- **walktar:** `<tar>.idx` beside each tar (`output-r001-b00003.tar.idx`,
+  `output-r001-dirs.tar.idx`), every member with its offsets, so one member can be found or
+  extracted without reading the whole tar. Made with the tar, even if it stays empty.
+- **What is listed:** what the tool counted or archived. An `--exclude`d entry never
+  appears; with a selecting filter only the selected entries appear, the same rule as the
+  reports and the tars.
+
+**Format.** A versioned header line, then one record per line, tab-separated, the path
+last so `sort` and `cut` work:
+
+```
+# hfu-index v1	tool=walkstat	columns=rec,type,size,alloc,mode,uid,gid,nlink,ino,atime,mtime,ctime,path	root=/glade/campaign/x
+P	d	4096	4096	0755	1001	100	3	1234	1700000000	1700000000	1700000000	/glade/campaign/x
+E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade/campaign/x/a.dat
+```
+
+| column | |
+|---|---|
+| `rec` | `E` or `P` (below) |
+| `type` | `f d l p s b c` (`?` otherwise) |
+| `size`, `alloc` | `st_size`, `st_blocks × 512` |
+| `mode` | the permission bits, octal |
+| `uid`, `gid`, `nlink`, `ino` | `nlink` and `ino` let an importer find the hard links |
+| `atime`, `mtime`, `ctime` | integer epochs |
+| `offset`, `offset_data` | walktar only: the member's header and data positions in its tar; `-` on `P` records |
+| `path` | as walked, encoded reversibly (below) |
+
+- **Two kinds of record, so repeats never double-count.** `E` is an entry: counted
+  (walkstat) or archived (walktar) here, and exactly once across the whole set of files, by
+  the guarantees the reports and the tars rely on. `P` is a parent: a structural record,
+  repeated across files and batches as needed (one `lstat` each), which an importer uses
+  for the hierarchy and skips for totals. In walkstat's index the `--dirs` roots and the
+  directories that fail a selecting filter appear only as `P` (they are not counted);
+  walktar archives every directory it walks into a dirs tar, so there they are `E`, with
+  their offsets. A `P` of a directory that vanished has `-` in every stat field.
+- **Parents before children, in every file.** Before any record, every ancestor directory
+  up to its `--dirs` root has a record earlier in the *same* file. So each file can be
+  imported on its own, in any order or in parallel, and `cat index-*.tsv` keeps the
+  property. The writer keeps a bounded cache of the directories it has recorded (100,000
+  paths, least recently used out; `HFU_INDEX_CACHE_MAX` sets it, the tests to 1) and
+  writes the missing ancestors of each record top-down as `P`. It is only a cache: a
+  forgotten parent costs one repeated `P` line, and it can never claim a parent it did not
+  write.
+- **Paths** are encoded reversibly, unlike the reports' `printable()`: `\` as `\\`, newline,
+  tab and return as `\n` `\t` `\r`, other control characters and undecodable bytes as
+  `\xNN`. `index.decode_path()` reverses it, `index.read_index()` parses a file.
+- **walktar's atime is the found one**, from the `lstat` taken before the member is read
+  (the reader thread's, in `open_member()`; one before `tar.add()` for anything else and
+  with `--read-ahead 0`), so the index does not depend on whether the mount updates atimes.
+  The readers also open with `O_NOATIME`, which Linux allows the file's owner and root (a
+  run as anyone else gets `EPERM` and retries without it), so a root walktar leaves the
+  atimes as it found them; `--read-ahead 0` reads through `tar.add()`, which does not.
+  `tarfile` records a member's offsets only when it reads a tar, so the writer derives
+  them from the tar's position around each add.
+- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` checks each
+  file for closure, the `E` paths for repeats across the files, and with `--find` the `E`
+  set against `find` of the header's roots (walkstat: below the roots, as Total Count;
+  walktar: the roots too, as the tars). The tests run the same checks on the golden tree
+  and on a big directory whose batches move between ranks, unfiltered and filtered, with
+  the cache cap at 1, and compare each `.idx` with its tar's `getmembers()` (offsets
+  included, the bytes at `offset_data`) and every file's atime with the one the fixture set.
+- **Importing** (hpc-usage-queries `fs_scans/parsers`, a parser to write there):
+  `can_parse()` keys on the `# hfu-index v1` header or the names `index-*-r*.tsv` and
+  `*.tar.idx`; `parse_line()` maps `path`, `size`, `allocated = alloc`, `uid`, `gid`,
+  `is_dir = (type == 'd')`, `atime` and `inode = ino` onto `ParsedEntry`, skips the
+  header, and must keep `P` records out of the totals (pass 1 collects directories by path,
+  so repeats are harmless there; pass 2a counts every directory record into its parent, so
+  a `P` must not reach it as an entry).
 
 ## Behaviour changes since the csg-utils import
 
@@ -585,3 +667,31 @@ rerun with nothing changed copies nothing: it costs only the walk.
     same binding (the threaded lstats pay 7% once the CPU is not the limit) and 361–387 s
     for `main` under PALS's default. So Part B plus the binding is 1.34× over `main` on the
     tree it was for, and the binding, not the walk, is what to fix in the launcher.
+
+### Part C (the sweep: indexes)
+
+- **`--index`** on walkstat and walktar ([Indexes](#indexes-the-sweeps-part-c) above), off by
+  default; `O_NOATIME` in walktar's readers. Nothing else changed: the members are still
+  `tar.add()`'s and the golden output never moved.
+- **Smoke run on derecho** (job 8132015, `hfu-bench/benchC.pbs`; 1 node × 32 ranks, PALS's
+  default binding, scratch trees, every timed run after a warm-up so all of them see the
+  same caches, two rounds of each pair; the checkers of `common/index.py` on round 1's
+  output: closure of every file, no `E` path twice across the files, the `E` set against
+  `find`, and each `.idx` against its tar's `getmembers()` with offsets and a sample of the
+  bytes at `offset_data`):
+
+  | walk | without `--index` | with `--index` | index |
+  |---|---|---|---|
+  | walkstat `million`: 1,000,000 empty files, one directory | 1.88, 1.64 s | 1.76, 1.73 s | 121 MiB in 31 files, 1,000,000 `E` + 31 `P` (~127 bytes per record); checker 16 s |
+  | walkstat `manyfiles`: 200,000 × 1 MiB, one directory | 0.56, 0.57 s | 0.59, 0.68 s | 200,000 `E` + 31 `P`; checker 3.4 s |
+  | walktar `manyfiles` → scratch, `--read-ahead` 16 | 57.4, 51.8 s; CPU 40.5, 40.7 s per rank | 53.5, 53.1 s; CPU 41.1, 40.3 s | 201 `.idx` (200 batch, 1 dirs), 200,001 `E` + 200 `P`; checker 4.9 s, 201 tars matched |
+
+  - **The index costs nothing measurable**: within the noise on every pair, in wall time and
+    in CPU. A record is one dict lookup, one formatted line and a buffered write, next to a
+    stat (or a read) that costs a storage round trip.
+  - **Lustre honours `O_NOATIME`**: three sampled files' atimes were the same before and after
+    a full walktar read of the tree (the owner's run); the index's atimes are the found ones.
+  - The 1M-entry index is 121 MiB; a per-rank file holds one `P` for the root and its share
+    of the `E` records, since every rank's batches came from one directory.
+  - `du` right after a write under-reports on Lustre (16 KiB for 200,000 lines), so the
+    sizes above are the million run's, taken a minute later; nothing stayed on scratch.
