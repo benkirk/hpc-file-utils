@@ -157,8 +157,14 @@ section 5).
     serial run outlasted the load (343 s against the walktar's 375), so its 4- and
     16-thread runs were unloaded, and round 2's rotation put those two under the load and
     the serial run after it: the table pairs them by what the load was doing.
-- **Gates:** (filled in when the code lands after A and B: `make test`, `make test-pbs`,
-  the race test, golden unchanged with `--stat-threads 4` in the golden tests.)
+- **Gates on the final head** (`ba8b549`'s code, `c1d7482`): `make test` 562 passed, 4
+  skipped; the race test 500/500 at `HFU_RACE_RUNS=100`; `make test-pbs` on derecho; CI
+  green on every push; golden unchanged with `--stat-threads 4` in the golden tests. One
+  unexplained run: the first local pass on this head reported 1 failed of 566 and then
+  370 of 500 race cases failed in 162 s (too fast for the usual timeouts), straight after
+  the full suite on a laptop that had been running MPI tests for hours; only the summary
+  lines were kept, and the immediate reruns (2 runs, then the full suite and 100 runs)
+  were clean. If it recurs, keep the `-rf` report.
 
 ## Next (agreed 2026-11-10)
 
