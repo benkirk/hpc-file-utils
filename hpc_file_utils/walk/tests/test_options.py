@@ -54,6 +54,21 @@ def test_walkstat_stat_threads(tmp_path):
         parse_options("walktar", ["--dirs", str(tmp_path), "--stat-threads", "4"])
 
 
+@pytest.mark.parametrize("tool", ["walkstat", "walktar"])
+def test_index_takes_gz(tmp_path, tool, capsys):
+    """--index alone is the plain TSV, --index=gz (or --index gz) the same through gzip."""
+    base = ["--dirs", str(tmp_path)]
+    assert parse_options(tool, base).index is None
+    assert parse_options(tool, base + ["--index"]).index == "tsv"
+    assert parse_options(tool, base + ["--index=gz"]).index == "gz"
+    assert parse_options(tool, base + ["--index", "gz", "--progress", "0"]).index == "gz"
+    assert parse_options(tool, base + ["--index", "--progress", "0"]).index == "tsv"
+    for bad in (["--index=bz2"], ["--index=tsv.gz"]):
+        with pytest.raises(SystemExit) as e:
+            parse_options(tool, base + bad)
+        assert e.value.code == 2
+
+
 @pytest.mark.parametrize("args", [["--batch-files", "0"], ["--batch-size", "lots"], ["--batch-size", "0"],
                                   ["--tar-queue-depth", "5"], ["--read-ahead", "-1"]])
 def test_walktar_usage_errors(tmp_path, args, capsys):

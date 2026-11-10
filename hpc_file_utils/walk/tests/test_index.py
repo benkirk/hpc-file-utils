@@ -2,10 +2,13 @@
 process, then walkstat --index and walktar --index under MPI, checked for closure (every
 record's parent earlier in the same file), exactly once (no E path twice across the files),
 completeness (walkstat's E records are find's listing; walktar's are its tars' members, with
-their offsets), the found atime, and the written cache's eviction (HFU_INDEX_CACHE_MAX=1)."""
+their offsets), the found atime, and the written cache's eviction (HFU_INDEX_CACHE_MAX=1);
+and --index=gz, the same records through gzip."""
 
 import errno
+import gzip
 import os
+import zlib
 import tarfile
 from pathlib import Path
 
@@ -150,6 +153,58 @@ def test_the_checkers_see_a_broken_file(tmp_path):
         read_index(tmp_path / "not-an-index")
 
 
+def _write_tree_index(root, out, **kw):
+    w = IndexWriter(str(out), "walkstat", [str(root)], **kw)
+    for rel in ("a/b/c/leaf.dat", "a/b/other.dat", "a/top.dat", "a", "gone/sub/lost.dat"):
+        p = str(root / rel)
+        w.add(p, _st(p))
+    w.close()
+    return w.name
+
+
+def test_gz_writes_the_same_records_as_one_gzip_stream(tmp_path):
+    root = tmp_path / "tree"
+    _tree(root)
+    plain = _write_tree_index(root, tmp_path / "index-r001.tsv")
+    gz = _write_tree_index(root, tmp_path / "index-r002.tsv", how="gz")
+    assert plain == str(tmp_path / "index-r001.tsv") and gz == str(tmp_path / "index-r002.tsv.gz")
+    assert not (tmp_path / "index-r002.tsv").exists()
+    raw = Path(gz).read_bytes()
+    assert raw[:2] == index_mod.GZIP_MAGIC
+    d = zlib.decompressobj(wbits=31)                              # one gzip stream: nothing after its end
+    text = d.decompress(raw)
+    assert d.eof and d.unused_data == b""
+    assert text == Path(plain).read_bytes()
+    # the readers and checkers take either, by the first bytes, whatever the name
+    (tmp_path / "renamed").write_bytes(raw)
+    assert _records(gz) == _records(plain) == _records(tmp_path / "renamed")
+    assert closure_errors(gz) == [] and entries([gz]) == entries([plain])
+    assert index_mod.main([gz]) == 0
+
+
+def test_gz_files_concatenate_into_one_readable_index(tmp_path):
+    """cat of .gz files is one gzip file: zcat (gzip.open) reads every member."""
+    root = tmp_path / "tree"
+    _tree(root)
+    a = _write_tree_index(root, tmp_path / "index-r001.tsv", how="gz")
+    b = _write_tree_index(root, tmp_path / "index-r002.tsv", how="gz", cache_max=1)
+    both = tmp_path / "both.tsv.gz"
+    both.write_bytes(Path(a).read_bytes() + Path(b).read_bytes())
+    with gzip.open(both, "rt", encoding="utf-8") as f:
+        text = f.read()
+    with gzip.open(a, "rt", encoding="utf-8") as fa, gzip.open(b, "rt", encoding="utf-8") as fb:
+        assert text == fa.read() + fb.read()
+
+
+def test_a_truncated_gz_index_is_refused(tmp_path):
+    root = tmp_path / "tree"
+    _tree(root)
+    gz = Path(_write_tree_index(root, tmp_path / "index-r001.tsv", how="gz"))
+    gz.write_bytes(gz.read_bytes()[:-8])                          # no end of stream: a killed rank's
+    with pytest.raises(EOFError):
+        closure_errors(gz)
+
+
 def test_member_offsets_are_what_a_reader_sees(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
@@ -276,14 +331,14 @@ def _members(tar_path):
         return {m.name: (m.type, m.size, m.offset, m.offset_data) for m in tf.getmembers()}
 
 
-def _check_tar_indexes(cwd):
-    """Each .idx beside its tar lists exactly the members, with the reader's offsets, and
-    size bytes at offset_data are the file; the E paths across every index."""
+def _check_tar_indexes(cwd, suffix=".idx"):
+    """Each <tar>.idx (suffix) beside its tar lists exactly the members, with the reader's
+    offsets, and size bytes at offset_data are the file; the E paths across every index."""
     tars = sorted(Path(cwd).glob("output-r*.tar"))
-    assert tars and [t.with_suffix(".tar.idx") for t in tars] == _index_files(cwd, "output-r*.tar.idx")
+    assert tars and [Path(f"{t}{suffix}") for t in tars] == _index_files(cwd, "output-r*.tar.idx*")
     for t in tars:
         members = _members(t)
-        header, recs = _records(t.with_suffix(".tar.idx"))
+        header, recs = _records(f"{t}{suffix}")
         assert header.tool == "walktar"
         es = [r for r in recs if r.rec == "E"]
         assert {r.path.lstrip("/") for r in es} == set(members), t
@@ -296,7 +351,7 @@ def _check_tar_indexes(cwd):
                     assert r.type == "f" and r.size == msize, (t, r)
                     raw.seek(r.offset_data)
                     assert raw.read(r.size) == Path(r.path).read_bytes(), (t, r)
-    return _checked(_index_files(cwd, "*.idx"))
+    return _checked(_index_files(cwd, "*.idx*"))
 
 
 @pytest.mark.mpi
@@ -364,3 +419,42 @@ def test_walktar_index_records_a_fifo_and_links_from_their_lstat(walk, private_g
     a, b = by_name["special/hard-a.dat"], by_name["special/hard-b.dat"]
     assert a.ino == b.ino and a.nlink == b.nlink == 2 and a.size == b.size == 3 * 1024 * 1024
     assert all(x.mode == os.lstat(x.path).st_mode & 0o7777 for x in recs)
+
+
+# ---------------------------------------------------------------------------
+# --index=gz under MPI
+# ---------------------------------------------------------------------------
+
+@pytest.mark.mpi
+@CAPS
+@pytest.mark.parametrize("tree_name", ["golden", "bigdir"])
+def test_walkstat_gz_index_is_closed_once_and_complete(walk, golden_tree, big_dir_tree, tmp_path, cap, monkeypatch,
+                                                       tree_name):
+    root = golden_tree.root if tree_name == "golden" else big_dir_tree
+    if cap:
+        monkeypatch.setenv("HFU_INDEX_CACHE_MAX", cap)
+    args = ["--index=gz"] + (["--batch-files", "10"] if tree_name == "bigdir" else [])
+    r = walk.run("walkstat", [root], cwd=tmp_path, args=args)
+    assert r.ok, r.report()
+    files = _index_files(tmp_path, "index-r*")
+    assert files and all(f.name.endswith(".tsv.gz") and f.read_bytes()[:2] == index_mod.GZIP_MAGIC for f in files)
+    paths = _checked(files)
+    assert paths == set(find(root)) and len(paths) == r.total_count()
+    assert index_mod.main([str(f) for f in files] + ["--find"]) == 0
+
+
+@pytest.mark.mpi
+@CAPS
+@pytest.mark.parametrize("tree_name", ["golden", "bigdir"])
+def test_walktar_gz_indexes_match_their_tars(walk, private_golden_tree, big_dir_tree, tmp_path, monkeypatch, cap,
+                                             tree_name):
+    root = private_golden_tree.root if tree_name == "golden" else big_dir_tree
+    if cap:
+        monkeypatch.setenv("HFU_INDEX_CACHE_MAX", cap)
+    args = ["--index=gz"] + (["--batch-files", "10"] if tree_name == "bigdir" else [])
+    r = walk.run("walktar", [root], cwd=tmp_path, args=args)
+    assert r.ok, r.report()
+    assert not _index_files(tmp_path, "*.idx")
+    paths = _check_tar_indexes(tmp_path, ".idx.gz")
+    assert paths == set(find(root, mindepth=0))
+    assert index_mod.main([str(f) for f in _index_files(tmp_path, "*.idx.gz")] + ["--find"]) == 0

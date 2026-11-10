@@ -42,8 +42,17 @@ newline, tab and return as '\\n' '\\t' '\\r', other control characters and undec
 as '\\xNN'. decode_path() reverses it. read_index() parses a file, and the checks below
 (closure, exactly once, completeness against find) run as
   python -m hpc_file_utils.walk.common.index [--find] index-*.tsv
+
+--index=gz writes the same records through gzip, '.gz' on the name (index-r001.tsv.gz,
+output-r001-b00003.tar.idx.gz): one gzip stream per file, at level 6 (gzip's own default;
+Python's gzip.open() defaults to 9, ~4x the CPU for ~4% less). The readers below take
+either, by the file's first two bytes, whatever its name; so does zcat, and cat of .gz
+files is still one valid gzip file, closed under ancestry as before. A rank killed mid-file
+leaves a gzip stream without its end, which a reader refuses (EOFError) where a plain file
+would end in a partial line.
 """
 
+import gzip
 import os
 import re
 import stat
@@ -59,6 +68,10 @@ HEADER = f'# hfu-index v{VERSION}'
 STAT_COLUMNS = ('type', 'size', 'alloc', 'mode', 'uid', 'gid', 'nlink', 'ino', 'atime', 'mtime', 'ctime')
 OFFSET_COLUMNS = ('offset', 'offset_data')
 WRITTEN_CACHE_MAX = int(os.environ.get('HFU_INDEX_CACHE_MAX', 100_000))
+FORMATS = ('tsv', 'gz')          # --index's values: --index alone is tsv
+GZIP_SUFFIX = '.gz'
+GZIP_LEVEL = 6
+GZIP_MAGIC = b'\x1f\x8b'
 
 TYPE_LETTERS = {stat.S_IFREG: 'f', stat.S_IFDIR: 'd', stat.S_IFLNK: 'l', stat.S_IFIFO: 'p',
                 stat.S_IFSOCK: 's', stat.S_IFBLK: 'b', stat.S_IFCHR: 'c'}
@@ -74,6 +87,13 @@ _UNESCAPES = {b'\\': b'\\', b'n': b'\n', b't': b'\t', b'r': b'\r'}
 def _escape(m):
     c = m.group()
     return _ESCAPES.get(c) or ''.join(f'\\x{b:02x}' for b in c.encode('utf-8', 'surrogateescape'))
+
+
+def add_index_argument(parser, help):
+    """The --index option of a tool: --index (plain TSV) or --index=gz (the same through
+    gzip); options.index is None without it, else 'tsv' or 'gz'."""
+    parser.add_argument('--index', nargs='?', const='tsv', default=None, choices=FORMATS, metavar='gz',
+                        help=help + '. --index=gz writes the same through gzip, ".gz" on each name')
 
 
 def encode_path(path):
@@ -97,10 +117,12 @@ class IndexWriter(RankFile):
     """One index file (the module docstring): add() writes an entry's E record after the P
     records of the ancestors the file lacks. Opened at its first record, as a RankFile, or
     by open() for a file that must exist even empty (walktar's, beside its tar); close()
-    forgets the written cache."""
+    forgets the written cache. how is --index's value: 'gz' writes name + '.gz' through
+    gzip, anything else name as plain text."""
 
-    def __init__(self, name, tool, roots, offsets=False, cache_max=None):
-        super().__init__(name)
+    def __init__(self, name, tool, roots, offsets=False, cache_max=None, how='tsv'):
+        self.gz = how == 'gz'
+        super().__init__(name + GZIP_SUFFIX if self.gz else name)
         self.tool = tool
         # as the walk names them: os.path.join() gives root/name even for a root given as 'root/'
         self.roots = frozenset(r.rstrip('/') or '/' for r in roots)
@@ -113,7 +135,8 @@ class IndexWriter(RankFile):
         """Open the file and write its header, unless done already (write() does it at the
         first record)."""
         if self.file is None:
-            self.file = open(self.name, 'w', encoding='utf-8')
+            self.file = (gzip.open(self.name, 'wt', encoding='utf-8', compresslevel=GZIP_LEVEL) if self.gz
+                         else open(self.name, 'w', encoding='utf-8'))
             roots = ''.join(f'\troot={encode_path(r)}' for r in sorted(self.roots))
             self.file.write(f'{HEADER}\ttool={self.tool}\tcolumns={",".join(self.columns)}{roots}\n')
 
@@ -236,9 +259,17 @@ def read_header(line):
     return Header(tool, columns, roots)
 
 
+def open_index(name):
+    """An index file opened for reading as text: through gzip if it starts with gzip's
+    magic (--index=gz), plain otherwise, whatever its name."""
+    with open(name, 'rb') as f:
+        gz = f.read(2) == GZIP_MAGIC
+    return gzip.open(name, 'rt', encoding='utf-8') if gz else open(name, encoding='utf-8')
+
+
 def read_index(name):
-    """(header, records) of one index file: the Header and a generator of its Records."""
-    f = open(name, encoding='utf-8')
+    """(header, records) of one index file, plain or gzip: the Header and a generator of its Records."""
+    f = open_index(name)
     header = read_header(f.readline())
     parsers = [_PARSERS.get(c, _int) for c in header.columns]
 

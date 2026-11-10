@@ -35,7 +35,8 @@ Outputs (in the working directory, written by rank 0):
   each worker's walk), for `python -m pstats`.
 - `--index`: walkstat's `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with
   `--summary-prefix`), one per worker; walktar's `<tar>.idx` beside each tar (see
-  [Indexes](#indexes-the-sweeps-part-c)).
+  [Indexes](#indexes-the-sweeps-part-c)). `--index=gz` writes the same through gzip, with
+  `.gz` on each name.
 
 ## Filtering (phase 4)
 
@@ -294,6 +295,14 @@ more the default 16 is already past the point where more threads pay.
 every rank in parallel with no coordination (`common/index.py`). Off by default; walksync
 has none.
 
+- **`--index=gz`** writes the same records through gzip, `.gz` on each name
+  (`index-r001.tsv.gz`, `output-r001-b00003.tar.idx.gz`). Each file is one gzip stream
+  at level 6, gzip's own default. Python's `gzip.open()` defaults to 9, which costs ~4×
+  the CPU for ~4% less. The index is 7–12× smaller and the walk no slower (indexes-2,
+  step A, below). `zcat` reads it, and `cat` of `.gz` files is still one valid gzip file.
+  A rank killed mid-file leaves a stream without its end, which a reader refuses, where
+  a plain file ends in a partial line.
+
 - **walkstat:** `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with `--summary-prefix`)
   in the working directory, every entry the rank counted: a parallel metadata dump at walk
   speed, like a GPFS policy-engine list or `find -ls`. A rank that counted nothing leaves
@@ -352,8 +361,8 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   atimes as it found them; `--read-ahead 0` reads through `tar.add()`, which does not.
   `tarfile` records a member's offsets only when it reads a tar, so the writer derives
   them from the tar's position around each add.
-- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` checks each
-  file for closure, the `E` paths for repeats across the files, and with `--find` the `E`
+- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` (plain or gzip,
+  told apart by the first two bytes) checks each file for closure, the `E` paths for repeats across the files, and with `--find` the `E`
   set against `find` of the header's roots (walkstat: below the roots, as Total Count;
   walktar: the roots too, as the tars). The tests run the same checks on the golden tree
   and on a big directory whose batches move between ranks, unfiltered and filtered, with
@@ -905,3 +914,42 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
     it where the tail matters: at 8 nodes it is the difference between 24 and ~30 GiB/s.
   - **Worker CPU per rank halves per doubling**, as the work per rank does; the Manager's
     CPU is its wall (it spins in the receive).
+
+### indexes-2, step A (`--index=gz`)
+
+- **`--index=gz`** on walkstat and walktar ([Indexes](#indexes-the-sweeps-part-c) above):
+  the same records through gzip, one stream per file, `.gz` on each name. `--index` alone
+  is the plain TSV, as before. `read_index()` and the checkers read either by the file's
+  first two bytes, whatever its name. Golden output unchanged.
+- **Measured on derecho** (job 8142389, `hfu-bench/benchD.pbs`): 1 node × 32 ranks,
+  `--cpu-bind depth --depth 2`, scratch trees. A warm-up run comes first, then two rounds
+  of no index, `--index` and `--index=gz`. The checkers ran on round 1's indexes: closure,
+  no `E` path twice, the `E` set against `find`, and each walktar index against its
+  tar's members, offsets and bytes. All passed, for both kinds. Sizes are apparent sizes
+  (`stat`), since `du` under-reports on Lustre right after a write. CPU is the workers'
+  mean user+sys per rank.
+
+  | walk | no index | `--index` | `--index=gz` | index: plain → gz |
+  |---|---|---|---|---|
+  | walkstat `million` (1,000,000 empty files, one directory) | 2.27, 2.22 s; CPU 2.09, 2.09 s | 2.31, 2.27 s; CPU 2.18, 2.11 s | 2.38, 2.36 s; CPU 2.23, 2.20 s | 137.3 → 13.4 MiB (10.2×), 31 files |
+  | walkstat `manyfiles` (200,000 × 1 MiB, one directory) | 0.75, 0.75 s; CPU 0.56, 0.56 s | 0.71, 0.76 s; CPU 0.58, 0.61 s | 0.74, 0.75 s; CPU 0.61, 0.63 s | 30.7 → 2.5 MiB (12.3×), 31 files |
+  | walktar `manyfiles` → scratch | 41.7, 41.9 s; CPU 35.7, 34.8 s | 43.0, 41.4 s; CPU 36.0, 35.3 s | 41.7, 41.7 s; CPU 34.7, 35.5 s | 34.6 → 4.6 MiB (7.5×), 201 files |
+  | walktar `million` → scratch (1,000 tars of headers) | 58.3, 64.3 s; CPU 17.6, 17.6 s | 57.1, 59.6 s; CPU 18.1, 18.4 s | 59.1, 65.9 s; CPU 18.2, 18.5 s | 151.5 → 19.9 MiB (7.6×), 1,001 files |
+
+  - **gzip costs ~3 µs of CPU per record and nothing in wall time.** On `million` each
+    rank writes ~32,000 records, and gzip adds ~0.1 s of CPU per rank over the plain
+    index, in walkstat and in walktar alike. That is under the round-to-round noise of
+    every wall time above. walktar `million`, all metadata and no data, is the index's
+    worst case: the plain index adds 0.5–0.8 s of CPU per rank to 17.6 s, and the walls
+    spread 57–66 s with or without it.
+  - **The index shrinks 7–12×.** A walkstat record is ~144 bytes of text, mostly the path,
+    which repeats from line to line. walktar's records compress less (7.5×), since its two
+    offset columns change on every line.
+  - **The checkers read gzip at about the same speed**: 16.4 s plain and 17.4 s gzip for
+    walkstat's million records, 19.1 and 22.2 s for walktar's, 3.4 and 3.7 s for
+    `manyfiles`.
+  - The bench's tar check reads a few sampled files per tar without `O_NOATIME`, so those
+    files' atimes move between runs. The tools' own reads do not.
+  - Nothing stayed on scratch. A first submission (job 8142303) was stopped after its
+    walkstat rows, because the bench passed the checkers unexpanded globs; its tars were
+    deleted.

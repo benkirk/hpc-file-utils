@@ -24,10 +24,11 @@ and on scratch, whatever its size up to a few MiB; one stream waiting on each in
 thread writes the current one into the tar, in order. tarfile's own gettarinfo() and
 addfile() build and write each member, so the members are exactly tar.add()'s.
 
---index (the sweep's Part C; common/index.py): one index beside each tar, <tar>.idx, with
-every member's lstat and its offsets in the tar. The lstat is the found one, from before
-the member was read: the reader's, in open_member(), for a regular file; one taken just
-before tar.add() for anything else and with --read-ahead 0. The readers also open with
+--index (the sweep's Part C; common/index.py): one index beside each tar, <tar>.idx
+(<tar>.idx.gz with --index=gz), with every member's lstat and its offsets in the tar. The
+lstat is the found one, from before the member was read: the reader's, in open_member(),
+for a regular file; one taken just before tar.add() for anything else and with
+--read-ahead 0. The readers also open with
 O_NOATIME where the kernel allows it (the owner, or root), so a root run leaves the atimes
 as it found them.
 """
@@ -118,11 +119,12 @@ class TarWorker(StatWorker):
         return None
 
     def tar_index(self, tarname):
-        """--index: the index written beside a tar, <tarname>.idx, opened now (an empty tar
-        has an empty index) and closed with the tar; None without."""
+        """--index: the index written beside a tar, <tarname>.idx (.idx.gz with
+        --index=gz), opened now (an empty tar has an empty index) and closed with the tar;
+        None without."""
         if not self.options.index:
             return None
-        index = IndexWriter(tarname + '.idx', 'walktar', self.options.dirs, offsets=True)
+        index = IndexWriter(tarname + '.idx', 'walktar', self.options.dirs, offsets=True, how=self.options.index)
         index.open()
         return index
 
