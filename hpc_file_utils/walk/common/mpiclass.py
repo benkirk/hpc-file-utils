@@ -15,7 +15,7 @@ class MPIClass:
         self.rank   = self.comm.Get_rank()
         self.nranks = self.comm.Get_size()
         self.options = self.comm.bcast(options)
-        self.stats = WalkStats(self.options.heap_size)
+        self.stats = WalkStats(self.options.heap_size, self.options.now)
         self.total_errors = 0 # sum over all ranks, set in collect()
 
     def rank_info(self):
@@ -37,6 +37,7 @@ class MPIClass:
         result = self.comm.reduce(self.stats, op=WalkStats.merged, root=0)
         if result is not None:
             result.ranks.sort()
+            result.resolve_names()         # uid and gid names, once each, here only
             # walkstat's directories split over stat batches: their parts are all here now
             result.finish_directories(self.options.threshold_count, self.options.threshold_size,
                                       self.options.filters is not None)

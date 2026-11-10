@@ -11,7 +11,7 @@ import pwd
 import stat
 import time
 from collections import Counter, defaultdict
-from functools import partial
+from functools import lru_cache, partial
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.heaps import MaxHeap
@@ -67,11 +67,29 @@ THREE_YEARS = 3*SECONDS_IN_YEAR
 FIVE_YEARS  = 5*SECONDS_IN_YEAR
 SEVEN_YEARS = 7*SECONDS_IN_YEAR
 
-NOW_TIMESTAMP = time.time()
+
+@lru_cache(maxsize=None)
+def uid_name(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f'uid-{uid}'
+
+
+@lru_cache(maxsize=None)
+def gid_name(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return f'gid-{gid}'
 
 
 class IDCounts:
-    """Bytes and entries owned by one uid or gid."""
+    """Bytes and entries owned by one uid or gid. The workers carry the id only; rank 0
+    resolves the names once, after the reduction (WalkStats.resolve_names()), instead of
+    every rank asking sssd for every id it meets."""
+    _id_to_name = None   # UIDCounts and GIDCounts: the lookup
+
     def __init__(self):
         self.id = None
         self.name = None
@@ -79,9 +97,10 @@ class IDCounts:
         self.nitems = 0
 
     def set_id(self, id_in):
-        if id_in != self.id:
-            self.id = id_in
-            self.name = self._id_to_name(id_in)
+        self.id = id_in
+
+    def resolve(self):
+        self.name = self._id_to_name(self.id)
 
     def add(self, other):
         self.nbytes += other.nbytes
@@ -90,21 +109,13 @@ class IDCounts:
     def to_dict(self):
         return {'name': self.name, 'nbytes': self.nbytes, 'nitems': self.nitems}
 
+
 class UIDCounts(IDCounts):
-    @staticmethod
-    def _id_to_name(uid):
-        try:
-            return pwd.getpwuid(uid).pw_name
-        except KeyError:
-            return f'uid-{uid}'
+    _id_to_name = staticmethod(uid_name)
+
 
 class GIDCounts(IDCounts):
-    @staticmethod
-    def _id_to_name(gid):
-        try:
-            return grp.getgrgid(gid).gr_name
-        except KeyError:
-            return f'gid-{gid}'
+    _id_to_name = staticmethod(gid_name)
 
 
 # heaps of (key, DirEntry) or (key, FileEntry), largest key first
@@ -153,8 +164,9 @@ COUNTERS = (
 class WalkStats:
     """One rank's accumulators (or, after merge(), several ranks')."""
 
-    def __init__(self, heap_size):
+    def __init__(self, heap_size, now=None):
         self.heap_size = heap_size
+        self.now = time.time() if now is None else now   # the job's one "now" (options.now)
         for name in COUNTERS:
             setattr(self, name, 0)
         self.st_modes = defaultdict(int)
@@ -269,7 +281,7 @@ class WalkStats:
 
             # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
             if max_atime > 10:
-                age = NOW_TIMESTAMP - max_atime
+                age = self.now - max_atime
                 name = ('nbytes_dirs_7yrs' if SEVEN_YEARS < age else
                         'nbytes_dirs_5yrs' if FIVE_YEARS < age else
                         'nbytes_dirs_3yrs' if THREE_YEARS < age else None)
@@ -277,6 +289,11 @@ class WalkStats:
                     heaps[name].add((nbytes, de))
                     if single_owner is not None:
                         user_heaps[name][single_owner].add((nbytes, de))
+
+    def resolve_names(self) -> None:
+        """The uid and gid names, looked up once each (rank 0, after the reduction)."""
+        for counts in (*self.uids.values(), *self.gids.values()):
+            counts.resolve()
 
     def finish_directories(self, threshold_count: int, threshold_size: int, filtered: bool) -> None:
         """After the reduction: list the directories that were split over stat batches.

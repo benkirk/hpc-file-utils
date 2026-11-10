@@ -3,6 +3,7 @@ ones here, each tool's own from its Tool (walk/tools.py, common/tool.py)."""
 
 import argparse
 import os
+import time
 
 from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters, parse_size_option
 from hpc_file_utils.walk.tools import TOOLS
@@ -67,7 +68,10 @@ def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Names
         else:
             args.threshold_size = parse_size_option(args.threshold_size, '--threshold-size')
 
-        args.filters = compile_filters(args)   # None without a filter
+        # one "now" for the whole job: the filters' ages and the reports' 3/5/7-year
+        # buckets measure from it on every rank (it travels with the options)
+        args.now = time.time()
+        args.filters = compile_filters(args, args.now)   # None without a filter
     except ValueError as e:
         parser.error(str(e))
 

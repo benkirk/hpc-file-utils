@@ -873,6 +873,29 @@ contract (see the rules above). Part D changes only how they are flushed.
   gone (A1).
 - Golden output never changed through any of it; `make test` after every commit.
 
+### Part E3/E4, done (2026-11-09, three commits)
+- **E3a:** `protocol.Tag(IntEnum)` replaces `TAGS` and `MPIClass.tags` (16 sites). `WalkStats`'
+  seven scalar counters are named once in `COUNTERS`, which `__init__` zeroes and `merge()`
+  sums: the plan's dataclass part would have renamed every `st.num_files` across the tools
+  and tests, and the tuple gives the same guarantee flat. The Manager's 17 counters are a
+  `Counters` dataclass, `self.c` (`maxnumdirs` moved there from `MPIClass`); the `-->` lines
+  and `print_counters()` are unchanged.
+- **E3b:** `tests/helpers.py` `make_options(app, **overrides)` goes through `parse_options()`
+  on the current directory, so every attribute exists with its real default; the hand-built
+  `SimpleNamespace`s in `test_worker.py`, `test_tar_members.py` and `test_report.py` use it,
+  and the three `getattr(options, 'filters', None)` sites read the attribute. Type hints on
+  `tool`, `log`, `options`, `filters` and `stats`' public signatures.
+- **E4:** `args.now = time.time()` once on rank 0 in `parse_options()`, given to
+  `compile_filters()` and, through the options bcast, to every rank's `WalkStats(heap_size,
+  now)`; `record_directory()`'s 3/5/7-year buckets use it (`NOW_TIMESTAMP` is gone).
+  `IDCounts.set_id()` keeps the id only; `WalkStats.resolve_names()` fills the names once
+  on rank 0 in `collect()`, through `lru_cache`d `uid_name()`/`gid_name()`. The golden
+  userlists are unchanged (the names are the same names, looked up once instead of on every
+  rank).
+- One MPI test, `test_walkstat_stats_a_big_directory_on_every_rank`, failed once in a full
+  local run under load and passed 3/3 alone: its "at least two ranks took a batch" check is
+  timing-dependent, as its docstring says.
+
 ---
 
 ## 6. Part E: Pythonic cleanup, and what not to "modernize"
