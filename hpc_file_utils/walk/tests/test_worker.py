@@ -305,13 +305,15 @@ def test_walktar_scan_stats_nothing_but_subdirectories(tree, monkeypatch):
     (1000, 250, [3, 2]),                       # by the real st_size: 100-byte files close a batch at >= 250
     (1000, 1 << 30, [5]),
 ])
-def test_stat_batches_close_file_batches_by_count_or_real_size(tree, batch_files, batch_size, expected):
+@pytest.mark.parametrize("read_ahead", [0, 4])
+def test_stat_batches_close_file_batches_by_count_or_real_size(tree, batch_files, batch_size, expected, read_ahead):
     """--batch-files and --batch-size keep their meaning: the rank processing a stat batch
-    closes FileBatches by the files it has stat'ed, and they stay on its own list
-    (manager.py, point 1), processed before its next 'ready'."""
+    closes FileBatches by the files it has stat'ed (in the reader threads with
+    --read-ahead, in order), and they stay on its own list (manager.py, point 1),
+    processed before its next 'ready'."""
     for i in range(5):
         (tree / f"f{i}").write_bytes(b"x" * 100)
-    w = _batch_worker(batch_files, batch_size)
+    w = _batch_worker(batch_files, batch_size, read_ahead)
     w.local_dirs.append(str(tree))
     w.drain_local_work()
     assert (w.local_dirs, w.local_batches, w.batch) == ([], [], [])
@@ -323,6 +325,23 @@ def test_stat_batches_close_file_batches_by_count_or_real_size(tree, batch_files
     assert (w.stats.num_items, w.stats.total_size) == (5, 500)
     w.stats.finish_directories(1, 0, False)    # a directory split over stat batches is listed by rank 0
     assert [e.nitems for _, e in w.stats.heaps["nitems_dirs"].top()] == [5]   # listed once, whole
+
+
+@pytest.mark.parametrize("read_ahead", [0, 4])
+def test_a_vanished_file_costs_walktar_one_error(tree, read_ahead, capsys):
+    """A name that fails its lstat, in a reader thread or not, counts one error and the
+    rest of the batch is archived in order."""
+    for name in ("a", "b", "c", "d"):
+        (tree / name).write_bytes(b"x")
+    w = _batch_worker(1000, 1 << 30, read_ahead)
+    w.process_directory(str(tree))
+    (tree / "b").unlink()                      # between the scan and its stat batch
+    [batch] = w.local_batches
+    w.process_batch(batch)
+    assert (w.stats.num_items, w.stats.num_errors) == (3, 1)
+    assert w.batch == [str(tree / n) for n in batch.names if n != "b"]      # the batch's order
+    assert "Cannot stat" in capsys.readouterr().err
+    _tar_members(w)                            # shuts the readers down
 
 
 def test_a_file_that_became_a_directory_is_counted_not_archived(tree):

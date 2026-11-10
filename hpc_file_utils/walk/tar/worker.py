@@ -121,18 +121,42 @@ class TarWorker(StatWorker):
                 self.error('add to tar file', error)
                 return False
 
+    def reader_pool(self):
+        """The --read-ahead reader threads, started at their first use."""
+        if self.readers is None:
+            self.readers = ThreadPoolExecutor(max_workers=self.options.read_ahead, thread_name_prefix='reader')
+        return self.readers
+
     def read_ahead(self, paths):
         """(path, Future of open_member(path)) in order, keeping --read-ahead files in the
         reader threads ahead of the one yielded (in_flight()); (path, None) with
         --read-ahead 0. Files opened but never archived (an error broke the loop) are closed."""
         depth = self.options.read_ahead
-        if depth and self.readers is None:
-            self.readers = ThreadPoolExecutor(max_workers=depth, thread_name_prefix='reader')
+        if depth:
+            self.reader_pool()
         return self.in_flight(paths, self.open_ahead, depth, self.discard_member)
 
     def open_ahead(self, path):
         """Start a reader on a file: its open_member() Future."""
         return self.readers.submit(open_member, path)
+
+    def lstats(self, dirname, names):
+        """A stat batch's lstats, --read-ahead of them at a time in the reader threads,
+        yielded in order (in_flight()); walkstat's one at a time with --read-ahead 0. On
+        campaign GPFS under the readers' load one lstat took ~9 ms, so a batch's 1,000 in a
+        row kept a rank's readers idle for a quarter of its time (the walk README, Part B)."""
+        depth = self.options.read_ahead
+        if depth == 0:
+            yield from super().lstats(dirname, names)
+            return
+        submit = self.reader_pool().submit
+        join = os.path.join
+        paths = (join(dirname, name) for name in names)
+        for path, future in self.in_flight(paths, lambda p: submit(os.lstat, p), depth):
+            try:
+                yield path, future.result()
+            except OSError as error:
+                yield path, error
 
     @staticmethod
     def discard_member(future):

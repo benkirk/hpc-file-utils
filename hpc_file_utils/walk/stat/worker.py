@@ -99,12 +99,9 @@ class StatWorker(BaseWorker):
         count_dirs = select is not None
         process_file = self.process_file
         totals = DirTotals()
-        for name in self.ticked(names):
-            path = os.path.join(dirname, name)
-            try:
-                statinfo = os.lstat(path)
-            except OSError as error:
-                self.error('stat', error)
+        for path, statinfo in self.lstats(dirname, self.ticked(names)):
+            if isinstance(statinfo, OSError):
+                self.error('stat', statinfo)
                 continue
             if select is not None and not select(statinfo):
                 st.num_unmatched += 1
@@ -121,6 +118,18 @@ class StatWorker(BaseWorker):
             self.list_directory(dirname, totals)
         else:                                   # the last part of a split directory
             st.add_partial_dir(dirname, totals)
+
+    def lstats(self, dirname, names):
+        """(path, lstat result) for a stat batch's names, in order, an OSError in place of
+        the result for a name that could not be stat'ed: one call at a time here (walktar
+        overlaps them in its reader threads)."""
+        join = os.path.join
+        for name in names:
+            path = join(dirname, name)
+            try:
+                yield path, os.lstat(path)
+            except OSError as error:
+                yield path, error
 
     def process_file(self, path, statinfo):
         """A stat batch's entry, just stat'ed and counted: the hook a tool fills (walktar

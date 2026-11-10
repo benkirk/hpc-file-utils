@@ -625,7 +625,24 @@ GPFS directory, walktar's scanning rank, which stats every file, sets the pace.
   - The halved worker CPU on VIT (~210 → ~105 s per rank) is main's idle ranks spinning in
     MPI's receive, not work saved: user+sys includes the spin, so a waiting rank costs as
     much as a working one (the Manager's CPU equals its wall time).
-  - `--profile` run and `--cpu-bind depth` rows: below, when they land.
+  - **`--profile` (job 8129483, `hfu-bench/newprof`, 14 intact worker profiles; the run's
+    exit 255 was the launcher's cleanup racing, since fixed):** per worker rank, of ~400 s,
+    `posix.lstat` 97 s tottime, nearly all of it `StatWorker.process_batch` (~95 s cum
+    beyond `tar_batch`'s 290): ~9 ms per lstat on campaign GPFS under the readers' load,
+    serial, on the worker thread. The stat batches' rate did slow as the scanner's had.
+  - **`--cpu-bind depth --depth 4`** (job 8128929): `bigdir` 417.0 s (unchanged), `manyfiles`
+    **45.0 s** against 58.5–58.8: the one-CPU binding costs the reader threads 23% on small
+    files. The VIT row with the same binding: job 8129484 (below).
+- **B2, the second commit: the stat batch's lstats in the reader threads.**
+  `StatWorker.process_batch` takes its stats from `lstats(dirname, names)`, a generator of
+  `(path, lstat result or OSError)` in order (walkstat: one call at a time, as before).
+  `TarWorker.lstats` overlaps them `--read-ahead` deep in the reader pool through
+  `in_flight()`, so the order, the counting and the tars are unchanged; `--read-ahead 0` is
+  the serial path. walkstat on campaign GPFS pays the same ~6–9 ms per serial lstat, so
+  the same trick (a thread pool for its stat batches, a new option) is the obvious next
+  walkstat speed-up; not done here, it is a feature. Re-measured: job 8129867 (mainB
+  against `hfu-bench/newB2`, VIT, two rounds) and 8129868 (its profile): the rows are in
+  the walk README's Part B.
 
 ---
 

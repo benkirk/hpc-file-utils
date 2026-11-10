@@ -507,11 +507,27 @@ rerun with nothing changed copies nothing: it costs only the walk.
     (phase 5.5's question 5), not the scan.
   - **Part B evens the load**: `main`'s scanning rank archived 3.9–4.3 GiB against the others'
     ~42; the least any rank archives is now 31–35 GiB.
-  - **The VIT rounds are 6–11% slower with Part B**, both rounds, so not noise. Each rank's
-    stat batch (1,000 lstats on GPFS) runs on the worker thread with its reader threads
-    idle, so for that fraction of its time the rank reads nothing and the node's aggregate
-    drops by that share; `main` did its stats on one rank, overlapped with the other 30's
-    reads. A `--profile` run quantifies it (below). The csgteam `scan_dirs` array (8 subjobs
-    of 1 × 128) was running throughout these campaign runs, as during Part A's.
+  - **The VIT rounds are 6–11% slower with Part B**, both rounds, so not noise. A
+    `--profile` run (job 8129483, 14 intact worker profiles) says why: of a worker's ~400 s,
+    97 s are in `lstat`, nearly all of it the stat batches' serial calls on the worker
+    thread, about 9 ms each on campaign GPFS under the readers' load (an unloaded GPFS
+    lstat costs ~1 ms, phase 5.5), with the rank's 16 readers idle meanwhile. So each rank
+    read nothing for a quarter of its time, where `main` did those stats on one rank,
+    overlapped with the other 30's reads. Hence the next entry, Part B's second commit. The
+    csgteam `scan_dirs` array (8 subjobs of 1 × 128) was running throughout these campaign
+    runs, as during Part A's.
   - **The halved CPU on VIT** (199–219 → 104–107 s per rank) is mostly `main`'s idle ranks
     spinning in MPI, not work saved.
+  - **`--cpu-bind depth --depth 4`** (job 8128929, Part B, one round): `bigdir` 417.0 s, as
+    before; **`manyfiles` 45.0 s against 58.5–58.8** (4.35 GiB/s), so PALS's one CPU per
+    rank costs the 16 reader threads about 23% on small files, and nothing on big ones.
+    Phase 5.5's question 2 is answered for scratch; the VIT row with the same binding is
+    below.
+- **Part B's second commit: the stat batch's lstats in the reader threads.** walktar's
+  `lstats()` runs a stat batch's `os.lstat` calls `--read-ahead` at a time in the reader
+  pool, yielded in order (the same `in_flight()` as the reads), so the counting, the
+  batches and the tars are as before and `--read-ahead 0` is the serial path. walkstat's
+  stat batches stay serial (it has no threads; a pool for them would be its own option,
+  and the same ~6–9 ms per GPFS lstat says it would pay).
+  - VIT re-measured (`main` 3ba9582 against this, two rounds, and `--cpu-bind depth`):
+    rows to follow.
