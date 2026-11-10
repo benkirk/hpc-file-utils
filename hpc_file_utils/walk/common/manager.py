@@ -78,7 +78,6 @@ those probes kept the Manager busy and made workers wait; see walk/README.md.)
 """
 
 import heapq
-import sys
 from collections import deque
 
 from hpc_file_utils.walk.common.formatting import format_number, format_size
@@ -90,12 +89,10 @@ def _ms(seconds):
     return '{:.3f} ms'.format(1e3 * seconds)
 
 
-################################################################################
 class Manager(MPIClass):
 
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self,options=None):
-        MPIClass.__init__(self,options)
+        super().__init__(options)
         MPI = self.MPI
         self.nsends = 0
         self.nrecvs = 0
@@ -128,26 +125,15 @@ class Manager(MPIClass):
         self.sum_ready_wait = 0.0    # how long each 'ready' was held before its 'execute'
         self.max_ready_wait = 0.0
         self.max_terminate_wait = 0.0
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def finished(self):
         """Nothing queued here and every worker idle: nothing left anywhere (see module doc)."""
         return not self.dirs and not self.batches and len(self.idle) == self.nworkers
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def update_progress(self, rank, payload):
         """payload: the (items, bytes, queued, extra) every worker message carries (protocol.py)."""
         self.progress.update(rank, payload)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def written(self):
         """(bytes, files, archives) written so far, summed over the workers' 'extra'
         payloads; None when no worker sends one (walkstat)."""
@@ -156,9 +142,6 @@ class Manager(MPIClass):
             return None
         return tuple(sum(col) for col in zip(*extras))
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def progress_extra_status(self, elapsed, interval=None):
         """Text appended to the progress line: tools that write (walktar) report bytes
         written and the rate, now (over 'interval', since the last line) and on average.
@@ -173,15 +156,13 @@ class Manager(MPIClass):
         self.last_written = nbytes
         return status
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def report_progress(self, forceprint=False):
         curtime = self.MPI.Wtime()
         deltaprog = (curtime - self.progress_time)
 
         if not forceprint:
-            if deltaprog < self.options.progress: return
+            if deltaprog < self.options.progress:
+                return
 
         self.progress_time = curtime
         status = progress_line(self.progress.total_items, self.progress.total_bytes,
@@ -194,14 +175,8 @@ class Manager(MPIClass):
                 format_number(len(self.dirs)), format_number(self.progress.total_queued), len(self.idle),
                 format_number(self.nsends), format_number(self.nrecvs), format_number(self.nshares))
 
-        print(status)
+        print(status, flush=True)
 
-        sys.stdout.flush()
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def handle(self, rank, tag, msg):
         """Act on one message from worker 'rank'."""
         if tag == self.tags['dir_reply']:
@@ -221,7 +196,8 @@ class Manager(MPIClass):
             self.batches.extend(batches)
             self.ndirs_shared += len(dirs)
             self.nbatches_shared += len(batches)
-            if not dirs and not batches: self.nshares_empty += 1
+            if not dirs and not batches:
+                self.nshares_empty += 1
             self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
 
         elif tag == self.tags['progress']:
@@ -237,11 +213,7 @@ class Manager(MPIClass):
 
         else:
             raise RuntimeError('Manager: unexpected tag {} from rank {}'.format(tag, rank))
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def dispatch(self):
         """Answer idle workers' 'ready' with work, while we have both.
 
@@ -265,11 +237,7 @@ class Manager(MPIClass):
             wait = self.MPI.Wtime() - when
             self.sum_ready_wait += wait
             self.max_ready_wait = max(self.max_ready_wait, wait)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def request_shares(self):
         """Idle workers and nothing to give them: ask busy workers to share their stacks.
 
@@ -287,11 +255,7 @@ class Manager(MPIClass):
             self.comm.send(None, dest=rank, tag=self.tags['share']); self.nsends += 1
             self.share_pending.add(rank)
             self.nshares += 1
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def run(self):
         Wtime = self.MPI.Wtime
 
@@ -348,11 +312,6 @@ class Manager(MPIClass):
         # OK, messages sent, report final progress
         self.report_progress(forceprint=True)
 
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def print_counters(self):
         """The Manager's load: how busy it was, and how long it held each 'ready'."""
         loop_time = self.wait_time + self.busy_time
@@ -362,6 +321,4 @@ class Manager(MPIClass):
             self.wait_time, loop_time, 100 * self.wait_time / loop_time if loop_time else 0))
         print('  --> Manager ready -> execute: {} answered, held {} mean, {} max (includes waiting for work)'.format(
             format_number(self.ndispatches), _ms(self.sum_ready_wait / max(self.ndispatches, 1)),
-            _ms(self.max_ready_wait)))
-        sys.stdout.flush()
-        return
+            _ms(self.max_ready_wait)), flush=True)

@@ -59,7 +59,7 @@ def parse_options(appname, argv=None):
             if args.batch_size < 1:
                 parser.error('--batch-size must be at least 1 byte')
 
-        if 0 >= args.progress:
+        if args.progress <= 0:
             args.progress = float('inf')
 
         if '0' == args.threshold_size:

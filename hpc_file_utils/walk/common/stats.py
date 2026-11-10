@@ -191,7 +191,8 @@ class WalkStats:
         g.nbytes += item_size
 
         if stat.S_ISDIR(fmode):
-            if count_dirs: self.st_modes['dir'] += 1
+            if count_dirs:
+                self.st_modes['dir'] += 1
             return
 
         self.num_files += 1
@@ -251,7 +252,7 @@ class WalkStats:
 
         # are the contents owned by a single user id?  If so, track per-user info as well
         # (None if not: uid 0 is a valid owner, and root runs the scans)
-        single_owner = next(iter(totals.uids)) if 1 == len(totals.uids) else None
+        single_owner = next(iter(totals.uids)) if len(totals.uids) == 1 else None
 
         # granular directory tracking by timestamp thresholds.
         # check against thresholds to avoid tracking users that only have
@@ -263,15 +264,15 @@ class WalkStats:
                 user_heaps['nbytes_dirs'][single_owner].add((nbytes, de))
 
             # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
-            if 10 < max_atime:
+            if max_atime > 10:
                 age = NOW_TIMESTAMP - max_atime
                 name = ('nbytes_dirs_7yrs' if SEVEN_YEARS < age else
                         'nbytes_dirs_5yrs' if FIVE_YEARS < age else
                         'nbytes_dirs_3yrs' if THREE_YEARS < age else None)
                 if name is not None:
                     heaps[name].add((nbytes, de))
-                    if single_owner is not None: user_heaps[name][single_owner].add((nbytes, de))
-        return
+                    if single_owner is not None:
+                        user_heaps[name][single_owner].add((nbytes, de))
 
     def finish_directories(self, threshold_count, threshold_size, filtered):
         """After the reduction: list the directories that were split over stat batches.

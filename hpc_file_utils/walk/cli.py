@@ -34,7 +34,7 @@ def main(app, argv=None):
     # option (or --help) ends every rank with rank 0's exit status rather than a hang.
     args = None
     exit_status = 0
-    if 0 == rank:
+    if rank == 0:
         try:
             args = parse_options(app, argv)
         except SystemExit as e:          # argparse errors and --help
@@ -52,7 +52,7 @@ def main(app, argv=None):
         return exit_status
 
     if size < 2:
-        if 0 == rank:
+        if rank == 0:
             print('ERROR: {} needs at least 2 MPI ranks (a manager and a worker)'.format(app), file=sys.stderr)
         return 2
 
@@ -71,14 +71,13 @@ def main(app, argv=None):
             print('Processing Directories: {}'.format(args.dirs))
         for line in tool.banner(args):
             print(line)
-        print('Running {} on {} MPI ranks'.format(app, size))
-        sys.stdout.flush()
+        print('Running {} on {} MPI ranks'.format(app, size), flush=True)
         walker = Manager(options=args)
 
     run_walker(walker, rank)
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
-    if 0 == rank:
+    if rank == 0:
         report(walker, stats, tool)
 
     # exit-status policy: collect() summed the error counts on every rank
@@ -115,15 +114,13 @@ def report(manager, stats, tool):
 
     print('\n'.join(balance_lines(stats, manager.walk_elapsed)))
     if options.verbose:
-        print('\n'.join(rank_lines(stats)))
-    sys.stdout.flush()
+        print('\n'.join(rank_lines(stats)), flush=True)
 
     tool.report(manager, stats)
 
     if stats.num_errors:
         print('--> {} entries could not be scanned (see stderr)'.format(format_number(stats.num_errors)))
-    print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')))
-    sys.stdout.flush()
+    print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')), flush=True)
 
 
 def walkstat():

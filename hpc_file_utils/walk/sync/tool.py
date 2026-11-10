@@ -22,7 +22,6 @@ class SyncTool(Tool):
         parser.add_argument('--rsync', default=None, help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
         parser.add_argument('--rsync-opts', default='', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to {})'.format(' '.join(RSYNC_OPTS)))
         parser.add_argument('--rsyncs', default=1, type=int, help='rsyncs per copy batch, side by side, each over a K-th of its files: a cold file costs one storage round trip whatever rsync does with it, and K rsyncs overlap them (8 measured best with one CPU per rank; default: 1, one rsync per batch)')
-        return
 
     def check(self, parser, args):
         """One source, its own rsync and filter rules, an existing destination that
@@ -51,7 +50,6 @@ class SyncTool(Tool):
         src, dest = os.path.realpath(args.dirs[0]), os.path.realpath(args.dest)
         if src == dest or dest.startswith(src.rstrip('/') + '/') or src.startswith(dest.rstrip('/') + '/'):
             parser.error('the source and the destination must not hold each other: {} -> {}'.format(src, dest))
-        return
 
     def banner(self, args):
         lines = ['Syncing {}/ -> {}/{}'.format(args.dirs[0], args.dest, ' (dry run: copying nothing)' if args.dry_run else '')]
@@ -66,15 +64,12 @@ class SyncTool(Tool):
 
     def report(self, manager, stats):
         """The sync summary; walkstat's reports (of what was compared) only when asked for."""
-        import sys
         from hpc_file_utils.walk.stat.report import write_reports
         from hpc_file_utils.walk.sync.report import sync_lines
         options = manager.options
-        print('\n'.join(sync_lines(stats, manager.walk_elapsed, options)))
-        sys.stdout.flush()
+        print('\n'.join(sync_lines(stats, manager.walk_elapsed, options)), flush=True)
         if options.summary_prefix or options.spreadsheet:
             write_reports(stats, options)
-        return
 
     def exit_status(self, total_errors, options):
         """Always 1 on errors: an incomplete copy must not look like a finished one."""

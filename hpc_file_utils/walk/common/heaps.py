@@ -9,7 +9,7 @@ cut-off does not depend on the order they were added (or on which rank saw them)
 from heapq import heapify, heappush, heappushpop, nlargest
 
 
-class MaxHeap():
+class MaxHeap:
 
     def __init__(self, top_n):
         self.h = []
@@ -33,14 +33,15 @@ class MaxHeap():
 
     def top(self, count=None):
         """The largest 'count' elements (all, if None), largest first."""
-        if not count: count = len(self.h)
+        if not count:
+            count = len(self.h)
         return nlargest(count, self.h)
 
     def get_list(self):
         return self.h
 
     def empty(self):
-        return 0 == len(self.h)
+        return len(self.h) == 0
 
     def __len__(self):
         return len(self.h)

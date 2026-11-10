@@ -51,7 +51,8 @@ def _header(title):
 
 
 def dir_lines(heap, title, count=LIST_LENGTH):
-    if heap.empty(): return []
+    if heap.empty():
+        return []
     lines = _header(title + ':') + [_columns(DIR_ROW, 'size', 'items', 'last access', 'path')]
     for _, de in heap.top(count):
         lines.append(DIR_ROW.format(format_size(de.nbytes), format_number(de.nitems),
@@ -60,7 +61,8 @@ def dir_lines(heap, title, count=LIST_LENGTH):
 
 
 def file_lines(heap, title, count=LIST_LENGTH):
-    if heap.empty(): return []
+    if heap.empty():
+        return []
     lines = _header(title + ':') + [_columns(FILE_ROW, 'size', 'last access', 'path')]
     for _, fe in heap.top(count):
         lines.append(FILE_ROW.format(format_size(fe.nbytes), format_date(fe.atime), printable(fe.path)))

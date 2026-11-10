@@ -19,7 +19,8 @@ def rank_lines(stats):
     row = '{:>6}  {:<%d}  {:>12}  {:>12}  {:>11}  {:>9}  {:>9}' % hosts
     lines = [SEP, columns(row, 'rank', 'host', 'dirs', 'files', 'size', 'waited s', 'max stack')]
     for r in stats.ranks:
-        if r.rank == 0: continue    # the Manager scans nothing
+        if r.rank == 0:         # the Manager scans nothing
+            continue
         lines.append(row.format(r.rank, r.host, format_number(r.num_dirs), format_number(r.num_files),
                                 format_size(r.nbytes), '{:.2f}'.format(r.wait_time),
                                 format_number(r.max_local_dirs)))

@@ -35,11 +35,8 @@ class StatBatch(NamedTuple):
                        # the directory's last batch, which lists it (whole) or adds the last part
 
 
-
-################################################################################
 class StatWorker(BaseWorker):
 
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
         if self.vanished(dirname):
             return
@@ -51,7 +48,8 @@ class StatWorker(BaseWorker):
         st.num_dirs += 1
         # with a selecting filter, directories are counted as entries that match (in count()),
         # as find does; without one, every directory walked, the roots included
-        if select is None: st.st_modes['dir'] += 1
+        if select is None:
+            st.st_modes['dir'] += 1
 
         subdirs = DirTotals()     # this directory's subdirectories, stat'ed here
         names = []                # its other entries, for the stat batches
@@ -91,11 +89,7 @@ class StatWorker(BaseWorker):
             st.add_partial_dir(dirname, subdirs)
         else:
             self.list_directory(dirname, subdirs)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
         """Stat one StatBatch of a directory's names, ours or shared, count them, and
         hand each one counted to process_file()."""
@@ -127,13 +121,8 @@ class StatWorker(BaseWorker):
             self.list_directory(dirname, totals)
         else:                                   # the last part of a split directory
             st.add_partial_dir(dirname, totals)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_file(self, path, statinfo):
         """A stat batch's entry, just stat'ed and counted: the hook a tool fills (walktar
         puts a non-directory in its open batch). walkstat needs nothing more. Only the
         batches' names come here, never the scan's subdirectories."""
-        return

@@ -6,12 +6,10 @@ from hpc_file_utils.walk.common.protocol import TAGS
 from hpc_file_utils.walk.common.stats import RankInfo, WalkStats
 
 
-################################################################################
 class MPIClass:
 
     tags = TAGS
 
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self, options=None):
         from mpi4py import MPI
         self.MPI = MPI
@@ -23,20 +21,13 @@ class MPIClass:
         self.maxnumdirs = 0
         self.stats = WalkStats(self.options.heap_size)
         self.total_errors = 0 # sum over all ranks, set in collect()
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def rank_info(self):
         """This rank's own counts for --verbose. The Manager waits for no work and keeps
         no stack: zeros; the workers fill those in."""
         return RankInfo(self.rank, platform.node(), self.stats.num_dirs, self.stats.num_files,
                         self.stats.total_size, 0.0, 0)
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def collect(self):
         """Combine every rank's stats on rank 0 (collective: every rank calls it).
 

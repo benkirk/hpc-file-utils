@@ -16,12 +16,10 @@ class Tool:
 
     def add_arguments(self, parser):
         """The tool's own options, after the common ones and the filters."""
-        return
 
     def check(self, parser, args):
         """After parsing, once the --dirs exist: the tool's consistency checks (parser.error)
         and derived settings; FileNotFoundError for a path of its own that is missing."""
-        return
 
     def banner(self, args):
         """Lines rank 0 prints before 'Running <tool> on N MPI ranks'."""
@@ -34,7 +32,6 @@ class Tool:
         summary and userlists, unless the tool says otherwise)."""
         from hpc_file_utils.walk.stat.report import write_reports
         write_reports(stats, manager.options)
-        return
 
     def exit_status(self, total_errors, options):
         """Errors are counted; only --fail-on-errors makes them fatal (2)."""
