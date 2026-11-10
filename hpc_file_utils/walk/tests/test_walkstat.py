@@ -14,8 +14,11 @@ GOLDEN_ARGS = ["--summary-prefix", "golden", "--threshold-size", "1MB"]
 
 
 # --batch-files 1 splits every directory over stat batches (phase 5): the directory lists
-# must still come out the same, from the parts added up after the reduction
-BATCHES = pytest.mark.parametrize("batches", [[], ["--batch-files", "1"]], ids=["default", "split"])
+# must still come out the same, from the parts added up after the reduction; and the same
+# with the batches' stats in --stat-threads threads (perf-1, step C)
+BATCHES = pytest.mark.parametrize("batches", [[], ["--batch-files", "1"], ["--stat-threads", "4"],
+                                              ["--batch-files", "3", "--stat-threads", "2"]],
+                                  ids=["default", "split", "threads", "split-threads"])
 
 
 @BATCHES

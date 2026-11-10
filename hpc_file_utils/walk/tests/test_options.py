@@ -43,6 +43,17 @@ def test_walktar_extras(tmp_path):
             parse_options("walkstat", ["--dirs", str(tmp_path), *opt])
 
 
+def test_walkstat_stat_threads(tmp_path):
+    """--stat-threads (perf-1, step C): walkstat's, 0 (serial) by default, never negative;
+    walktar's stat batches run in its --read-ahead threads instead."""
+    assert parse_options("walkstat", ["--dirs", str(tmp_path)]).stat_threads == 0
+    assert parse_options("walkstat", ["--dirs", str(tmp_path), "--stat-threads", "8"]).stat_threads == 8
+    with pytest.raises(SystemExit):
+        parse_options("walkstat", ["--dirs", str(tmp_path), "--stat-threads", "-1"])
+    with pytest.raises(SystemExit):
+        parse_options("walktar", ["--dirs", str(tmp_path), "--stat-threads", "4"])
+
+
 @pytest.mark.parametrize("args", [["--batch-files", "0"], ["--batch-size", "lots"], ["--batch-size", "0"],
                                   ["--tar-queue-depth", "5"], ["--read-ahead", "-1"]])
 def test_walktar_usage_errors(tmp_path, args, capsys):
