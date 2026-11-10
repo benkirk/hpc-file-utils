@@ -13,28 +13,13 @@ import tarfile
 
 import pytest
 
+from hpc_file_utils.walk.tests.conftest import BIG_DIR_FILES as NFILES   # the big_dir_tree fixture's
+
 pytestmark = pytest.mark.mpi
 
-NFILES = 400
-FILE_BYTES = 64 * 1024
 BATCHES_RE = re.compile(r"--> Batches: ([\d,]+) received in share replies, ([\d,]+) handed out; "
                         r"wrote ([\d,]+) files, .+ \(([\d,]+) bytes\) in ([\d,]+) archives")
 TAR_RE = re.compile(r"^output-r(\d+)-(b\d+|dirs)\.tar$")
-
-
-@pytest.fixture(scope="session")
-def big_dir_tree(tmp_path_factory):
-    """One directory of 400 x 64 KiB files, plus a few small directories beside it."""
-    root = tmp_path_factory.mktemp("bigdir") / "tree"
-    big = root / "big"
-    big.mkdir(parents=True)
-    data = os.urandom(FILE_BYTES)
-    for i in range(NFILES):
-        (big / f"file-{i:04d}.dat").write_bytes(data)
-    for d in ("a", "a/b", "c"):
-        (root / d).mkdir()
-        (root / d / "small.dat").write_bytes(b"x")
-    return root
 
 
 def per_rank(cwd):

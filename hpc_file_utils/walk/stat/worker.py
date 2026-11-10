@@ -23,8 +23,12 @@ each batch's files.
 import os
 from typing import NamedTuple
 
+from hpc_file_utils.walk.common.index import IndexWriter
 from hpc_file_utils.walk.common.stats import DirTotals
 from hpc_file_utils.walk.common.worker import BaseWorker
+
+INDEX_FILE = 'index-r{:03d}.tsv'
+PREFIXED_INDEX_FILE = 'index-{}-r{:03d}.tsv'
 
 
 class StatBatch(NamedTuple):
@@ -37,12 +41,34 @@ class StatBatch(NamedTuple):
 
 class StatWorker(BaseWorker):
 
+    index = None   # --index: this rank's IndexWriter (common/index.py); None without
+
+    def __init__(self):
+        super().__init__()
+        self.index = self.open_index()
+
+    def open_index(self):
+        """--index: this rank's index file, index-r{rank}.tsv (index-<prefix>-r{rank}.tsv
+        with --summary-prefix) in the working directory, opened at its first record and
+        closed by run(); None without. Every entry count() counts goes in it, next to the
+        count: the scan's subdirectories here, the stat batches' entries in process_file().
+        (walktar's indexes are its tars', tar/worker.py.)"""
+        o = self.options
+        if not o.index:
+            return None
+        name = (PREFIXED_INDEX_FILE.format(o.summary_prefix, self.rank) if o.summary_prefix
+                else INDEX_FILE.format(self.rank))
+        index = IndexWriter(name, 'walkstat', o.dirs)
+        self.files.append(index)
+        return index
+
     def process_directory(self, dirname):
         if self.vanished(dirname):
             return
 
         st = self.stats
         select = self.select
+        index = self.index
         nbatch = self.options.batch_files
 
         st.num_dirs += 1
@@ -77,6 +103,8 @@ class StatWorker(BaseWorker):
                     st.num_unmatched += 1
                     continue
                 st.count(di.path, statinfo, subdirs, select is not None)
+                if index is not None:
+                    index.add(di.path, statinfo)
 
         except Exception as error:
             self.error('scan', error)
@@ -133,5 +161,7 @@ class StatWorker(BaseWorker):
 
     def process_file(self, path, statinfo):
         """A stat batch's entry, just stat'ed and counted: the hook a tool fills (walktar
-        puts a non-directory in its open batch). walkstat needs nothing more. Only the
-        batches' names come here, never the scan's subdirectories."""
+        puts a non-directory in its open batch); walkstat records it in its index, with
+        --index. Only the batches' names come here, never the scan's subdirectories."""
+        if self.index is not None:
+            self.index.add(path, statinfo)

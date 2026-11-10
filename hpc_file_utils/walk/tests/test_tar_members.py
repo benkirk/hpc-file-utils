@@ -101,9 +101,10 @@ def test_readers_never_open_a_fifo_or_follow_a_symlink(entries):
     by_name = {os.path.basename(p): p for p in entries}
     for name in ("fifo", "link-to-file", "dangling", "link-to-dir"):
         assert tar_worker.open_member(by_name[name]) is None        # tar.add() archives these
-    f, data = tar_worker.open_member(by_name["small.dat"])
+    f, data, found = tar_worker.open_member(by_name["small.dat"])
     with f:
         assert data == b"x" * 100
+    assert found.st_size == 100                                     # the lstat from before the read
 
 
 def test_a_file_that_grew_after_its_read_is_archived_as_tar_add_would(entries, tmp_path, monkeypatch):

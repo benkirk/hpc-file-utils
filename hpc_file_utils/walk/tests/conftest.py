@@ -302,6 +302,7 @@ class Tree:
     dates: dict = field(default_factory=dict)   # 'YYYY-MM-DD' -> label, for normalize()
     nitems: int = 0                             # entries below root (walkstat's Total Count)
     nfiles: int = 0
+    atimes: dict = field(default_factory=dict)  # str(path) -> the atime (epoch) set on every non-directory
 
 
 def _write(path, nbytes):
@@ -384,7 +385,8 @@ def build_golden_tree(root):
         os.utime(path, (ages[age], ages[age]), follow_symlinks=False)
 
     return Tree(root=root, dates={_datestr(t): f"<{label}>" for label, t in ages.items()},
-                nitems=nitems, nfiles=len(when))
+                nitems=nitems, nfiles=len(when),
+                atimes={str(path): ages[age] for path, age in when.items()})
 
 
 def _unlock(root):
@@ -435,6 +437,26 @@ def wide_tree(tmp_path_factory):
     for i in range(WIDE_FILES):
         (wide / f"file-{i:06d}").touch()
     return Tree(root=root, nitems=_count(root), nfiles=WIDE_FILES)
+
+
+BIG_DIR_FILES = 400
+BIG_DIR_BYTES = 64 * 1024
+
+
+@pytest.fixture(scope="session")
+def big_dir_tree(tmp_path_factory):
+    """One directory of 400 x 64 KiB files, plus a few small directories beside it: with
+    --batch-files 10 its batches move between the ranks (test_batches.py, test_index.py)."""
+    root = tmp_path_factory.mktemp("bigdir") / "tree"
+    big = root / "big"
+    big.mkdir(parents=True)
+    data = os.urandom(BIG_DIR_BYTES)
+    for i in range(BIG_DIR_FILES):
+        (big / f"file-{i:04d}.dat").write_bytes(data)
+    for d in ("a", "a/b", "c"):
+        (root / d).mkdir()
+        (root / d / "small.dat").write_bytes(b"x")
+    return root
 
 
 @pytest.fixture

@@ -23,14 +23,23 @@ and on scratch, whatever its size up to a few MiB; one stream waiting on each in
 ~26 files/s. --read-ahead reader threads open and read the batch's next files while this
 thread writes the current one into the tar, in order. tarfile's own gettarinfo() and
 addfile() build and write each member, so the members are exactly tar.add()'s.
+
+--index (the sweep's Part C; common/index.py): one index beside each tar, <tar>.idx, with
+every member's lstat and its offsets in the tar. The lstat is the found one, from before
+the member was read: the reader's, in open_member(), for a regular file; one taken just
+before tar.add() for anything else and with --read-ahead 0. The readers also open with
+O_NOATIME where the kernel allows it (the owner, or root), so a root run leaves the atimes
+as it found them.
 """
 
+import errno
 import io
 import os
 import stat
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
 
+from hpc_file_utils.walk.common.index import IndexWriter
 from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
 
 # tarfile copies a member's data in chunks of copybufsize bytes, 16 KiB by default. Bigger
@@ -43,16 +52,30 @@ COPY_BUFSIZE = 16 * 1024 * 1024
 READ_WHOLE_MAX = COPY_BUFSIZE
 
 
+O_NOATIME = getattr(os, 'O_NOATIME', 0)   # Linux; elsewhere the open is as before
+
+
 def _open_nofollow(path, flags):
-    """open()'s opener: never follow a symlink (the entry was a regular file at its lstat)."""
-    return os.open(path, flags | os.O_NOFOLLOW)
+    """open()'s opener: never follow a symlink (the entry was a regular file at its lstat),
+    and leave the atime alone (O_NOATIME), which the kernel allows the file's owner and
+    root: for anyone else it fails with EPERM, and the open is retried without it."""
+    flags |= os.O_NOFOLLOW
+    if O_NOATIME:
+        try:
+            return os.open(path, flags | O_NOATIME)
+        except PermissionError as error:
+            if error.errno != errno.EPERM:
+                raise
+    return os.open(path, flags)
 
 
 def open_member(path):
-    """Run by a reader thread: (file, data) for a regular file, data its whole contents
-    (READ_WHOLE_MAX at most, else None and the file is left at its start), or None for
-    any other entry, which tar.add() archives as before (a fifo is never opened)."""
-    if not stat.S_ISREG(os.lstat(path).st_mode):
+    """Run by a reader thread: (file, data, lstat) for a regular file, data its whole
+    contents (READ_WHOLE_MAX at most, else None and the file is left at its start) and
+    lstat the one taken before it was opened (the index's found atime), or None for any
+    other entry, which tar.add() archives as before (a fifo is never opened)."""
+    found = os.lstat(path)
+    if not stat.S_ISREG(found.st_mode):
         return None
     f = open(path, 'rb', opener=_open_nofollow)
     try:
@@ -61,13 +84,24 @@ def open_member(path):
             f.close()
             return None
         data = f.read(st.st_size) if st.st_size <= READ_WHOLE_MAX else None
-        return f, data
+        return f, data, found
     except BaseException:
         f.close()
         raise
 
 
+def member_offsets(tar, start):
+    """(offset, offset_data) of the member just added to tar (tar.members[-1]), whose
+    header began at 'start', tar.offset before the add: tarfile records a member's
+    offsets when it reads a tar, not when it writes one, so the data's start is derived
+    from the tar's position after the add and the member's padded size."""
+    size = tar.members[-1].size
+    return start, tar.offset - (size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE * tarfile.BLOCKSIZE
+
+
 class TarWorker(StatWorker):
+
+    dirs_index = None                 # --index: the dirs tar's index, opened with it
 
     def __init__(self):
         super().__init__()
@@ -79,33 +113,54 @@ class TarWorker(StatWorker):
         self.batch_tar = None         # the batch tar being written, for progress_extra()
         self.readers = None           # --read-ahead reader threads, started at our first batch
 
-    def add(self, tar, path):
-        """Add one entry (never its contents, for a directory); count a failure."""
+    def open_index(self):
+        """walktar's indexes are its tars' (tar_index()), not one per rank."""
+        return None
+
+    def tar_index(self, tarname):
+        """--index: the index written beside a tar, <tarname>.idx, opened now (an empty tar
+        has an empty index) and closed with the tar; None without."""
+        if not self.options.index:
+            return None
+        index = IndexWriter(tarname + '.idx', 'walktar', self.options.dirs, offsets=True)
+        index.open()
+        return index
+
+    def add(self, tar, path, index=None):
+        """Add one entry with tar.add() (never its contents, for a directory); count a
+        failure. With an index the entry is lstat'ed first (its found atime) and recorded
+        after, with its offsets."""
         try:
+            statinfo = os.lstat(path) if index is not None else None
+            start = tar.offset
             tar.add(path, recursive=False)
-            return True
         except Exception as error:
             self.error('add to tar file', error)
             return False
+        if index is not None:
+            index.add(path, statinfo, member_offsets(tar, start))
+        return True
 
-    def add_member(self, tar, path, opened):
+    def add_member(self, tar, path, opened, index=None):
         """Add one batch entry; opened is open_member(path)'s Future, or None (--read-ahead
-        0) for plain tar.add(), phase 5's path. Counts a failure, as add() does."""
+        0) for plain tar.add(), phase 5's path. Counts a failure, as add() does. With an
+        index the member is recorded from the reader's lstat, taken before its read."""
         if opened is None:
-            return self.add(tar, path)
+            return self.add(tar, path, index)
         try:
             member = opened.result()
         except Exception as error:
             self.error('add to tar file', error)
             return False
         if member is None:                      # not a regular file
-            return self.add(tar, path)
-        f, data = member
+            return self.add(tar, path, index)
+        f, data, found = member
         with f:
             try:
                 # the members are tar.add()'s: same gettarinfo (from an fstat, here), and
                 # tarfile keeps the hard links in order
                 tarinfo = tar.gettarinfo(arcname=path, fileobj=f)
+                start = tar.offset
                 if data is not None:
                     # the file changed size since the reader's fstat: copy what tar.add()
                     # would (tarinfo.size bytes), but fail before writing a short member
@@ -116,10 +171,12 @@ class TarWorker(StatWorker):
                     tar.addfile(tarinfo, io.BytesIO(memoryview(data)[:tarinfo.size]))
                 else:
                     tar.addfile(tarinfo, f)
-                return True
             except Exception as error:
                 self.error('add to tar file', error)
                 return False
+        if index is not None:
+            index.add(path, found, member_offsets(tar, start))
+        return True
 
     def reader_pool(self):
         """The --read-ahead reader threads, started at their first use."""
@@ -175,9 +232,10 @@ class TarWorker(StatWorker):
         if os.path.exists(dirname):
             # the directory object itself, for its mode, owner and times, in our own dirs tar
             if self.dirs_tar is None:
-                self.dirs_tar = tarfile.open(f'output-r{self.rank:03d}-dirs.tar', 'w',
-                                             format=tarfile.PAX_FORMAT)
-            self.add(self.dirs_tar, dirname)
+                name = f'output-r{self.rank:03d}-dirs.tar'
+                self.dirs_tar = tarfile.open(name, 'w', format=tarfile.PAX_FORMAT)
+                self.dirs_index = self.tar_index(name)
+            self.add(self.dirs_tar, dirname, self.dirs_index)
 
         super().process_directory(dirname)
 
@@ -204,12 +262,15 @@ class TarWorker(StatWorker):
         name = f'output-r{self.rank:03d}-b{self.ntars:05d}.tar'
         self.ntars += 1
         with tarfile.open(name, 'w', format=tarfile.PAX_FORMAT, copybufsize=COPY_BUFSIZE) as tar:
+            index = self.tar_index(name)
             self.batch_tar = tar
             for path, opened in self.read_ahead(paths):
-                if self.add_member(tar, path, opened):
+                if self.add_member(tar, path, opened, index):
                     self.nwritten_files += 1
                 self.tick()
             self.batch_tar = None
+            if index is not None:
+                index.close()
         self.nwritten_closed += os.path.getsize(name)
 
     def progress_extra(self):
@@ -230,6 +291,9 @@ class TarWorker(StatWorker):
         if self.dirs_tar is not None:
             self.dirs_tar.close()
             self.dirs_tar = None
+        if self.dirs_index is not None:
+            self.dirs_index.close()
+            self.dirs_index = None
         if self.readers is not None:
             self.readers.shutdown()
             self.readers = None
