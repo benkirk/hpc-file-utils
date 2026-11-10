@@ -848,6 +848,28 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   storage-state control for the `manyfiles` run after it: trust a small-file pair only
   when its `bigdir`s agree. Under the load the ranking held (`depth 2` 75.6 s, `depth 8`
   77.1, `depth 4` 79.4–82.9), which is as much as that round says.
+- **The quiet-day repeat of scratch's second round** (indexes-2; job 8142408,
+  `benchbind.pbs` with `ROUND_OFFSET=1` and `TOOL=mainD`, `main` at ff27254). The order
+  was `depth 2`, `depth 4`, `depth 8`, `none`, default. The `bigdir` controls agree with
+  round 1, so the storage was comparable:
+
+  | binding | `bigdir`, round 1 → 2 | `manyfiles`, round 1 → 2 | `manyfiles` CPU, round 2 |
+  |---|---|---|---|
+  | PALS's default (1) | 412.6 → 421.7 s | 62.3 → 60.5 s | 42.8 s |
+  | `depth 2` (2) | 403.8 → 412.4 s | 39.7 → **60.5** s | 32.8 s |
+  | `depth 4` (4) | 404.3 → 432.0 s | 43.5 → 50.4 s | 40.3 s |
+  | `depth 8` (8) | 412.7 → 422.3 s | 40.5 → 50.4 s | 38.5 s |
+  | `none` (256) | 405.0 → 432.4 s | 44.6 → 50.4 s | 44.5 s |
+
+  - **The default's one-CPU ceiling reproduced**, and 4 CPUs or more lifted it again, by
+    1.2× this time instead of 1.4×.
+  - **`depth 2` did not.** It matched the default at 60.5 s, with its workers busy only
+    54% of the wall, so they were waiting rather than short of CPU. It ran first in the
+    job, where round 1's first run was the default's. Two rounds cannot say which `depth 2`
+    result is the outlier.
+  - The recommendation stands on the campaign rows, where `depth 2` was best or equal in
+    both rounds, but on scratch's small files the evidence is now split. A third round
+    with `depth 2` not first would settle it.
 
 ### perf-1, step C (walkstat `--stat-threads`)
 
