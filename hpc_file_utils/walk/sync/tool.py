@@ -21,7 +21,7 @@ class SyncTool(Tool):
         parser.add_argument('-n', '--dry-run', action='store_true', help='Copy nothing: list what would be copied (N new, C changed) and what is only in the destination (X), one file per rank: walksync-dryrun-r*.txt')
         parser.add_argument('--rsync', default=None, help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
         parser.add_argument('--rsync-opts', default='', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to ' + ' '.join(RSYNC_OPTS) + ')')
-        parser.add_argument('--rsyncs', default=1, type=int, help='rsyncs per copy batch, side by side, each over a K-th of its files: a cold file costs one storage round trip whatever rsync does with it, and K rsyncs overlap them (8 measured best with one CPU per rank; default: 1, one rsync per batch)')
+        parser.add_argument('--rsyncs', default=8, type=int, help='rsyncs per copy batch, side by side, each over a K-th of its files: a cold file costs one storage round trip whatever rsync does with it, and K rsyncs overlap them; 1 is one rsync per batch (default: 8, the fastest or within noise of it at 1 x 32 on every tree measured, see the walk README)')
 
     def check(self, parser, args):
         """One source, its own rsync and filter rules, an existing destination that

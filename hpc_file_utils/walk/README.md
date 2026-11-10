@@ -194,12 +194,29 @@ rerun with nothing changed copies nothing: it costs only the walk.
   the worker polls it every 0.5 s and still answers `share` requests and sends progress.
   `--chmod=Du+w` is needed for two reasons: ranks' batches create the same parent
   directories, and a read-only source's directories would refuse the next batch's files.
-- **`--rsyncs K`** [1]: K rsyncs side by side over one copy batch, each over a K-th of its
+- **`--rsyncs K`** [8]: K rsyncs side by side over one copy batch, each over a K-th of its
   files, the batch still one unit of work (it fails if any of them does). A cold file costs
   one storage round trip whatever rsync does with it, and K rsyncs overlap those round trips
   as walktar's `--read-ahead` does; `docs/HANDOFF-sweep.md` 0.4 measured 8 as the sweet spot
-  with one CPU per rank (6× on 1 MiB files, 7× on 80 KB files). The default stays 1 until
-  that is confirmed at scale.
+  for one rank with one CPU (6× on 1 MiB files, 7× on 80 KB files). At 1 × 32 the gain is
+  smaller, because the ranks share a ceiling that one rank never meets:
+  - **The small-file create ceiling** (the sweep's "K rsyncs" step; `hfu-bench/createprobe.py`,
+    32 processes creating 1,000 files each the way rsync's receiver does, onto scratch):
+    **~1,250 files/s into one directory from derecho, ~1,000 from Casper, whatever the file
+    size** (80 KB or 1 MiB alike), against 2,600–4,300 files/s into one directory per
+    process and 1.9–3.1 ms per file for a single stream. The directory is the serialization
+    point, not the bytes.
+  - walksync into one directory reaches ~450–520 files/s at any K (manyfiles, 200,000 ×
+    1 MiB, derecho 1 × 32: K = 1 451 s, K = 4 565 s, K = 8 385 s, K = 8 with
+    `--cpu-bind depth` 450 s; Part A: 443 and 400 s; Casper 805 and 398 s): about 2.5× below
+    the probe, which is rsync's extra directory work per file (its stat of the destination
+    name, the temporary name and the rename, the xattr and ACL calls) sharing that one
+    directory's rate. Across many directories K pays: `.Radiosonde` (584,851 × 80 KB in 292
+    directories, campaign → scratch) went 892 → 405 → 342 s for K = 1, 4, 8, and 285 s
+    (2,050 files/s) with `--cpu-bind depth --depth 4`, the rsyncs' CPU unpinned. K = 8 is
+    the best or within noise of it on every tree and machine measured and never worse than
+    1 (1.2× into one directory, 2.6× across many). Hence 8.
+  - `--rsyncs 1` is phase 6's behaviour, one rsync per batch.
 - **Which rsync:** `--rsync` if given. Otherwise rsync on PATH, unless it lacks ACLs or xattrs
   and `/usr/bin/rsync` explicitly lists both, in which case the banner says it uses
   `/usr/bin/rsync` and why.

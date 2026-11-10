@@ -79,9 +79,9 @@ def test_walksync_options(tmp_path):
     assert a.dirs == [str(src)] and a.dest == str(dest)          # normalized: no trailing '/'
     assert (a.batch_files, a.batch_size) == (1000, 16 * 1024 ** 3)
     assert a.rsync_opts == ["--inplace", "-v"] and not a.dry_run
-    assert a.app == "walksync" and a.rsyncs == 1
+    assert a.app == "walksync" and a.rsyncs == 8
     assert TOOLS["walksync"].writes == ("copied", "rsync batches") and TOOLS["walkstat"].writes is None
-    assert parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--rsyncs", "8"]).rsyncs == 8
+    assert parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--rsyncs", "3"]).rsyncs == 3
     a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "-n", "--mtime-newer", "1y",
                                    "--exclude", "COLD_STORAGE*", "--batch-size", "1GiB"])
     assert a.dry_run and a.filters.selects and a.batch_size == 1024 ** 3

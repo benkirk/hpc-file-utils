@@ -442,6 +442,53 @@ Six commits. "Done" for the whole part:
   tool (section 7); E3's `make_options()` test helper; the README's phase notes beyond the
   Layout table, the `--profile` and `--rsyncs` entries.
 
+### "K rsyncs", done (2026-11-09, branch `sweep-B`: the default is 8)
+- **The ceiling, measured** (`hfu-bench/createprobe.py` + `probe-matrix.sh`: PROCS processes
+  each create 1,000 files of SIZE bytes as rsync's receiver does, a temporary name, write,
+  fchmod, close, utime, rename; `benchK.pbs` ran it on derecho, `probe-casper.log` on a
+  claimed Casper node; files/s, the 32-process rows twice):
+
+  | | derecho | Casper |
+  |---|---:|---:|
+  | 1 process, 80 KB / 1 MiB (ms per file) | 1.9 / 3.0 | 2.4 / 3.1 |
+  | 32 processes, one directory, 80 KB | 1,231, 1,296 | 1,007, 977 |
+  | 32 processes, one directory, 1 MiB | 1,283, 1,262 | 1,030, 1,003 |
+  | 32 processes, a directory each, 80 KB | 2,621, 4,278 | 4,258, 3,519 |
+  | 32 processes, a directory each, 1 MiB | 3,815, 4,174 | 3,921, 4,240 |
+
+  - **One directory caps creates at ~1,250/s (derecho) or ~1,000/s (Casper), whatever the
+    size**; many directories reach 2,600–4,300/s. The file's bytes are not the limit (80 KB
+    and 1 MiB are the same), the directory is. A single stream costs 2–3 ms per file, so
+    32 streams into one directory are ~10× slower each than alone.
+- **walksync at 1 × 32** (`benchK/8129741`, `/usr/bin/rsync`, copies onto scratch, the oracle
+  clean, each rank under GNU time, the csgteam scans running):
+
+  | tree | K = 1 | K = 4 | K = 8 | K = 8, `--cpu-bind depth --depth 4` |
+  |---|---:|---:|---:|---:|
+  | `manyfiles`: 200,000 × 1 MiB, one directory | 451.5 s (443 files/s) | 565.5 s | 385.5 s (519 files/s) | 449.7 s |
+  | `.Radiosonde`: 584,851 × 80 KB, 292 directories | 891.9 s (656 files/s) | 405.4 s | 341.7 s (1,712 files/s) | **285.2 s** (2,051 files/s) |
+
+  - **Into one directory walksync makes ~450–520 files/s at any K**, 2.5× below the probe's
+    ~1,250 creates/s: rsync's own directory operations per file (the stat of the destination
+    name, the temporary name, the rename, the xattr and ACL calls) share the directory's
+    rate, so 31 × K rsyncs cannot beat it however many there are. K = 4 was slower than K = 1
+    on that tree; the scratch runs are noisy to ±15%, as the probe's many-directory rows are.
+  - **Across 292 directories K pays: 892 → 405 → 342 s for K = 1, 4, 8 (2.6×), and 285 s
+    (3.1×, 2,050 files/s) with `--cpu-bind depth`**, where the 8 × 31 rsyncs are not pinned
+    to 31 CPUs. Part A had 912 → 382 under the same scans.
+  - Worker CPU: 49–52 s per rank on `.Radiosonde` at K = 4–8, 69 s at K = 1 (the long run's
+    MPI spin); 72–103 s on `manyfiles`. The oracle passed every copy (the one non-time line
+    on `.Radiosonde` is the destination root's own attributes, as in Part A).
+- **Decision: `--rsyncs` defaults to 8.** Over every pair measured (Part A: derecho 443 → 400
+  and 912 → 382, Casper 805 → 398 and 402 → 362; here 451 → 385 and 892 → 342) K = 8 is
+  the fastest or within noise of it and never slower than K = 1: 2.6× on a tree of many
+  directories, 1.2× into one directory, where the directory's own create rate binds and
+  no K can help. 0.4's one-rank 6–7× does not carry to 1 × 32 because that ceiling is per
+  destination directory, not per stream; the lever for a one-directory copy is more
+  nodes, not more rsyncs. `--cpu-bind depth` adds another 1.2× on the many-directory tree
+  (the rsyncs' CPU) and nothing on the one-directory tree. `sync/tool.py`'s help text and
+  the walk README say so. `test_options.py` expects 8.
+
 ### A1. Duplicates and leftovers
 - `sync/worker.py` uses `printable()`, and `show()` goes. The dry-run lists change only for names
   holding control characters other than `\n` and `\t`, which are now escaped too.
