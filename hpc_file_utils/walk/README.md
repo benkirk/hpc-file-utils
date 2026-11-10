@@ -76,19 +76,29 @@ What a filter changes:
 
 ### walktar
 
-The scanning rank turns the files it selects into **batches**: a batch closes after
-`--batch-files` files [1000] or `--batch-size` bytes of `st_size` [16GiB], whichever comes
-first. A file bigger than `--batch-size` makes a batch on its own. Batches are units of work,
-just as directories are, so one huge directory no longer ties up one rank for hours.
+The files a walk selects go into **batches**: a batch closes after `--batch-files` files
+[1000] or `--batch-size` bytes of `st_size` [16GiB], whichever comes first. A file bigger
+than `--batch-size` makes a batch on its own. Batches are units of work, just as
+directories are, so one huge directory no longer ties up one rank for hours.
+- **Two levels (the sweep's Part B).** walktar's scan is walkstat's (below): the scanning
+  rank stats only the subdirectories and cuts a directory's other names into *stat
+  batches* of `--batch-files`, without a stat. The rank that processes a stat batch stats,
+  filters and counts each name, and puts the selected files in its open *file batch*,
+  which closes by the real `st_size` and is written as one tar. So `--batch-size` keeps
+  its meaning, and the per-file stats run on every rank instead of the scanning one.
+  Before Part B the scanning rank stat'ed every file itself; on one huge campaign GPFS
+  directory it made ~1,000 entries/s while the other ranks waited (Phase 5.5, below).
 - **Where batches go:**
-  - The scanning rank keeps its batches and archives them itself, batches before
-    directories. The open batch carries over from one directory to the next, so small
-    directories combine.
+  - A rank keeps the batches it makes and processes them itself, batches before
+    directories: a stat batch's file batches go on the same list and are written before
+    the next stat batch. The open file batch carries over from one stat batch and one
+    directory to the next, so small directories combine.
   - A batch leaves its rank only in the answer to the Manager's `share`: the oldest half of
     the rank's closed batches, rounded up, plus the oldest half of its stack.
   - The Manager hands out one batch per `execute`, and hands batches out before directories.
-  - The termination argument covers batches (see `manager.py`).
-- **walkstat batches too**, but its batches are names still to stat (below).
+  - The termination argument covers batches (see `manager.py`): a stat batch creates file
+    batches only on the rank processing it, which processes them before its next `ready`.
+- **walkstat's batches are the stat batches alone** (below).
 - **Outputs**, in the working directory:
   - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
     selected files.
@@ -463,3 +473,45 @@ rerun with nothing changed copies nothing: it costs only the walk.
   - `--read-ahead` with `--cpu-bind depth`.
   - Per-filesystem defaults, if a later measurement needs them.
   - Why the scan slows on GPFS.
+
+### Part B (the sweep: walktar onto stat batches)
+
+- **walktar's scan is walkstat's** ([File batches](#walktar) above): the scanning rank stats
+  only the subdirectories and cuts the other names into stat batches by count; the rank that
+  processes a stat batch stats, filters and counts each name and closes file batches by the
+  real `st_size`. `BaseWorker`'s inline scan is gone, so every tool walks the same way, and
+  a file that vanishes between the scan and its stat costs one error instead of the rest of
+  its directory. The tars, the members (`tar.add()`'s), the golden output and the Manager's
+  protocol are unchanged.
+- **Measured on derecho**, 1 node × 32 ranks, `--read-ahead` 16, PALS's default binding, two
+  rounds each, against a side copy of `main` at 3ba9582 (Part A: phase 5.5's walktar). Each
+  `manyfiles` run follows a `bigdir` run (the scratch cache, phase 5.5). "CPU" is user+sys
+  per worker rank, mean over the 31, from GNU `time` around each rank; it includes the time
+  an idle rank spends spinning in MPI's receive, so a rank that waits costs as much as one
+  that works (the Manager's CPU is its wall time for that reason).
+
+  | tree, read → write | `main` (3ba9582) | Part B |
+  |---|---|---|
+  | scratch `bigdir`: 1,024 × 1 GiB, Lustre → Lustre | 434.9, 424.0 s (2.35–2.42 GiB/s); CPU 174, 170 s | 447.1, 421.5 s (2.29–2.43 GiB/s); CPU 167, 168 s |
+  | scratch `manyfiles`: 200,000 × 1 MiB, Lustre → Lustre | 61.4, 58.8 s (3.19–3.33 GiB/s); CPU 40, 42 s | 58.8, 58.5 s (3.32–3.34 GiB/s); CPU 41, 42 s |
+  | GDEX VIT zarr: 333,110 × ~4 MiB, one directory, GPFS → GPFS (csg) | 380.1, 360.9 s (3.40–3.58 GiB/s); CPU 199, 219 s | 402.3, 404.4 s (3.19–3.21 GiB/s); CPU 107, 104 s |
+
+  - **Scratch is unchanged**, within the noise, for big and small files alike.
+  - **The GPFS case did not gain: the scan was not its ceiling.** Phase 5.5 read the scanning
+    rank's ~1,000 entries/s as the pace-setter. With Part B the scan is over at once (at the
+    first progress line, 30 s in, 139 stat batches were waiting and no rank was idle, where
+    `main` showed 3–15 idle ranks at every line), yet both run at 3.2–3.6 GiB/s, about
+    850 files/s: the same ceiling every `--read-ahead` setting met in phase 5.5. The
+    scanner's rate matched the archive rate; it did not set it. What limits VIT from one
+    node is the storage path for 4 MiB files, not the walk, so the lever there is more nodes
+    (phase 5.5's question 5), not the scan.
+  - **Part B evens the load**: `main`'s scanning rank archived 3.9–4.3 GiB against the others'
+    ~42; the least any rank archives is now 31–35 GiB.
+  - **The VIT rounds are 6–11% slower with Part B**, both rounds, so not noise. Each rank's
+    stat batch (1,000 lstats on GPFS) runs on the worker thread with its reader threads
+    idle, so for that fraction of its time the rank reads nothing and the node's aggregate
+    drops by that share; `main` did its stats on one rank, overlapped with the other 30's
+    reads. A `--profile` run quantifies it (below). The csgteam `scan_dirs` array (8 subjobs
+    of 1 × 128) was running throughout these campaign runs, as during Part A's.
+  - **The halved CPU on VIT** (199–219 → 104–107 s per rank) is mostly `main`'s idle ranks
+    spinning in MPI, not work saved.

@@ -8,6 +8,16 @@ Restore: extract the batch tars in any order (or in parallel), then the -dirs ta
 set the directories' modes and times after their files are in place (a read-only
 directory would otherwise refuse files from another tar).
 
+Two levels of batches (the sweep's Part B): the scan is walkstat's (stat/worker.py), so
+the scanning rank stats only the subdirectories and cuts the other names into
+StatBatches by count. The rank that processes a StatBatch stats, filters and counts
+each name, and puts the selected files in its open FileBatch, which closes at
+--batch-files files or --batch-size bytes of real st_size and is written as one tar,
+here or on an idle rank. Before this, the scanning rank stat'ed every file itself: on
+one huge campaign GPFS directory it made ~1,000 entries/s while the other ranks waited
+(phase 5.5). The StatBatch's FileBatches are created only on the rank processing it
+and processed before its next 'ready', so the Manager's termination argument holds.
+
 Read-ahead (phase 5.5): a small file costs one storage round trip, ~35 ms on campaign GPFS
 and on scratch, whatever its size up to a few MiB; one stream waiting on each in turn made
 ~26 files/s. --read-ahead reader threads open and read the batch's next files while this
@@ -19,7 +29,7 @@ import io, os, stat
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
 
-from hpc_file_utils.walk.common.worker import BaseWorker
+from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
 
 # tarfile copies a member's data in chunks of copybufsize bytes, 16 KiB by default. Bigger
 # reads and writes cost fewer calls; 16 MiB was 2-5% faster on derecho scratch (phase 5).
@@ -58,12 +68,12 @@ def open_member(path):
 
 
 ################################################################################
-class TarWorker(BaseWorker):
+class TarWorker(StatWorker):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self):
-        BaseWorker.__init__(self)
+        StatWorker.__init__(self)
 
         self.dirs_tar = None          # output-r{rank}-dirs.tar, opened at our first directory
         self.ntars = 0                # batch tars written
@@ -156,6 +166,8 @@ class TarWorker(BaseWorker):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
+        """walkstat's scan (the subdirectories stat'ed here, the other names into
+        StatBatches), after the directory itself goes into our dirs tar."""
 
         # last-minute check for a race condition:
         if os.path.exists(dirname):
@@ -171,19 +183,34 @@ class TarWorker(BaseWorker):
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_file(self, filename, statinfo):
-        # a selected file: into the open batch (closed past --batch-files / --batch-size)
-        self.add_to_batch(filename, statinfo.st_size)
+    def process_file(self, path, statinfo):
+        """A stat batch's entry, selected and counted: into the open batch (closed past
+        --batch-files files or --batch-size bytes of st_size). Not a directory: one that
+        became a directory since the scan is counted, as walkstat counts it, but belongs
+        in no tar (it was never walked)."""
+        if not stat.S_ISDIR(statinfo.st_mode):
+            self.add_to_batch(path, statinfo.st_size)
         return
 
 
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """One batch, ours or shared, into its own tar file, its files read ahead by the
-        reader threads. Between files we look for a 'share' (an iprobe costs microseconds, a
-        file a read) and send our counts when due."""
-        paths, nbytes = batch
+        """A StatBatch (the stats, which fill our open FileBatch) or a FileBatch (one tar),
+        ours or shared."""
+        if isinstance(batch, StatBatch):
+            super().process_batch(batch)
+        else:
+            self.tar_batch(batch.paths)
+        return
+
+
+
+    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    def tar_batch(self, paths):
+        """One FileBatch's paths into their own tar file, read ahead by the reader threads.
+        Between files we look for a 'share' (an iprobe costs microseconds, a file a read)
+        and send our counts when due."""
         name = 'output-r{:03d}-b{:05d}.tar'.format(self.rank, self.ntars)
         self.ntars += 1
         with tarfile.open(name, 'w', format=tarfile.PAX_FORMAT, copybufsize=COPY_BUFSIZE) as tar:

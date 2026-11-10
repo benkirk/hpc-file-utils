@@ -5,12 +5,12 @@ only when it overflows, when it runs dry, or when the Manager asks them to share
 (phase 3.5; docs/walk-load-balancing.md, section 5).
 
 Phase 5: the workers also turn a directory's files into batches, kept on the scanning
-worker's own list and processed there, batches before directories: walktar's are
-FileBatch(paths, nbytes), archived into one tar each; walkstat's are StatBatch(dirname,
-names, tail), the names still to stat (stat/worker.py); walksync's are CompareBatch
-and FileBatch (sync/worker.py). A batch leaves its worker only in a share_reply, and
-the Manager hands batches out before directories. To the Manager and to this argument,
-a batch is opaque: one unit of work.
+worker's own list and processed there, batches before directories: walkstat's are
+StatBatch(dirname, names, tail), the names still to stat (stat/worker.py); walktar's
+are those too, whose stats fill FileBatch(paths, nbytes), archived into one tar each
+(tar/worker.py); walksync's are CompareBatch and FileBatch (sync/worker.py). A batch
+leaves its worker only in a share_reply, and the Manager hands batches out before
+directories. To the Manager and to this argument, a batch is opaque: one unit of work.
 
 Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tuple):
 
@@ -59,8 +59,8 @@ How the Manager decides the walk is done:
      directory or batch is queued, in flight, being scanned or being processed
      anywhere. The Manager answers each held 'ready' with 'terminate'.
 
-Processing a batch creates no directories. It may create batches (walksync's compare
-batches close copy batches), but only on the worker processing it, which keeps them on
+Processing a batch creates no directories. It may create batches (walktar's stat batches
+and walksync's compare batches close file batches), but only on the worker processing it, which keeps them on
 its own list and processes them (point 1) before its next 'ready'. A 'share' never
 carries work, so it cannot upset this either. A worker that receives one while
 it waits for the answer to its 'ready' ignores it (its wait is a receive from rank 0

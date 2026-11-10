@@ -9,12 +9,10 @@ stack; a RankFile is a per-rank output opened at its first write and closed by r
 
 import collections
 import os
-import stat
 import sys
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
-from hpc_file_utils.walk.common.stats import DirTotals
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
 SHARE_CHECK_INCREMENT = 1000 # entries of one directory (or items of one batch) between looks for a 'share'
@@ -203,49 +201,10 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
-        """The inline scan (walktar's): stat every entry, count what the filters select,
-        hand each selected file to process_file() and push each subdirectory."""
-        if self.vanished(dirname):
-            return
-
-        st = self.stats
-        select = self.select
-
-        st.num_dirs += 1
-        # with a selecting filter, directories are counted as entries that match (in count()),
-        # as find does; without one, every directory walked, the roots included, as before phase 4
-        if select is None: st.st_modes['dir'] += 1
-
-        totals = DirTotals()      # this directory's own (non-recursive) totals
-        try:
-            for di in self.entries(dirname):
-                pathname = di.path
-                statinfo = di.stat(follow_symlinks=False)
-                is_dir = stat.S_ISDIR(statinfo.st_mode)
-
-                # selecting filters: an entry that fails is not counted (nor archived), but a
-                # directory that fails is still walked, for the entries inside that pass
-                if select is not None and not select(statinfo):
-                    st.num_unmatched += 1
-                else:
-                    st.count(pathname, statinfo, totals, select is not None)
-                    if not is_dir:
-                        self.process_file(pathname, statinfo)
-                if is_dir:
-                    self.push_dir(pathname)
-
-        except Exception as error:
-            self.error('scan', error)
-
-        self.list_directory(dirname, totals)
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_file(self, filename, statinfo):
-        """The inline scan's hook for a selected file (walktar: into the open batch)."""
-        return
+        """Scan one directory, ours or the Manager's: count it, push its subdirectories
+        (push_dir()) and queue its other names as the tool's batches. Every tool's scan
+        is walkstat's (stat/worker.py) or built on it; walksync's is its own."""
+        raise NotImplementedError
 
 
 
@@ -262,12 +221,13 @@ class BaseWorker(MPIClass):
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def add_to_batch(self, path, size):
-        """Tools with a process_batch() (walktar, walksync): put a selected file in the open batch.
+        """Tools that write (walktar, walksync): put a selected file in the open batch.
 
         Past --batch-files files or --batch-size bytes the batch closes onto our list of
         batches to process, which a 'share' can hand to idle ranks. The open batch carries
-        over between directories, so small directories combine. (walkstat makes its
-        own batches, of names still to stat: see stat/worker.py.)
+        over between directories and between the stat or compare batches that fill it,
+        so small directories combine. (The scan's own batches, of names still to stat or
+        compare, are the tool's kind: see stat/worker.py and sync/worker.py.)
         """
         self.batch.append(path)
         self.batch_bytes += size

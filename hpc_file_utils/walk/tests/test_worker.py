@@ -1,15 +1,17 @@
 """The workers' scans and batches on their own, in-process (no MPI): walkstat's StatWorker
-(stat batches), and BaseWorker's inline scan (walktar's) through a small subclass."""
+(stat batches), and walktar's TarWorker, whose stat batches fill its file batches."""
 
 import os
+import tarfile
 import types
 
 import pytest
 
 from hpc_file_utils.walk.common import worker as worker_mod
 from hpc_file_utils.walk.common.stats import WalkStats
-from hpc_file_utils.walk.common.worker import BaseWorker, FileBatch
+from hpc_file_utils.walk.common.worker import FileBatch
 from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
+from hpc_file_utils.walk.tar.worker import TarWorker
 
 
 def _with_uid(s, uid):
@@ -52,8 +54,8 @@ class _Entry:
         return _with_uid(self._entry.stat(follow_symlinks=follow_symlinks), self._uid)
 
 
-def _worker():
-    w = object.__new__(StatWorker)   # skip MPIClass.__init__: no MPI here
+def _worker(cls=StatWorker):
+    w = object.__new__(cls)   # skip MPIClass.__init__: no MPI here
     w.rank, w.local_dirs, w.local_batches, w.batch, w.batch_bytes = 1, [], [], [], 0
     w.max_local_dirs = 0
     w.options = types.SimpleNamespace(threshold_count=1, threshold_size=0, local_queue_max=1000,
@@ -207,18 +209,42 @@ def test_excluded_entries_are_never_stated(tmp_path, monkeypatch):
 # phase 5 batches
 # ---------------------------------------------------------------------------
 
-class _Batcher(BaseWorker):
-    """BaseWorker's inline scan plus walktar's process_file: files go into batches."""
+@pytest.fixture
+def tree(tmp_path, monkeypatch):
+    """A tree to walk, apart from the tars: a TarWorker writes its tars into the current
+    directory, which must not be the tree."""
+    (tmp_path / "out").mkdir()
+    monkeypatch.chdir(tmp_path / "out")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    return tree
 
-    def process_file(self, filename, statinfo):
-        self.add_to_batch(filename, statinfo.st_size)
 
-
-def _batch_worker(batch_files, batch_size):
-    w = _worker()
-    w.__class__ = _Batcher
-    w.options.batch_files, w.options.batch_size = batch_files, batch_size
+def _batch_worker(batch_files, batch_size, read_ahead=0):
+    """A TarWorker: walkstat's scan and stat batches, whose selected files fill the open
+    FileBatch (the tars go into the current directory: the tree fixture's out/)."""
+    w = _worker(TarWorker)
+    w.options.batch_files, w.options.batch_size, w.options.read_ahead = batch_files, batch_size, read_ahead
+    w.ntars = w.nwritten_files = w.nwritten_closed = 0
+    w.batch_tar = w.dirs_tar = w.readers = None
     return w
+
+
+def _tar_members(w):
+    """{tar name: [member names]} of the tars w wrote into the current directory, after
+    finishing its dirs tar and its readers as run() does."""
+    if w.dirs_tar is not None:
+        w.dirs_tar.close()
+        w.dirs_tar = None
+    if w.readers is not None:
+        w.readers.shutdown()
+        w.readers = None
+    out = {}
+    for t in sorted(os.listdir(".")):
+        if t.endswith(".tar"):
+            with tarfile.open(t) as tf:
+                out[t] = tf.getnames()
+    return out
 
 
 def test_batches_close_at_n_files_or_b_bytes():
@@ -236,15 +262,79 @@ def test_batches_close_at_n_files_or_b_bytes():
     assert len(w.local_batches) == 4
 
 
-def test_small_directories_combine_into_one_batch(tmp_path):
+def test_small_directories_combine_into_one_batch(tree):
     for d in ("a", "b", "c"):
-        (tmp_path / d).mkdir()
-        (tmp_path / d / "x.dat").write_bytes(b"x" * 10)
+        (tree / d).mkdir()
+        (tree / d / "x.dat").write_bytes(b"x" * 10)
     w = _batch_worker(5000, 1 << 30)
-    _walk(w, tmp_path)
-    assert w.local_batches == []               # still open, across the three directories
+    _walk(w, tree)
+    assert w.local_batches == []               # still open, across the three directories' stat batches
     assert sorted(os.path.basename(os.path.dirname(p)) for p in w.batch) == ["a", "b", "c"]
     assert w.batch_bytes == 30
+    assert w.stats.num_items == 6 and w.stats.num_dirs == 4
+
+
+def test_walktar_scan_stats_nothing_but_subdirectories(tree, monkeypatch):
+    """walktar's scan is walkstat's: the files wait in a StatBatch (no stat, so no size
+    yet), and the open FileBatch fills only when that batch is processed, by whichever
+    rank takes it."""
+    for i in range(3):
+        (tree / f"f{i}").write_bytes(b"x" * 100)
+    (tree / "sub").mkdir()
+    w = _batch_worker(1000, 1 << 30)
+    real_lstat, stats = os.lstat, []
+    monkeypatch.setattr(worker_mod.os, "lstat", lambda p: (stats.append(p), real_lstat(p))[1])
+    w.process_directory(str(tree))
+    files = sorted(str(tree / f"f{i}") for i in range(3))
+    [batch] = w.local_batches
+    assert isinstance(batch, StatBatch) and sorted(batch.names) == ["f0", "f1", "f2"]
+    assert (w.batch, w.batch_bytes) == ([], 0)
+    assert not set(stats) & set(files)                         # no file stat'ed yet (sub: di.stat(); the dirs tar: the root)
+    assert w.stats.num_items == 1                              # sub
+    other = _batch_worker(1000, 1 << 30)
+    other.rank = 2
+    other.process_batch(w.local_batches.pop())                 # 'shared' to another rank
+    assert (sorted(other.batch), other.batch_bytes) == (files, 300)
+    assert other.stats.num_items == 3 and w.stats.num_items == 1
+    assert sorted(set(stats) & set(files)) == files
+    assert _tar_members(w) == {"output-r001-dirs.tar": [str(tree).lstrip("/")]}
+
+
+@pytest.mark.parametrize("batch_files, batch_size, expected", [
+    (2, 1 << 30, [2, 2, 1]),                   # by count (and the stat batches are cut at 2 names too)
+    (1000, 250, [3, 2]),                       # by the real st_size: 100-byte files close a batch at >= 250
+    (1000, 1 << 30, [5]),
+])
+def test_stat_batches_close_file_batches_by_count_or_real_size(tree, batch_files, batch_size, expected):
+    """--batch-files and --batch-size keep their meaning: the rank processing a stat batch
+    closes FileBatches by the files it has stat'ed, and they stay on its own list
+    (manager.py, point 1), processed before its next 'ready'."""
+    for i in range(5):
+        (tree / f"f{i}").write_bytes(b"x" * 100)
+    w = _batch_worker(batch_files, batch_size)
+    w.local_dirs.append(str(tree))
+    w.drain_local_work()
+    assert (w.local_dirs, w.local_batches, w.batch) == ([], [], [])
+    tars = _tar_members(w)
+    batch_tars = sorted(t for t in tars if "-b" in t)
+    assert sorted(len(tars[t]) for t in batch_tars) == sorted(expected)
+    assert sorted(n for t in batch_tars for n in tars[t]) == sorted(str(tree / f"f{i}").lstrip("/") for i in range(5))
+    assert w.nwritten_files == 5 and w.ntars == len(expected)
+    assert (w.stats.num_items, w.stats.total_size) == (5, 500)
+    w.stats.finish_directories(1, 0, False)    # a directory split over stat batches is listed by rank 0
+    assert [e.nitems for _, e in w.stats.heaps["nitems_dirs"].top()] == [5]   # listed once, whole
+
+
+def test_a_file_that_became_a_directory_is_counted_not_archived(tree):
+    (tree / "f").write_bytes(b"x")
+    (tree / "g").write_bytes(b"x")
+    w = _batch_worker(1000, 1 << 30)
+    w.process_directory(str(tree))
+    (tree / "f").unlink()
+    (tree / "f").mkdir()                       # between the scan and its stat batch
+    w.process_batch(w.local_batches.pop())
+    assert w.batch == [str(tree / "g")]
+    assert (w.stats.num_items, dict(w.stats.st_modes)) == (2, {"dir": 1, "reg": 1})
 
 
 def test_walkstat_batches_names_not_paths(tmp_path):
@@ -341,19 +431,25 @@ def test_share_gives_oldest_half_of_dirs_and_batches_rounded_up(ndirs, nbatches,
     assert payload[2] == len(w.local_dirs) + len(w.local_batches)
 
 
-def test_drain_processes_batches_first_then_the_open_batch(tmp_path):
-    (tmp_path / "sub").mkdir()
+def test_drain_processes_batches_first_then_the_open_batch(tree):
+    (tree / "sub").mkdir()
     for name in ("a", "b", "c", "sub/d"):
-        (tmp_path / name).write_bytes(b"x")
+        (tree / name).write_bytes(b"x")
     w = _batch_worker(2, 1 << 30)
     order = []
-    w.process_batch = lambda batch: order.append(sorted(os.path.basename(p) for p in batch.paths))
-    real = w.process_directory
-    w.process_directory = lambda d: (order.append(os.path.basename(d)), real(d))
-    w.local_dirs.append(str(tmp_path))
+    real_batch, real_dir = w.process_batch, w.process_directory
+    w.process_batch = lambda batch: (order.append(("stat", batch.dirname) if isinstance(batch, StatBatch) else
+                                                  ("tar", sorted(os.path.basename(p) for p in batch.paths))),
+                                     real_batch(batch))
+    w.process_directory = lambda d: (order.append(("dir", d)), real_dir(d))
+    w.local_dirs.append(str(tree))
     w.drain_local_work()
-    # the root's first two files close a batch, done before the subdirectory; the
-    # rest (one root file, sub/d) combine in the open batch, closed and done last
-    assert order[0] == tmp_path.name and order[2] == "sub"
-    assert len(order[1]) == 2 and sorted(order[1] + order[3]) == ["a", "b", "c", "d"]
+    # the root's scan cuts its three names into two stat batches; their stats close one
+    # FileBatch of two files, done before the subdirectory; the rest (one root file,
+    # sub/d) combine in the open batch, closed and done last
+    root, sub = str(tree), str(tree / "sub")
+    assert [o[0] for o in order] == ["dir", "stat", "stat", "tar", "dir", "stat", "tar"]
+    assert [o[1] for o in order if o[0] != "tar"] == [root, root, root, sub, sub]
+    tars = [o[1] for o in order if o[0] == "tar"]
+    assert len(tars[0]) == 2 and sorted(tars[0] + tars[1]) == ["a", "b", "c", "d"]
     assert (w.local_dirs, w.local_batches, w.batch) == ([], [], [])

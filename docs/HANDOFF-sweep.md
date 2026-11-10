@@ -581,6 +581,52 @@ GPFS directory, walktar's scanning rank, which stats every file, sets the pace.
   - Watch the stat batches' own rate under read load. If their stats slow as the scanner's did,
     it shows up as per-batch time, not idle ranks.
 
+### Part B, done (2026-11-09, branch `sweep-B`)
+- **Shape:** `TarWorker(StatWorker)`. `StatWorker.process_batch` hands every entry it stats
+  and counts to a `process_file(path, statinfo)` hook (a no-op for walkstat, one bound-method
+  call per entry); walktar's puts a non-directory into the open `FileBatch` through
+  `add_to_batch(path, st_size)`, so `--batch-size` closes by the real size and `--batch-files`
+  by count, as before. `TarWorker.process_batch` dispatches on `isinstance(batch, StatBatch)`;
+  a `FileBatch` goes to `tar_batch()`, phase 5.5's loop unchanged. `TarWorker.process_directory`
+  still writes the directory into the dirs tar, then runs walkstat's scan.
+  `BaseWorker.process_directory` is a `NotImplementedError` stub, like `process_batch`, and
+  `BaseWorker.process_file` is gone. manager.py's docstring gained two descriptive words
+  (walktar's stat batches close file batches); the argument is untouched.
+- **Not done, on purpose: the reader keeps its own lstat.** Section 3 suggested handing the
+  stat batch's lstat to `open_member()` so the reader could skip its own. The reader's lstat
+  is a fresh type check just before the open: it is what keeps a file that became a fifo
+  from being opened (which blocks) and keeps `tar.add()`'s treatment of one that became a
+  symlink or device. It runs in a reader thread, overlapped with the reads, so it is not on
+  the critical path; and carrying stats in `FileBatch` (shared with walksync) is a protocol
+  choice that Part C, which needs the lstat for the index, should make. Left for C.
+- **Tests:** `test_worker.py` builds the real `TarWorker` (no MPI) on a tree beside its tar
+  directory: the scan stats no file, a stat batch taken by another rank fills that rank's
+  open batch, file batches close by count or real size and stay on the processing rank's
+  list, a file that became a directory is counted but archived nowhere, and the drain order
+  is directory, stat batches, their tar, next directory. `test_tar_members.py` passes a
+  `FileBatch`. `make test` 491 passed; `make test-pbs` 326 passed, 2 skipped; the race test
+  500/500 at `HFU_RACE_RUNS=100`; CI green. `HFU_UPDATE_GOLDEN` was never needed.
+- **Measured on derecho** (jobs 8128927 scratch, 8128928 VIT → csg; 1 × 32, read-ahead 16,
+  two rounds, baseline `hfu-bench/mainB` = main at 3ba9582; the walk README's "Part B" has
+  the table). Each rank ran under GNU `time` (`hfu-bench/cpu-wrap.sh`, `cpu-r<rank>.txt`
+  per run; `benchtar.pbs` prints the per-rank user+sys summary on each result line).
+  - scratch `bigdir`: 434.9, 424.0 s → 447.1, 421.5 s; `manyfiles`: 61.4, 58.8 → 58.8,
+    58.5 s. Unchanged.
+  - **VIT: 380.1, 360.9 s → 402.3, 404.4 s. No gain, and 6–11% slower.** The scan is over
+    within the first 30 s (139 batches waiting, idle 0, where main had 3–15 idle ranks all
+    run), but both land at the same ~3.2–3.6 GiB/s, ~850 files/s, phase 5.5's ceiling for
+    every read-ahead setting. **Phase 5.5's reading was wrong: the scanner's ~1,000 entries/s
+    tracked the archive rate, it did not set it.** The one-node ceiling on VIT is the storage
+    path for 4 MiB files; multi-node scaling (phase 5.5 question 5) is the lever, not the
+    scan. The slowdown is the serial stat batch: 1,000 GPFS lstats on the worker thread with
+    the rank's readers idle, a few percent of each rank's time during which the node reads
+    with 30 ranks instead of 31. main did those stats on one rank, overlapped with the
+    others' reads. The csgteam `scan_dirs` array (8 × 1 × 128) ran throughout.
+  - The halved worker CPU on VIT (~210 → ~105 s per rank) is main's idle ranks spinning in
+    MPI's receive, not work saved: user+sys includes the spin, so a waiting rank costs as
+    much as a working one (the Manager's CPU equals its wall time).
+  - `--profile` run and `--cpu-bind depth` rows: below, when they land.
+
 ---
 
 ## 4. Part C: optional indexes (new)

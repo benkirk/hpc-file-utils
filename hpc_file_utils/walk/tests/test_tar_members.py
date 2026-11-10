@@ -10,6 +10,7 @@ import types
 import pytest
 
 from hpc_file_utils.walk.common.stats import WalkStats
+from hpc_file_utils.walk.common.worker import FileBatch
 from hpc_file_utils.walk.tar import worker as tar_worker
 from hpc_file_utils.walk.tar.worker import TarWorker
 
@@ -72,7 +73,7 @@ def test_members_are_tar_adds(entries, tmp_path, monkeypatch, read_ahead, whole_
     monkeypatch.setattr(tar_worker, "READ_WHOLE_MAX", whole_max)
     monkeypatch.chdir(tmp_path)
     w = _tar_worker(read_ahead)
-    w.process_batch((entries, 0))
+    w.process_batch(FileBatch(entries, 0))
     got = _members(tmp_path / "output-r001-b00000.tar")
     assert got == expected
     assert [m[0][1] for m in got].count(tarfile.LNKTYPE) == 1        # hard-b links to hard-a
@@ -87,7 +88,7 @@ def test_a_vanished_file_costs_one_error(entries, tmp_path, monkeypatch, read_ah
     os.unlink(entries[1])                                   # between the scan and the tar
     monkeypatch.chdir(tmp_path)
     w = _tar_worker(read_ahead)
-    w.process_batch((entries, 0))
+    w.process_batch(FileBatch(entries, 0))
     names = [m[0][0] for m in _members(tmp_path / "output-r001-b00000.tar")]
     assert (w.nwritten_files, w.stats.num_errors) == (len(entries) - 1, 1)
     assert entries[1].lstrip("/") not in names and len(names) == len(entries) - 1
