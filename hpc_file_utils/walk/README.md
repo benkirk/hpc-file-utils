@@ -260,6 +260,34 @@ rerun with nothing changed copies nothing: it costs only the walk.
   - a big directory is copied by several ranks;
   - a failing rsync fails the run.
 
+## CPU binding (perf-1, step A)
+
+The launcher decides how many CPUs a rank may run on, and a rank's threads (walktar's
+`--read-ahead` readers, walkstat's `--stat-threads`) share them. On derecho, PALS's default
+binds each rank to **one** CPU (`os.sched_getaffinity(0)` is `{rank}`), and that one CPU was
+the ceiling on small files on both filesystems: walktar's 16 readers lost a third of the
+rate on scratch `manyfiles` and on the GDEX VIT zarr on campaign. Any wider binding gives
+the whole gain, and the width past two cores makes no difference (the measurements are in
+the perf-1 entry below), so:
+
+```bash
+mpiexec --cpu-bind depth --depth 2 walktar ...     # two cores per rank
+```
+
+is the line to launch with (the scan scripts' `mpiexec` lines carry it), and every run
+prints the binding it got, from every rank's affinity mask, as
+
+```
+CPUs per rank: 2 (the launcher's binding; ...)
+```
+
+so a number in a log always says what binding it was measured under. `--depth 2` fits any
+rank count up to the node's 128 cores; `--depth 4` fits 32 ranks exactly and `--depth 8`
+spreads 32 ranks over the 256 hardware threads; `--cpu-bind none` leaves every rank free to
+roam, which measured the same within the noise. walktar does not size `--read-ahead` from
+the mask: with one CPU per rank fewer threads are slower still (phase 5.5), and with two or
+more the default 16 is already past the point where more threads pay.
+
 ## Indexes (the sweep's Part C)
 
 `--index` makes walkstat and walktar also write one line of metadata per entry, TSV,
@@ -695,3 +723,185 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
     of the `E` records, since every rank's batches came from one directory.
   - `du` right after a write under-reports on Lustre (16 KiB for 200,000 lines), so the
     sizes above are the million run's, taken a minute later; nothing stayed on scratch.
+
+### perf-1, step A (CPU binding and `--read-ahead`)
+
+- **The question** (`docs/GLADE_PERFORMANCE.md` 7): should walktar size `--read-ahead` from
+  the CPUs a rank has, or should the launcher bind by default? **The launcher binds**
+  ([CPU binding](#cpu-binding-perf-1-step-a) above): the scan scripts' `mpiexec` lines carry
+  `--cpu-bind depth --depth 2`, every run prints `CPUs per rank: N`, and `--read-ahead`
+  stays 16. Nothing in the walk changed.
+- **What a rank gets**, from `os.sched_getaffinity(0)` on every rank (`hfu-bench/affinity.py`,
+  and each bench rank's own `Cpus_allowed_list`), 32 ranks on one node (128 cores, 256
+  hardware threads):
+
+  | `mpiexec` | CPUs per rank | the masks |
+  |---|---|---|
+  | PALS's default | 1 | rank r on CPU r |
+  | `--cpu-bind depth --depth 2` | 2 | `0-1`, `2-3`, … `62-63`: two cores each, half the node |
+  | `--cpu-bind depth --depth 4` | 4 | `0-3` … `124-127`: every core |
+  | `--cpu-bind depth --depth 8` | 8 | `0-7` … `248-255`: every hardware thread |
+  | `--cpu-bind none` | 256 | one mask for all |
+
+- **Measured on derecho** (jobs 8135797 and 8135798 on scratch; 8135799 and 8135800 on
+  GDEX VIT → csg; 1 × 32, `--read-ahead` 16, two rounds, the bindings' order rotated
+  between rounds, each `manyfiles` run after a `bigdir` run; the csgteam `scan_dirs` array
+  (8 subjobs) ran throughout the campaign runs). Scratch's second round (and a re-run of
+  it, job 8136917) met outside load on Lustre, `bigdir` at 1.1–1.7 GiB/s instead of 2.5:
+  those numbers are marked "loaded" and compare only with each other. "CPU" is user+sys per
+  worker rank, mean over the 31 (it includes MPI's spin while a rank waits).
+
+  | binding (CPUs per rank) | scratch `bigdir`: 1,024 × 1 GiB | scratch `manyfiles`: 200,000 × 1 MiB | GDEX VIT zarr: 333,110 × ~4 MiB → csg |
+  |---|---|---|---|
+  | PALS's default (1) | 412.6 s | 62.3 s; CPU 36 s | 385.1, 442.3 s (3.35, 2.92 GiB/s); CPU 97, 105 s |
+  | `depth 2` (2) | 403.8 s; loaded 483.1 s | **39.7** s; CPU 36 s; loaded 75.6 s | **275.9, 272.7 s** (4.68, 4.74 GiB/s); CPU 67, 71 s |
+  | `depth 4` (4) | 404.3 s; loaded 901.2, 917.5 s | 43.5 s; CPU 42 s; loaded 82.9, 79.4 s | 276.3, 321.8 s (4.68, 4.02 GiB/s); CPU 50, 53 s |
+  | `depth 8` (8) | 412.7 s; loaded 870.5 s | 40.5 s; CPU 41 s; loaded 77.1 s | 266.7, 325.7 s (4.84, 3.97 GiB/s); CPU 51, 54 s |
+  | `none` (256) | 405.0 s | 44.6 s; CPU 47 s | 271.0, 341.7 s (4.77, 3.78 GiB/s); CPU 65, 71 s |
+
+  - **One CPU per rank was the ceiling, and any wider binding lifts it the same**: on
+    small files every binding from two cores up is within the noise of every other, 1.4–1.6×
+    over the default on both filesystems (`manyfiles` 62 → 40–45 s, VIT 385–442 → 267–342 s
+    with the campaign noisier in the second round); big files never move. The width past
+    two cores buys nothing: the 16 readers of a rank are waiting on storage round trips, not
+    competing for CPU, once they have two cores between them.
+  - **The CPU per rank falls as the binding widens** on VIT (97–105 → 50–54 s at `depth 4`):
+    less time spinning in MPI and in the kernel's scheduler, not less work; the two-core
+    rows spend 67–71 s and finish no slower.
+- **`--read-ahead` against the binding** (jobs 8136189, 8136190, 8136191, one round each,
+  the same trees; the 16 rows are from the table above):
+
+  | binding | `--read-ahead` | `manyfiles` | VIT → csg |
+  |---|---|---|---|
+  | `depth 2` | 8 | – | 275.5 s (4.69 GiB/s) |
+  | `depth 2` | 16 | 39.7 s | 275.9, 272.7 s |
+  | `depth 2` | 32 | loaded 58.8 s (`bigdir` 720 s) | 286.3 s (4.51 GiB/s) |
+  | `depth 2` | 64 | loaded 57.5 s (`bigdir` 846 s) | – |
+  | `depth 4` | 8 | 51.9 s (3.77 GiB/s) | 313.0 s (4.13 GiB/s) |
+  | `depth 4` | 16 | 43.5 s | 276.3, 321.8 s |
+  | `depth 4` | 32 | 39.1 s (5.00 GiB/s) | 334.4 s (3.86 GiB/s) |
+  | `depth 4` | 64 | 43.7 s (4.48 GiB/s) | – |
+
+  - **16 is where it stops paying.** 8 threads lose 20% on `manyfiles` (and 10% on VIT at
+    `depth 4`); 32 and 64 are within the noise of 16 on scratch and no better on campaign.
+    So walktar does not derive the thread count from the mask: with one CPU, 16 threads
+    beat 4 by 1.6× (phase 5.5), with two or more they are already enough, and the mask
+    cannot tell a rank what the storage can overlap.
+- **Bench hygiene, learned here:** scratch was under outside load from the second round
+  on (`bigdir` at 1.1–1.7 GiB/s, 617–918 s, where it reads 2.5 GiB/s otherwise), which
+  pushed job 8135798 past its walltime in its last run (the 574 GiB of tars it left were
+  deleted by hand) and made a re-run pointless (stopped). A `bigdir` time is the
+  storage-state control for the `manyfiles` run after it: trust a small-file pair only
+  when its `bigdir`s agree. Under the load the ranking held (`depth 2` 75.6 s, `depth 8`
+  77.1, `depth 4` 79.4–82.9), which is as much as that round says.
+
+### perf-1, step C (walkstat `--stat-threads`)
+
+- **`--stat-threads K`** [0]: a stat batch's lstats K at a time in K threads, yielded in
+  order through the same `in_flight()` as walktar's reads, so the counting, the directory
+  lists and the golden output are as with the serial calls (0). walktar's stat batches
+  already ran this way in its reader threads (Part B's second commit); `StatWorker` now
+  owns the mechanism (`stat_depth()`, `stat_pool()`, `lstats()`), and `TarWorker` points
+  them at `--read-ahead` and its readers. Tests: the golden summary and userlists with
+  `--stat-threads 4` and with `--batch-files 3 --stat-threads 2`; `lstats()` keeps the
+  order and yields an error in place at 0, 2 and 16 threads; the split-directory and
+  vanished-file tests at 0 and 3 or 4 threads; the option's bounds.
+- **Measured on derecho** (job 8138431; 1 × 32, PALS's default binding, `--verbose`, two
+  rounds with the order rotated; the csgteam `scan_dirs` array, 8 subjobs, running
+  throughout; GDEX read-only, walkstat opens no file):
+
+  | tree | serial (0) | `--stat-threads 4` | `--stat-threads 16` |
+  |---|---|---|---|
+  | GDEX VIT zarr: 333,110 files, one directory (campaign) | 22.6, 14.6 s (15–23k items/s) | 20.7, 18.5 s | 18.8, 19.8 s |
+  | GDEX `.Radiosonde`: 584,851 entries, 292 directories (campaign) | 31.6, 28.3 s (19–21k items/s) | 31.9, 31.1 s | 34.0, 34.6 s |
+  | scratch `million`: 1,000,000 empty files, one directory | 66.2 (cold), 1.8 s | 2.2, 2.2 s | 2.2, 2.3 s |
+  | scratch `manyfiles`: 200,000 × 1 MiB, one directory | 14.5 (cold), 0.8 s | 0.9, 0.9 s | 0.9, 0.7 s |
+
+  - **On an unloaded campaign the threads buy nothing.** A stat cost 1.5–2 ms today (31
+    ranks × ~600 stats/s each), and 4 or 16 in flight per rank moved the walk nowhere:
+    15–23k entries/s is the node's GPFS client, the ceiling phase 3.5 found (32 ranks
+    beat 96 on one node; CGD-ppc at 32k items/s at 1 × 32), and it is a throughput limit,
+    not a latency one, so overlapping the round trips does not lift it. Scratch's
+    sub-millisecond stats are the same within the noise once the first walk has warmed
+    the metadata server (the cold first walk of each tree is the 66 and 14.5 s).
+- **The loaded case is the one the pool was for** (job 8138503, `hfu-bench/benchstatload.pbs`:
+  each round starts a walktar of VIT → csg on the same node, 32 ranks × 16 readers at
+  3.3–3.5 GiB/s, and runs the three walkstats of `.Radiosonde`, 32 ranks unbound, one after
+  another while it reads; the walktar's tars deleted after, csg empty; the scans running):
+
+  | `.Radiosonde`, 584,851 entries | while the node reads campaign at 3–4 GiB/s | after the read ended |
+  |---|---|---|
+  | serial (0) | **343.3 s** (1,724 items/s: ~18 ms per lstat per rank) | 20.6 s |
+  | `--stat-threads 4` | **194.7 s** (3,031 items/s) | 36.7 s |
+  | `--stat-threads 16` | **64.6 s** (9,387 items/s) | 37.7 s |
+
+  - **Under the readers' load a stat costs ~18 ms, and the pool gives it back**: 16 threads
+    walk 5.3× faster than the serial batches, 4 threads 1.8×, where unloaded the three are
+    within 2× of each other at the client's ceiling. The loaded stat is latency, which
+    threads overlap; the unloaded one is throughput, which they cannot lift. That is the
+    campaign case the scans meet when a walktar or a copy shares the node (or, from the
+    Part B profile, when the node's own readers do), and the reason to keep the option.
+  - **The default stays 0.** The scans run alone on their nodes, where the serial batches
+    are at the ceiling already; `--stat-threads 16` is for a node that is also reading.
+    (The `--cpu-bind none` walkstat ranks shared the node with the walktar's 64 bound
+    cores; the unloaded rows of this job and of job 8138431 agree, so the sharing itself
+    cost nothing.)
+
+### perf-1, step B (multi-node walktar on campaign)
+
+- **Phase 5.5's question 5:** does walktar's ~4.5 GiB/s per node add up across nodes on
+  campaign? GDEX VIT zarr (333,110 × ~4 MiB, one directory) → csg at 1, 2 and 4 nodes × 32
+  ranks, two cores per rank (step A), `--read-ahead` 16, the csgteam `scan_dirs` array
+  (8 subjobs) running throughout. Each run's tars were deleted after it; csg holds nothing.
+- **First, a hang.** The first two 2-node runs (jobs 8138513, 8139236) stopped at the
+  2-minute progress line with 95–98% of the tree in the tars (the second: 327,110 of
+  333,110 files) and every rank spinning in MPI's receive until the walltime or the
+  bench's stall watchdog. The ranks' Python stacks (`kill -USR1 <pid>` now makes a rank
+  write every thread's stack to stderr, `faulthandler` in `cli.py`) showed all 63 workers
+  waiting for the answer to the `ready` they had sent and the Manager, whose last line
+  said `idle=59, queued=3`, waiting for any message: four `ready`s that were sent were never
+  matched by the Manager's receive. mpi4py receives a pickled message with a matched probe
+  (`MPI_Mprobe` + `MPI_Mrecv`); with `mpi4py.rc.recv_mprobe = False` (`MPI_Probe` +
+  `MPI_Recv`) the same run finished (job 8139309), and with the matched probe kept but the
+  rendezvous threshold raised to 1 MiB (`FI_CXI_RDZV_THRESHOLD`) it hung again (job
+  8139310). So **every pickled receive now goes through Probe + Recv** (`cli.py`, before
+  `from mpi4py import MPI`; `HFU_RECV_MPROBE=1` restores the matched probe for
+  experiments): one thread per rank talks to MPI, so the unmatched probe is safe. One node
+  never leaves shared memory, which is why no single-node run ever saw this, and phase 4's
+  multi-node walkstat shipped only small messages.
+- **Measured** (jobs 8138512 and 8139452 at 1 node, 8139309 and 8139453 at 2, 8139454 at
+  4, 8140120 at 8; "wall" is the job's, from `mpiexec` to exit, and "walk" the Manager's
+  last progress line; "per node" is the walk's rate over the nodes; CPU is user+sys, the
+  Manager's and the workers' mean per rank; the csgteam array's 8 subjobs ran throughout):
+
+  | nodes × ranks | wall (walk) | write rate (walk) | per node | CPU: Manager; worker mean |
+  |---|---|---|---|---|
+  | 1 × 32, matched probe, two rounds | 324.8, 284.9 s | 3.98, 4.54 GiB/s | 4.0–4.5 GiB/s | 324, 285 s; 71, 68 s |
+  | 1 × 32 | 280.6 s | 4.60 GiB/s | 4.6 GiB/s | 275 s; 69.5 s |
+  | 2 × 32 | 150.5, 160.5 s | 8.58, 8.05 GiB/s | 4.0–4.3 GiB/s | 147, 155 s; 40.6, 40.4 s |
+  | 4 × 32 | 90.3, 90.2 s (80.5, 82.6 s) | 14.3 GiB/s (16.1, 15.6) | 3.9–4.0 GiB/s | 81, 83 s; 23.5, 30.8 s |
+  | 8 × 32 | 60.2, 60.1 s (55.3, 53.5 s) | 21.5 GiB/s (23.4, 24.1; 24.6 peak) | 2.9–3.0 GiB/s | 56, 54 s; 27.5, 26.8 s |
+
+  - **The nodes add up.** Every node brings its ~4 GiB/s GPFS client to the sum: 4.6, 8.3,
+    16 GiB/s for 1, 2, 4 nodes, with csg taking 16 GiB/s of writes without a sign of
+    strain; 8 nodes reach 24 GiB/s (24.6 at the peak), 3 GiB/s per node, with the tail
+    (below) now 40% of a 55 s walk: the per-node rate has not fallen, the walk has run
+    out of batches to spread. Phase 5.5's question 5 is answered: the VIT-shaped case scales with
+    nodes, and only with nodes.
+  - **The Manager is still nowhere near its limit** (phase 5.5's question 4): at 4 nodes it
+    handled 37,424 messages in 0.6 s of the 80 s walk (0.016 ms each), blocked in its
+    receive 99.3% of the time. The share traffic is where the rank count shows: 36,253
+    share requests for 607 batches handed out, 35,520 answered empty (4,236 and 4,170 at
+    one node, 10,498 and 10,364 at two; 69,384 and 65,327 at 8 nodes, where the Manager
+    is still 96.9% blocked and spends 1.7 s of 55 handling 70,538 messages): the
+    ping-pong grows ~9× for 4× the ranks, and it costs each busy worker one probe and
+    one small reply per request, a few hundred over the run, nothing measurable. Not
+    worth a change at this scale.
+  - **The tail is one batch.** At 4 nodes the last progress line before the end showed 6
+    idle ranks with nothing queued: a 1,000-file batch of VIT is ~4 GiB, ~30 s for one
+    rank, so the walk ends when the last ranks finish theirs, about 20 s after the first
+    rank runs dry (the Manager's "first idle worker waited 21 s for the end", 14–16 s at
+    1–2 nodes, 22–23 s of a 55 s walk at 8). A smaller `--batch-size` (1–2 GiB) would trim
+    it where the tail matters: at 8 nodes it is the difference between 24 and ~30 GiB/s.
+  - **Worker CPU per rank halves per doubling**, as the work per rank does; the Manager's
+    CPU is its wall (it spins in the receive).
