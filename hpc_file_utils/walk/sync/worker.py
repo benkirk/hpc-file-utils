@@ -32,9 +32,9 @@ What is left to a final serial rsync -aHAX --delete SRC/ DEST/: deletions, hard 
 (copied here as separate files) and the directories' real modes and times.
 """
 
+import logging
 import os
 import stat
-import sys
 import time
 from typing import NamedTuple
 
@@ -42,6 +42,8 @@ from hpc_file_utils.walk.common.formatting import printable
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy
 from hpc_file_utils.walk.sync.rsync import RSYNC_VANISHED, Rsync, rsync_command, split
+
+log = logging.getLogger(__name__)
 
 DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'
 
@@ -234,7 +236,7 @@ class SyncWorker(BaseWorker):
                 rc = rsync.wait(self.tick)
                 if rc == RSYNC_VANISHED:
                     vanished = True
-                    print(f'[{self.rank:3d}] rsync: some source files vanished (exit {rc})', file=sys.stderr)
+                    log.warning('rsync: some source files vanished (exit %d)', rc)
                 elif rc != 0:
                     failed = True
                     tail = rsync.tail()

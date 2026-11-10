@@ -4,12 +4,16 @@ Rank 0 runs the Manager, every other rank a worker of the requested tool. What d
 between the tools comes from their Tool (walk/tools.py, common/tool.py).
 """
 
+import logging
 import sys
 from datetime import datetime
 
+from hpc_file_utils.walk.common import log as walk_log
 from hpc_file_utils.walk.common.formatting import format_number
 from hpc_file_utils.walk.common.options import parse_options
 from hpc_file_utils.walk.tools import TOOLS
+
+log = logging.getLogger(__name__)
 
 
 def main(app, argv=None):
@@ -19,6 +23,7 @@ def main(app, argv=None):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+    walk_log.setup(rank)                 # diagnostics on stderr, '[rank] LEVEL ...' (common/log.py)
 
     # An uncaught exception on any rank aborts the whole job. Otherwise the other ranks
     # wait forever in their next collective or receive (a hang, not a failure).
@@ -39,8 +44,8 @@ def main(app, argv=None):
             args = parse_options(app, argv)
         except SystemExit as e:          # argparse errors and --help
             exit_status = e.code if isinstance(e.code, int) else 1
-        except Exception as e:           # e.g. 'ERROR: no such directory'
-            print(f'ERROR: {type(e).__name__}: {e}', file=sys.stderr)
+        except Exception as e:           # e.g. 'no such directory'
+            log.error('%s: %s', type(e).__name__, e)
             exit_status = 1
         if args is None and exit_status == 0:
             exit_status = None           # --help: done, successfully
@@ -53,7 +58,7 @@ def main(app, argv=None):
 
     if size < 2:
         if rank == 0:
-            print(f'ERROR: {app} needs at least 2 MPI ranks (a manager and a worker)', file=sys.stderr)
+            log.error('%s needs at least 2 MPI ranks (a manager and a worker)', app)
         return 2
 
     comm.Barrier()
@@ -74,6 +79,7 @@ def main(app, argv=None):
         print(f'Running {app} on {size} MPI ranks', flush=True)
         walker = Manager(options=args)
 
+    walk_log.setup(rank, walker.options.verbose)   # now that every rank has the options
     run_walker(walker, rank)
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
@@ -108,9 +114,8 @@ def report(manager, stats, tool):
     options = manager.options
     # every worker's last 'ready' carried its final counts, so these must agree
     if (manager.progress.total_items, manager.progress.total_bytes) != (stats.num_items, stats.total_size):
-        print(f'WARNING: the Manager counted {manager.progress.total_items} items / {manager.progress.total_bytes} bytes, '
-              f'the workers {stats.num_items} / {stats.total_size}',
-            file=sys.stderr)
+        log.warning('the Manager counted %d items / %d bytes, the workers %d / %d',
+                    manager.progress.total_items, manager.progress.total_bytes, stats.num_items, stats.total_size)
 
     print('\n'.join(balance_lines(stats, manager.walk_elapsed)))
     if options.verbose:

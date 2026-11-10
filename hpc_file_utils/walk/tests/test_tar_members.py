@@ -84,7 +84,7 @@ def test_members_are_tar_adds(entries, tmp_path, monkeypatch, read_ahead, whole_
 
 
 @pytest.mark.parametrize("read_ahead", [0, 4])
-def test_a_vanished_file_costs_one_error(entries, tmp_path, monkeypatch, read_ahead, capsys):
+def test_a_vanished_file_costs_one_error(entries, tmp_path, monkeypatch, read_ahead, caplog):
     os.unlink(entries[1])                                   # between the scan and the tar
     monkeypatch.chdir(tmp_path)
     w = _tar_worker(read_ahead)
@@ -92,7 +92,7 @@ def test_a_vanished_file_costs_one_error(entries, tmp_path, monkeypatch, read_ah
     names = [m[0][0] for m in _members(tmp_path / "output-r001-b00000.tar")]
     assert (w.nwritten_files, w.stats.num_errors) == (len(entries) - 1, 1)
     assert entries[1].lstrip("/") not in names and len(names) == len(entries) - 1
-    assert "Cannot add to tar file" in capsys.readouterr().err
+    assert "Cannot add to tar file" in caplog.text
     if w.readers is not None:
         w.readers.shutdown()
 

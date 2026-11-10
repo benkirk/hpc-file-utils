@@ -237,6 +237,13 @@ rerun with nothing changed copies nothing: it costs only the walk.
 
 ## Behaviour changes since the csg-utils import
 
+- **Diagnostics go through `logging` (the sweep's Part D).** Every rank's warnings and
+  errors reach stderr as `[rank] LEVEL message`, one write per line: `[  3] ERROR Cannot
+  scan: ...`, `[  3] WARNING directory '...' vanished`, rsync's exit 24, and rank 0's
+  startup errors (`[  0] ERROR no such directory ...`). `--verbose` also enables DEBUG
+  records (none yet). The results (the banner, the progress line, the `-->` lines, the
+  summary and the userlists) stay `print` on rank 0's stdout, byte-identical: the scans
+  and the tests parse them. `BaseWorker.error()` is still the one place that counts errors.
 - **Termination is race-free.** The Manager now treats a worker as idle only while it holds
   that worker's unanswered `ready`, and receives each worker's messages in order (see the
   docstring at the top of `manager.py`). Before, a walk could
@@ -529,5 +536,12 @@ rerun with nothing changed copies nothing: it costs only the walk.
   batches and the tars are as before and `--read-ahead 0` is the serial path. walkstat's
   stat batches stay serial (it has no threads; a pool for them would be its own option,
   and the same ~6–9 ms per GPFS lstat says it would pay).
-  - VIT re-measured (`main` 3ba9582 against this, two rounds, and `--cpu-bind depth`):
-    rows to follow.
+  - **VIT with `--cpu-bind depth --depth 4`** (job 8129484, Part B's first commit, the
+    serial stat batches still in): **287.6 s, 4.49 GiB/s**, against 361–380 s for `main`
+    and 402–404 s for the same code under PALS's default binding, under the same
+    production-scan load. So on campaign GPFS too the ceiling was the one CPU per rank
+    that the 16 reader threads shared, not the scan and not the storage path: phase 5.5's
+    question 2, answered on both filesystems. Worker CPU 58 s per rank (the ranks spend
+    their time in I/O, not spinning).
+  - VIT re-measured with the threaded lstats (`main` 3ba9582 against this, two rounds, and
+    its profile): rows to follow.

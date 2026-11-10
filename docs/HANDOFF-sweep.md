@@ -842,6 +842,37 @@ contract (see the rules above). Part D changes only how they are flushed.
 
   Both would match hpc-usage-queries' `console.print`. Revisit if interactive use grows.
 
+### Part D, done (2026-11-09, branch `sweep-B`, one commit)
+- `common/log.py`: `setup(rank, verbose)` puts one `StreamHandler(sys.stderr)` on the
+  `hpc_file_utils.walk` logger, format `[%(rank)3d] %(levelname)s %(message)s` (the rank from a
+  `logging.Filter`), level DEBUG with `--verbose` else INFO, `propagate=False`. `cli.main()`
+  calls it right after the rank is known (so rank 0's option errors are logged) and again once
+  every rank has the options (the level). Modules use `logging.getLogger(__name__)`.
+- Routed: `BaseWorker.error()` (ERROR, still the counter), `vanished()` (WARNING), walksync's
+  rsync exit 24 (WARNING), rank 0's "no such directory" and "needs at least 2 MPI ranks"
+  (ERROR), and the Manager-against-workers count mismatch (WARNING). The stderr text changed
+  from `[  1] Cannot scan: ...` to `[  1] ERROR Cannot scan: ...`; the tests match substrings.
+- Not routed, on purpose: the `-->` lines, the Manager's counters and the `--verbose` per-rank
+  table stay `print` on stdout. 5.1 listed the counters as INFO, but `test_batches.py` parses
+  both from stdout and so would the scans: 5.2 wins. No `--log-level` option: nothing is at
+  INFO or DEBUG yet.
+- `tests/test_log.py`: the format and levels with `capfd`, the handler replaced on a second
+  `setup()`, and `error()` counting while it logs.
+
+### Part E1/E2, done (2026-11-09, three commits, the two E1 ones in `.git-blame-ignore-revs`)
+- E1a: 57 trailing bare returns (found by `ast`, so early returns stayed), 70 banners, the
+  blank-line runs, 12 one-line bodies, 10 Yoda conditions, 4 `super().__init__()`, 6
+  `flush=True` pairs (`cli.py`'s excepthook flush and `stat/report.py`'s after `_write()` are
+  not print-then-flush pairs and stayed), `import io, os, stat` split, `class MaxHeap:`.
+- E1b: 107 `.format()` calls on literals are f-strings; the seven on templates (`DIR_ROW`,
+  `FILE_ROW`, `row`, `pattern`) stay. An `ast`-based converter did 97 (it refused nested
+  specs, escapes, concatenated literals and quote clashes under Python 3.10's rules), the
+  rest by hand; the lines it collapsed were re-wrapped as implicitly concatenated f-strings.
+- E2: the `humanfriendly` fallback, `MaxHeap`'s `heapify([])`, `get_list()` and `empty()`
+  (callers test the heap through `__len__`). `MPIClass.i_am_root` and `.dirs` were already
+  gone (A1).
+- Golden output never changed through any of it; `make test` after every commit.
+
 ---
 
 ## 6. Part E: Pythonic cleanup, and what not to "modernize"

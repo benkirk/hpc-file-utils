@@ -8,11 +8,13 @@ stack; a RankFile is a per-rank output opened at its first write and closed by r
 """
 
 import collections
+import logging
 import os
-import sys
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
+
+log = logging.getLogger(__name__)
 
 PROGRESS_INCREMENT = 20000   # entries of one directory between progress messages
 SHARE_CHECK_INCREMENT = 1000 # entries of one directory (or items of one batch) between looks for a 'share'
@@ -84,16 +86,16 @@ class BaseWorker(MPIClass):
 
     def error(self, what, error):
         """Count what could not be done (an entry scanned, stat'ed, archived or copied) and
-        say so on stderr: '[rank] Cannot <what>: <error>'."""
+        say so on stderr: '[rank] ERROR Cannot <what>: <error>' (common/log.py)."""
         self.stats.num_errors += 1
-        print(f'[{self.rank:3d}] Cannot {what}: {error}', file=sys.stderr)
+        log.error('Cannot %s: %s', what, error)
 
     def vanished(self, dirname):
         """True, after saying so, if a directory we were handed is gone: a last-minute
         check for a race with whoever is changing the tree."""
         if os.path.exists(dirname):
             return False
-        print(f"[{self.rank:3d}] directory '{dirname}' vanished", file=sys.stderr)
+        log.warning("directory '%s' vanished", dirname)
         return True
 
     def push_dir(self, path):

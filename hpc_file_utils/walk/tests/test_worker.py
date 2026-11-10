@@ -328,7 +328,7 @@ def test_stat_batches_close_file_batches_by_count_or_real_size(tree, batch_files
 
 
 @pytest.mark.parametrize("read_ahead", [0, 4])
-def test_a_vanished_file_costs_walktar_one_error(tree, read_ahead, capsys):
+def test_a_vanished_file_costs_walktar_one_error(tree, read_ahead, caplog):
     """A name that fails its lstat, in a reader thread or not, counts one error and the
     rest of the batch is archived in order."""
     for name in ("a", "b", "c", "d"):
@@ -340,7 +340,7 @@ def test_a_vanished_file_costs_walktar_one_error(tree, read_ahead, capsys):
     w.process_batch(batch)
     assert (w.stats.num_items, w.stats.num_errors) == (3, 1)
     assert w.batch == [str(tree / n) for n in batch.names if n != "b"]      # the batch's order
-    assert "Cannot stat" in capsys.readouterr().err
+    assert "Cannot stat" in caplog.text
     _tar_members(w)                            # shuts the readers down
 
 
