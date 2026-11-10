@@ -2,13 +2,10 @@
 
 import platform
 
-from hpc_file_utils.walk.common.protocol import TAGS
 from hpc_file_utils.walk.common.stats import RankInfo, WalkStats
 
 
 class MPIClass:
-
-    tags = TAGS
 
     def __init__(self, options=None):
         from mpi4py import MPI
@@ -18,7 +15,6 @@ class MPIClass:
         self.rank   = self.comm.Get_rank()
         self.nranks = self.comm.Get_size()
         self.options = self.comm.bcast(options)
-        self.maxnumdirs = 0
         self.stats = WalkStats(self.options.heap_size)
         self.total_errors = 0 # sum over all ranks, set in collect()
 

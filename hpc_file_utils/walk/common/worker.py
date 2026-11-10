@@ -13,6 +13,7 @@ import os
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
+from hpc_file_utils.walk.common.protocol import Tag
 
 log = logging.getLogger(__name__)
 
@@ -231,17 +232,17 @@ class BaseWorker(MPIClass):
         """The local stack is full: send its oldest half to the Manager."""
         self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
         give = self.oldest_half()
-        self.comm.send((give, self.progress_payload()), dest=0, tag=self.tags['dir_reply'])
+        self.comm.send((give, self.progress_payload()), dest=0, tag=Tag.DIR_REPLY)
 
     def check_share(self):
         """Answer a 'share' from the Manager, if one is waiting, with the oldest half of
         the local stack and of our closed batches (either may be nothing). Never the open
         batch: it is still filling."""
-        if self.comm.iprobe(source=0, tag=self.tags['share']):
-            self.comm.recv(source=0, tag=self.tags['share'])
+        if self.comm.iprobe(source=0, tag=Tag.SHARE):
+            self.comm.recv(source=0, tag=Tag.SHARE)
             dirs = self.oldest_half()
             batches = self.oldest_batches()
-            self.comm.send((dirs, batches, self.progress_payload()), dest=0, tag=self.tags['share_reply'])
+            self.comm.send((dirs, batches, self.progress_payload()), dest=0, tag=Tag.SHARE_REPLY)
 
     def report_progress(self, only_if_due=False):
         """Send our counts. With only_if_due, only when --progress seconds (at most
@@ -253,7 +254,7 @@ class BaseWorker(MPIClass):
         if only_if_due and (now - self.last_progress_time) < interval:
             return
         self.last_progress_time = now
-        self.comm.send(self.progress_payload(), dest=0, tag=self.tags['progress'])
+        self.comm.send(self.progress_payload(), dest=0, tag=Tag.PROGRESS)
 
     def drain_local_work(self):
         """Process our batches and walk our stack, batches first, until both are empty;
@@ -287,17 +288,17 @@ class BaseWorker(MPIClass):
             # A 'share' that arrives meanwhile is ignored: we have nothing to give, and
             # the Manager forgets the request when it receives our 'ready'.
             t0 = MPI.Wtime()
-            self.comm.send(self.progress_payload(), dest=0, tag=self.tags['ready'])
+            self.comm.send(self.progress_payload(), dest=0, tag=Tag.READY)
             while True:
                 msg = self.comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
-                if status.Get_tag() != self.tags['share']:
+                if status.Get_tag() != Tag.SHARE:
                     break
 
-            if status.Get_tag() == self.tags['terminate']:
+            if status.Get_tag() == Tag.TERMINATE:
                 assert msg is None
                 break
 
-            assert status.Get_tag() == self.tags['execute']
+            assert status.Get_tag() == Tag.EXECUTE
             self.wait_time += MPI.Wtime() - t0   # only waits that got work: dispatch latency
             dirs, batches = msg
             self.local_dirs.extend(dirs)

@@ -97,7 +97,6 @@ def test_worker_updates_have_their_own_timer(progress, interval):
     w.options.progress = progress
     w.MPI = types.SimpleNamespace(Wtime=lambda: clock[0])
     w.comm = types.SimpleNamespace(send=lambda msg, dest, tag: sent.append(clock[0]))
-    w.tags = {"progress": 0}
     w.last_progress_time = 0.0
     del w.report_progress                       # the real method, not _worker()'s stub
     for t in range(0, 31):
@@ -428,7 +427,6 @@ def _share_worker(dirs, batches):
     w = _worker()
     del w.check_share                          # the real method
     sent = []
-    w.tags = {"share": 32, "share_reply": 33}
     w.comm = types.SimpleNamespace(iprobe=lambda source, tag: True, recv=lambda source, tag: None,
                                    send=lambda msg, dest, tag: sent.append((msg, tag)))
     w.local_dirs, w.local_batches = list(dirs), list(batches)

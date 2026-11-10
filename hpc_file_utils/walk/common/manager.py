@@ -79,9 +79,11 @@ those probes kept the Manager busy and made workers wait; see walk/README.md.)
 
 import heapq
 from collections import deque
+from dataclasses import dataclass
 
 from hpc_file_utils.walk.common.formatting import format_number, format_size
 from hpc_file_utils.walk.common.mpiclass import MPIClass
+from hpc_file_utils.walk.common.protocol import Tag
 from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
 from hpc_file_utils.walk.tools import TOOLS
 
@@ -89,13 +91,36 @@ def _ms(seconds):
     return f'{1e3 * seconds:.3f} ms'
 
 
+@dataclass
+class Counters:
+    """The Manager's counters: where its directories and batches came from and went
+    (printed after every walk) and, with --verbose, how busy it was."""
+    nsends: int = 0
+    nrecvs: int = 0
+    ndispatches: int = 0          # 'execute' messages
+    ndirs_overflow: int = 0       # directories received as overflow (dir_reply)
+    ndirs_shared: int = 0         # ... in share_reply
+    nshares: int = 0              # 'share' requests sent
+    nshares_empty: int = 0        # ... answered with no directories (nor batches)
+    nbatches_shared: int = 0      # batches received in share_reply
+    nbatch_dispatches: int = 0    # ... handed out, one per 'execute'
+    maxnumdirs: int = 0           # most directories queued here at once
+    last_written: int = 0         # bytes written at the last progress line (rate 'now')
+    # instrumentation (--verbose)
+    wait_time: float = 0.0        # blocked in recv, waiting for any message
+    busy_time: float = 0.0        # handling messages and answering 'ready's
+    max_handle_time: float = 0.0
+    sum_ready_wait: float = 0.0   # how long each 'ready' was held before its 'execute'
+    max_ready_wait: float = 0.0
+    max_terminate_wait: float = 0.0
+
+
 class Manager(MPIClass):
 
     def __init__(self,options=None):
         super().__init__(options)
         MPI = self.MPI
-        self.nsends = 0
-        self.nrecvs = 0
+        self.c = Counters()
         self.dirs = list(self.options.dirs)           # directories waiting for a worker
         self.batches = deque()                         # batches waiting for a worker (phase 5)
         self.nworkers = self.nranks - 1
@@ -104,27 +129,9 @@ class Manager(MPIClass):
         self.share_pending = set()                     # workers with an unanswered 'share'
         self.progress = ProgressTally(self.nranks)
         self.progress_time = self.start_time = MPI.Wtime()
+        self.walk_elapsed = 0.0
         # what the tool's batches do, for the progress line and the last line (walkstat: nothing)
         self.verb, self.units = TOOLS[self.options.app].writes or ('wrote', 'archives')
-
-        # where the Manager's directories came from (printed after every walk)
-        self.ndispatches = 0         # 'execute' messages
-        self.ndirs_overflow = 0      # directories received as overflow (dir_reply)
-        self.ndirs_shared = 0        # ... in share_reply
-        self.nshares = 0             # 'share' requests sent
-        self.nshares_empty = 0       # ... answered with no directories (nor batches)
-        self.nbatches_shared = 0     # batches received in share_reply
-        self.nbatch_dispatches = 0   # ... handed out, one per 'execute'
-        self.last_written = 0        # bytes written at the last progress line (rate 'now')
-        self.walk_elapsed = 0.0
-
-        # instrumentation (--verbose)
-        self.wait_time = 0.0         # blocked in recv, waiting for any message
-        self.busy_time = 0.0         # handling messages and answering 'ready's
-        self.max_handle_time = 0.0
-        self.sum_ready_wait = 0.0    # how long each 'ready' was held before its 'execute'
-        self.max_ready_wait = 0.0
-        self.max_terminate_wait = 0.0
 
     def finished(self):
         """Nothing queued here and every worker idle: nothing left anywhere (see module doc)."""
@@ -152,8 +159,8 @@ class Manager(MPIClass):
         nbytes = written[0]
         if interval is None:
             return written_status(nbytes, elapsed, verb=self.verb)
-        status = written_status(nbytes, elapsed, nbytes - self.last_written, interval, len(self.batches), self.verb)
-        self.last_written = nbytes
+        status = written_status(nbytes, elapsed, nbytes - self.c.last_written, interval, len(self.batches), self.verb)
+        self.c.last_written = nbytes
         return status
 
     def report_progress(self, forceprint=False):
@@ -172,38 +179,38 @@ class Manager(MPIClass):
 
         if not forceprint:
             status += (f' [dirlen={format_number(len(self.dirs))}, queued={format_number(self.progress.total_queued)}, '
-                       f'idle={len(self.idle)}, sends={format_number(self.nsends)}, recvs={format_number(self.nrecvs)}, '
-                       f'shares={format_number(self.nshares)}]')
+                       f'idle={len(self.idle)}, sends={format_number(self.c.nsends)}, recvs={format_number(self.c.nrecvs)}, '
+                       f'shares={format_number(self.c.nshares)}]')
 
         print(status, flush=True)
 
     def handle(self, rank, tag, msg):
         """Act on one message from worker 'rank'."""
-        if tag == self.tags['dir_reply']:
+        if tag == Tag.DIR_REPLY:
             # overflow from a full local stack; the worker is still busy
             dirs, payload = msg
             self.update_progress(rank, payload)
             self.dirs.extend(dirs)
-            self.ndirs_overflow += len(dirs)
-            self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
+            self.c.ndirs_overflow += len(dirs)
+            self.c.maxnumdirs = max(self.c.maxnumdirs, len(self.dirs))
 
-        elif tag == self.tags['share_reply']:
+        elif tag == Tag.SHARE_REPLY:
             # the answer to our 'share'; the worker is still busy
             dirs, batches, payload = msg
             self.update_progress(rank, payload)
             self.share_pending.discard(rank)
             self.dirs.extend(dirs)
             self.batches.extend(batches)
-            self.ndirs_shared += len(dirs)
-            self.nbatches_shared += len(batches)
+            self.c.ndirs_shared += len(dirs)
+            self.c.nbatches_shared += len(batches)
             if not dirs and not batches:
-                self.nshares_empty += 1
-            self.maxnumdirs = max(self.maxnumdirs, len(self.dirs))
+                self.c.nshares_empty += 1
+            self.c.maxnumdirs = max(self.c.maxnumdirs, len(self.dirs))
 
-        elif tag == self.tags['progress']:
+        elif tag == Tag.PROGRESS:
             self.update_progress(rank, msg)
 
-        elif tag == self.tags['ready']:
+        elif tag == Tag.READY:
             # its stack is empty and it waits for our answer; a 'share' we sent it will
             # be ignored there, so forget it
             self.update_progress(rank, msg)
@@ -225,18 +232,18 @@ class Manager(MPIClass):
         while (self.batches or self.dirs) and self.idle:
             if self.batches:
                 give = ([], [self.batches.popleft()])
-                self.nbatch_dispatches += 1
+                self.c.nbatch_dispatches += 1
             else:
                 n = max(1, min(self.options.dirs_per_dispatch, len(self.dirs) // len(self.idle)))
                 give = (self.dirs[-n:], [])
                 del self.dirs[-n:]
             rank, when = self.idle.popleft()
             self.idle_set.discard(rank)
-            self.comm.send(give, dest=rank, tag=self.tags['execute']); self.nsends += 1
-            self.ndispatches += 1
+            self.comm.send(give, dest=rank, tag=Tag.EXECUTE); self.c.nsends += 1
+            self.c.ndispatches += 1
             wait = self.MPI.Wtime() - when
-            self.sum_ready_wait += wait
-            self.max_ready_wait = max(self.max_ready_wait, wait)
+            self.c.sum_ready_wait += wait
+            self.c.max_ready_wait = max(self.c.max_ready_wait, wait)
 
     def request_shares(self):
         """Idle workers and nothing to give them: ask busy workers to share their stacks.
@@ -252,9 +259,9 @@ class Manager(MPIClass):
                       if r not in self.idle_set and r not in self.share_pending]
         queued = self.progress.queued
         for rank in heapq.nlargest(want, candidates, key=lambda r: queued[r]):
-            self.comm.send(None, dest=rank, tag=self.tags['share']); self.nsends += 1
+            self.comm.send(None, dest=rank, tag=Tag.SHARE); self.c.nsends += 1
             self.share_pending.add(rank)
-            self.nshares += 1
+            self.c.nshares += 1
 
     def run(self):
         Wtime = self.MPI.Wtime
@@ -268,29 +275,29 @@ class Manager(MPIClass):
         while not self.finished():
             self.report_progress()
             t0 = Wtime()
-            msg = self.comm.recv(source=ANY_SOURCE, tag=ANY_TAG, status=status); self.nrecvs += 1
+            msg = self.comm.recv(source=ANY_SOURCE, tag=ANY_TAG, status=status); self.c.nrecvs += 1
             t1 = Wtime()
             self.handle(status.Get_source(), status.Get_tag(), msg)
             self.dispatch()
             if self.idle and not self.dirs and not self.batches:
                 self.request_shares()
             t2 = Wtime()
-            self.wait_time += t1 - t0
-            self.busy_time += t2 - t1
-            self.max_handle_time = max(self.max_handle_time, t2 - t1)
+            self.c.wait_time += t1 - t0
+            self.c.busy_time += t2 - t1
+            self.c.max_handle_time = max(self.c.max_handle_time, t2 - t1)
 
         self.walk_elapsed = Wtime() - self.start_time
 
         # every worker is waiting on its 'ready': answer each with 'terminate'
-        print(f'  --> Progress loop completed ({format_number(self.nsends)} sends / {format_number(self.nrecvs)} recvs)')
-        print(f'  --> Maximum # of dirs at once on manager: {format_number(self.maxnumdirs)}')
-        print(f'  --> Dispatches: {format_number(self.ndispatches)}; directories received as overflow: '
-              f'{format_number(self.ndirs_overflow)}, shared: {format_number(self.ndirs_shared)} '
-              f'({format_number(self.nshares)} share requests, {format_number(self.nshares_empty)} answered empty)')
+        print(f'  --> Progress loop completed ({format_number(self.c.nsends)} sends / {format_number(self.c.nrecvs)} recvs)')
+        print(f'  --> Maximum # of dirs at once on manager: {format_number(self.c.maxnumdirs)}')
+        print(f'  --> Dispatches: {format_number(self.c.ndispatches)}; directories received as overflow: '
+              f'{format_number(self.c.ndirs_overflow)}, shared: {format_number(self.c.ndirs_shared)} '
+              f'({format_number(self.c.nshares)} share requests, {format_number(self.c.nshares_empty)} answered empty)')
         written = self.written()
-        if self.nbatches_shared or written is not None:
-            line = (f'  --> Batches: {format_number(self.nbatches_shared)} received in share replies, '
-                    f'{format_number(self.nbatch_dispatches)} handed out')
+        if self.c.nbatches_shared or written is not None:
+            line = (f'  --> Batches: {format_number(self.c.nbatches_shared)} received in share replies, '
+                    f'{format_number(self.c.nbatch_dispatches)} handed out')
             if written is not None:
                 line += (f'; {self.verb} {format_number(written[1])} files, {format_size(written[0])} '
                          f'({format_number(written[0])} bytes) in {format_number(written[2])} {self.units}')
@@ -301,21 +308,21 @@ class Manager(MPIClass):
         while self.idle:
             rank, when = self.idle.popleft()
             self.idle_set.discard(rank)
-            self.comm.send(None, dest=rank, tag=self.tags['terminate']); self.nsends += 1
-            self.max_terminate_wait = max(self.max_terminate_wait, Wtime() - when)
+            self.comm.send(None, dest=rank, tag=Tag.TERMINATE); self.c.nsends += 1
+            self.c.max_terminate_wait = max(self.c.max_terminate_wait, Wtime() - when)
         if self.options.verbose:
-            print(f'  --> Manager ready -> terminate: the first idle worker waited {self.max_terminate_wait:.2f} s for the end')
+            print(f'  --> Manager ready -> terminate: the first idle worker waited {self.c.max_terminate_wait:.2f} s for the end')
 
         # OK, messages sent, report final progress
         self.report_progress(forceprint=True)
 
     def print_counters(self):
         """The Manager's load: how busy it was, and how long it held each 'ready'."""
-        loop_time = self.wait_time + self.busy_time
-        print(f'  --> Manager messages: {format_number(self.nrecvs)}; '
-              f'handling {_ms(self.busy_time / max(self.nrecvs, 1))} mean, {_ms(self.max_handle_time)} max per message')
-        print(f'  --> Manager blocked in recv: {self.wait_time:.2f} s of {loop_time:.2f} s in the loop '
-              f'({100 * self.wait_time / loop_time if loop_time else 0:.1f}%)')
-        print(f'  --> Manager ready -> execute: {format_number(self.ndispatches)} answered, '
-              f'held {_ms(self.sum_ready_wait / max(self.ndispatches, 1))} mean, {_ms(self.max_ready_wait)} max '
+        loop_time = self.c.wait_time + self.c.busy_time
+        print(f'  --> Manager messages: {format_number(self.c.nrecvs)}; '
+              f'handling {_ms(self.c.busy_time / max(self.c.nrecvs, 1))} mean, {_ms(self.c.max_handle_time)} max per message')
+        print(f'  --> Manager blocked in recv: {self.c.wait_time:.2f} s of {loop_time:.2f} s in the loop '
+              f'({100 * self.c.wait_time / loop_time if loop_time else 0:.1f}%)')
+        print(f'  --> Manager ready -> execute: {format_number(self.c.ndispatches)} answered, '
+              f'held {_ms(self.c.sum_ready_wait / max(self.c.ndispatches, 1))} mean, {_ms(self.c.max_ready_wait)} max '
               '(includes waiting for work)', flush=True)

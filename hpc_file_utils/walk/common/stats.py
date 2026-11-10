@@ -136,18 +136,26 @@ def _add_into(mine, theirs):
             mine[k] = v
 
 
+# WalkStats' scalar counters, every one summed by merge() (a counter added here and
+# nowhere else is enough)
+COUNTERS = (
+    'num_files',       # non-directories counted
+    'num_dirs',        # directories walked
+    'num_items',       # entries counted (num_files plus the directories that count)
+    'total_size',      # their bytes, min(st_size, st_blocks * 512)
+    'num_errors',      # entries that could not be scanned, stat'ed, archived or copied
+    'num_excluded',    # entries pruned by --exclude (never stat'ed or descended)
+    'num_unmatched',   # entries stat'ed but not counted: they failed a selecting filter
+)
+
+
 class WalkStats:
     """One rank's accumulators (or, after merge(), several ranks')."""
 
     def __init__(self, heap_size):
         self.heap_size = heap_size
-        self.num_files = 0
-        self.num_dirs = 0
-        self.num_items = 0
-        self.total_size = 0
-        self.num_errors = 0   # entries that could not be scanned (or archived)
-        self.num_excluded = 0   # entries pruned by --exclude (never stat'ed or descended)
-        self.num_unmatched = 0  # entries stat'ed but not counted: they failed a selecting filter
+        for name in COUNTERS:
+            setattr(self, name, 0)
         self.st_modes = defaultdict(int)
         self.uids = defaultdict(UIDCounts)
         self.gids = defaultdict(GIDCounts)
@@ -211,13 +219,8 @@ class WalkStats:
 
     def merge(self, other):
         """Add 'other' into this one (in place); returns self."""
-        self.num_files += other.num_files
-        self.num_dirs += other.num_dirs
-        self.num_items += other.num_items
-        self.total_size += other.total_size
-        self.num_errors += other.num_errors
-        self.num_excluded += other.num_excluded
-        self.num_unmatched += other.num_unmatched
+        for name in COUNTERS:
+            setattr(self, name, getattr(self, name) + getattr(other, name))
         for k, v in other.st_modes.items():
             self.st_modes[k] += v
         _add_into(self.uids, other.uids)
