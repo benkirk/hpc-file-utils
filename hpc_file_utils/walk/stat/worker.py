@@ -18,9 +18,17 @@ each batch's files.
 - A directory split over several batches: each part goes into WalkStats.partial_dirs,
   the parts add up in the reduction, and rank 0 lists the directory after it
   (WalkStats.finish_directories()). Only big directories go there.
+
+--stat-threads K (perf-1, step C): a stat batch's lstats K at a time in K threads, yielded
+in order (lstats(), the same in_flight() as walktar's reads), so the counting is as with
+the serial calls (K = 0, the default). A stat is a metadata round trip, ~1 ms on an idle
+campaign GPFS and 6-9 ms under load, so a batch of 1,000 serial ones held a rank for
+seconds while the others' took the same time; the threads overlap them. walktar's stat
+batches run in its --read-ahead reader threads the same way (tar/worker.py).
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.index import IndexWriter
@@ -41,7 +49,8 @@ class StatBatch(NamedTuple):
 
 class StatWorker(BaseWorker):
 
-    index = None   # --index: this rank's IndexWriter (common/index.py); None without
+    index = None          # --index: this rank's IndexWriter (common/index.py); None without
+    stat_threads = None   # --stat-threads: the lstat threads, started at their first batch
 
     def __init__(self):
         super().__init__()
@@ -147,17 +156,45 @@ class StatWorker(BaseWorker):
         else:                                   # the last part of a split directory
             st.add_partial_dir(dirname, totals)
 
+    def stat_depth(self):
+        """lstats in flight at once in a stat batch: --stat-threads (walktar: --read-ahead,
+        in its reader threads); 0 is one at a time on this thread."""
+        return self.options.stat_threads
+
+    def stat_pool(self):
+        """The threads the stat batches' lstats run in, stat_depth() of them, started at
+        their first use and shut down by run() (walktar's are its readers)."""
+        if self.stat_threads is None:
+            self.stat_threads = ThreadPoolExecutor(max_workers=self.stat_depth(), thread_name_prefix='stat')
+        return self.stat_threads
+
     def lstats(self, dirname, names):
         """(path, lstat result) for a stat batch's names, in order, an OSError in place of
-        the result for a name that could not be stat'ed: one call at a time here (walktar
-        overlaps them in its reader threads)."""
+        the result for a name that could not be stat'ed: one call at a time with
+        stat_depth() 0, else that many ahead of the one yielded in the stat_pool()
+        threads (in_flight())."""
         join = os.path.join
-        for name in names:
-            path = join(dirname, name)
+        paths = (join(dirname, name) for name in names)
+        depth = self.stat_depth()
+        if depth == 0:
+            for path in paths:
+                try:
+                    yield path, os.lstat(path)
+                except OSError as error:
+                    yield path, error
+            return
+        submit = self.stat_pool().submit
+        for path, future in self.in_flight(paths, lambda p: submit(os.lstat, p), depth):
             try:
-                yield path, os.lstat(path)
+                yield path, future.result()
             except OSError as error:
                 yield path, error
+
+    def run(self):
+        super().run()
+        if self.stat_threads is not None:
+            self.stat_threads.shutdown()
+            self.stat_threads = None
 
     def process_file(self, path, statinfo):
         """A stat batch's entry, just stat'ed and counted: the hook a tool fills (walktar

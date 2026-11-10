@@ -377,20 +377,51 @@ def _dir_lists(stats):
             for name in ("nitems_dirs", "nbytes_dirs")}
 
 
+@pytest.mark.parametrize("stat_threads", [0, 3], ids=["serial", "threads"])
 @pytest.mark.parametrize("batch_files", [1, 2, 3, 7])
-def test_split_directories_list_the_same_totals(tmp_path, batch_files):
-    """A directory split over stat batches adds up to the same line as a whole one."""
+def test_split_directories_list_the_same_totals(tmp_path, batch_files, stat_threads):
+    """A directory split over stat batches adds up to the same line as a whole one, with
+    the batch's stats serial or --stat-threads at a time."""
     (tmp_path / "a/b").mkdir(parents=True)
     for i in range(7):
         (tmp_path / f"a/f{i}").write_bytes(b"x" * 1024 * (i + 1))
     (tmp_path / "a/b/g").write_bytes(b"y" * 4096)
-    whole, split = _worker(), _worker()
+    whole, split = _worker(), _worker(stat_threads=stat_threads)
     split.options.batch_files = batch_files
     _walk(whole, tmp_path)
     _walk(split, tmp_path)
     assert split.stats.partial_dirs == {}            # all listed by finish_directories()
     assert _dir_lists(split.stats) == _dir_lists(whole.stats)
     assert (split.stats.num_items, split.stats.total_size) == (whole.stats.num_items, whole.stats.total_size)
+    assert (split.stat_threads is not None) == (stat_threads > 0)   # the pool exists only when asked for
+    _shutdown(split)
+
+
+def _shutdown(w):
+    """Shut a worker's stat threads down as run() does (no MPI here)."""
+    if w.stat_threads is not None:
+        w.stat_threads.shutdown()
+        w.stat_threads = None
+
+
+@pytest.mark.parametrize("stat_threads", [0, 2, 16])
+def test_lstats_keep_the_order_and_yield_errors_in_place(tmp_path, stat_threads):
+    """lstats() yields (path, result) in the batch's order whatever the thread count, an
+    OSError standing in for a name that vanished (--stat-threads, perf-1 step C)."""
+    names = [f"f{i:02d}" for i in range(40)]
+    for name in names:
+        (tmp_path / name).write_bytes(b"x" * (int(name[1:]) + 1))
+    (tmp_path / "f07").unlink()
+    (tmp_path / "f30").unlink()
+    w = _worker(stat_threads=stat_threads)
+    out = list(w.lstats(str(tmp_path), names))
+    assert [os.path.basename(p) for p, _ in out] == names
+    for path, st in out:
+        if os.path.basename(path) in ("f07", "f30"):
+            assert isinstance(st, FileNotFoundError)
+        else:
+            assert st.st_size == int(os.path.basename(path)[1:]) + 1
+    _shutdown(w)
 
 
 def test_split_directory_parts_merge_across_ranks(tmp_path):
@@ -410,16 +441,18 @@ def test_split_directory_parts_merge_across_ranks(tmp_path):
     assert _dir_lists(merged) == _dir_lists(whole.stats)
 
 
-def test_a_vanished_file_costs_one_error_not_the_directory(tmp_path):
+@pytest.mark.parametrize("stat_threads", [0, 4], ids=["serial", "threads"])
+def test_a_vanished_file_costs_one_error_not_the_directory(tmp_path, stat_threads):
     for name in ("a", "b", "c"):
         (tmp_path / name).write_bytes(b"x")
-    w = _worker()
+    w = _worker(stat_threads=stat_threads)
     w.process_directory(str(tmp_path))
     (tmp_path / "b").unlink()                        # between the scan and the stat
     while w.local_batches:
         w.process_batch(w.local_batches.pop())
     assert (w.stats.num_items, w.stats.num_errors) == (2, 1)
     assert [e.nitems for _, e in w.stats.heaps["nitems_dirs"].top()] == [2]
+    _shutdown(w)
 
 
 def _share_worker(dirs, batches):

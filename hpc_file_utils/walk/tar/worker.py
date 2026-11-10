@@ -197,23 +197,16 @@ class TarWorker(StatWorker):
         """Start a reader on a file: its open_member() Future."""
         return self.readers.submit(open_member, path)
 
-    def lstats(self, dirname, names):
-        """A stat batch's lstats, --read-ahead of them at a time in the reader threads,
-        yielded in order (in_flight()); walkstat's one at a time with --read-ahead 0. On
-        campaign GPFS under the readers' load one lstat took ~9 ms, so a batch's 1,000 in a
-        row kept a rank's readers idle for a quarter of its time (the walk README, Part B)."""
-        depth = self.options.read_ahead
-        if depth == 0:
-            yield from super().lstats(dirname, names)
-            return
-        submit = self.reader_pool().submit
-        join = os.path.join
-        paths = (join(dirname, name) for name in names)
-        for path, future in self.in_flight(paths, lambda p: submit(os.lstat, p), depth):
-            try:
-                yield path, future.result()
-            except OSError as error:
-                yield path, error
+    def stat_depth(self):
+        """A stat batch's lstats run --read-ahead at a time in the reader threads (one at
+        a time with --read-ahead 0). On campaign GPFS under the readers' load one lstat
+        took ~9 ms, so a batch's 1,000 in a row kept a rank's readers idle for a quarter
+        of its time (the walk README, Part B)."""
+        return self.options.read_ahead
+
+    def stat_pool(self):
+        """The readers double as the stat threads."""
+        return self.reader_pool()
 
     @staticmethod
     def discard_member(future):

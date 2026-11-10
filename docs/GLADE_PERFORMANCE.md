@@ -47,15 +47,28 @@ one node however the files are made; and campaign's numbers move with the day's 
   walktar's `--read-ahead` [16] and walksync's `--rsyncs` [8].
 - **Per node, small files top out at ~3.6 GiB/s on scratch** (31 ranks × 16 readers, 1 MiB
   files: 200,000 in 53–54 s) and **~3.2–3.6 GiB/s on campaign → csg** (VIT zarr, 333,110 ×
-  4 MiB, ~850 files/s) under the default binding; big files at 2.4–2.9 GiB/s (scratch) and
-  5.4–6.3 (campaign). Phase 5.5, Part B.
-- **The reader threads need CPU.** PALS pins each rank to one CPU (`taskset` shows ranks on
-  CPUs 0, 1, 2, …) and the 16 readers share it. `mpiexec --cpu-bind depth --depth 4` (four
-  CPUs per rank at 32 ranks on a 128-CPU node) took manyfiles from 58.5 to 45.0 s and the
-  VIT zarr from 402 to 269–288 s (4.5–4.8 GiB/s, 1.34× over the phase 5.5 code); big files
-  were unchanged. **On small files, the binding was the ceiling on both filesystems**, which
-  phase 5.5 had read as the scanning rank's stat rate (the scanner's ~1,000 entries/s merely
-  tracked the archive rate). Part B.
+  4 MiB, ~850 files/s) under the default binding, ~4.0–4.9 GiB/s on both with two cores
+  per rank; big files at 2.4–2.9 GiB/s (scratch) and 5.4–6.3 (campaign). Phase 5.5, Part
+  B, perf-1 step A.
+- **Nodes add up on campaign.** VIT → csg with two cores per rank: 4.0–4.6 GiB/s on one
+  node, 8.0–8.6 on two, 16 on four (333,110 files in 80 s) and 24 on eight (55 s; 24.6 at
+  the peak), the GPFS client per node being the limit through four; csg took 24 GiB/s of
+  writes without a sign of strain. So the VIT-shaped case scales with nodes, not with
+  anything inside a node. The tail is one batch: the walk ends ~20 s after the first rank
+  runs dry (a 1,000-file VIT batch is 4 GiB, ~30 s for one rank), which is 40% of the
+  8-node walk, so a smaller `--batch-size` (1–2 GiB) is the next lever there. perf-1
+  step B.
+- **The reader threads need CPU, and two cores per rank are enough.** PALS pins each rank
+  to one CPU (`os.sched_getaffinity(0)` is `{rank}`) and the 16 readers share it. Any wider
+  binding lifts the small-file rate the same, 1.4–1.6× on both filesystems: `manyfiles`
+  62 → 40–45 s and the VIT zarr 385–442 → 267–342 s for `mpiexec --cpu-bind depth --depth
+  2`, `--depth 4`, `--depth 8` and `--cpu-bind none` alike; big files never move. Past two
+  cores the readers wait on the storage, not the CPU, and 8 threads lose 20% where 32 or 64
+  gain nothing over 16. **On small files, the binding was the ceiling on both filesystems**,
+  which phase 5.5 had read as the scanning rank's stat rate (the scanner's ~1,000 entries/s
+  merely tracked the archive rate). So the launcher binds (`--cpu-bind depth --depth 2`, on
+  the scan scripts' `mpiexec` lines), every run prints `CPUs per rank: N`, and walktar does
+  not size `--read-ahead` from the mask. Part B, perf-1 step A.
 - **Scratch's servers cache recent reads.** A file read from another node moments ago costs
   ~5 ms instead of ~35; a client-side `DONTNEED` only drops the local copy (~2 ms re-read).
   Back-to-back runs on one small-file tree flatter the second: put a big tree's I/O between
@@ -64,11 +77,21 @@ one node however the files are made; and campaign's numbers move with the day's 
 
 ## 3. Metadata: stats, scans and directories
 
-- **A stat costs ~1 ms idle and 6–9 ms under load on campaign.** Phase 5 saw ~6 ms per stat
-  per rank on campaign GPFS (one rank over a 1M-entry directory took an hour); the Part B
-  profile saw 9 ms per lstat while 31 ranks read from the same node. Lustre's are
-  sub-millisecond. So walkstat's stat batches (names from `scandir`'s `d_type`, stats
-  spread over every rank) and walktar's the same.
+- **A stat costs ~1–2 ms idle and 6–9 ms under load on campaign.** Phase 5 saw ~6 ms per
+  stat per rank on campaign GPFS (one rank over a 1M-entry directory took an hour); the
+  Part B profile saw 9 ms per lstat while 31 ranks read from the same node; perf-1 step C
+  saw 1.5–2 ms with only the production scans running. Lustre's are sub-millisecond. So
+  walkstat's stat batches (names from `scandir`'s `d_type`, stats spread over every rank)
+  and walktar's the same.
+- **A loaded stat is latency, an unloaded one is throughput.** On an unloaded campaign
+  walkstat's `--stat-threads` 4 or 16 (K lstats in flight per rank) walked VIT and
+  `.Radiosonde` at the same 15–23k entries/s as the serial batches: the node's GPFS
+  client's ceiling (phase 3.5's), which overlapping cannot lift. While the same node read
+  campaign at 3–4 GiB/s (a walktar beside the walkstat), a stat cost ~18 ms and the serial
+  walk of `.Radiosonde` took 343 s against 20–30 s unloaded; 4 threads brought it to 195 s
+  and 16 to 65 s (5.3×). So a node that reads should stat with threads (walktar does, Part
+  B; walkstat with `--stat-threads 16`), and a node that only stats gains nothing from
+  them. perf-1 step C.
 - **A walk is bound by the filesystem client on each node, not by ranks.** On one node 32
   ranks walk faster than 96; on 4 nodes 4 × 32 beats 4 × 96 by 21–44%. CGD-ppc (3.6M
   items): 114 s at 1 × 32 (32k items/s), 38 s at 4 × 32 (101k items/s). Phase 3.5, phase 4.
@@ -76,7 +99,16 @@ one node however the files are made; and campaign's numbers move with the day's 
   the walk is bound by the stats, and a filter adds none. Phase 4.
 - **The Manager is never the limit.** Blocked in `recv` 98–100% of the time at every rank
   count, handling a message in microseconds; the work moves by local stacks, overflow and
-  shares. Phase 3, 3.5.
+  shares. At 4 × 32 on VIT (perf-1 step B) it handled 37,424 messages in 0.6 s of an 80 s
+  walk; 36,253 of them were share requests, 35,520 answered empty (phase 5.5's question 4:
+  the ping-pong is there, 9× the one-node count for 4× the ranks, and it costs the busy
+  workers one probe and one small reply each, nothing measurable). Phase 3, 3.5, perf-1.
+- **mpi4py's matched probe hangs across derecho nodes.** A walktar over 2 nodes stopped
+  every time at ~2 minutes with every rank spinning in `MPI_Mprobe`: `ready` messages that
+  were sent were never matched by the Manager's any-source receive (four of 63 in the
+  dumped run), with or without the rendezvous threshold raised. `mpi4py.rc.recv_mprobe =
+  False` (Probe + Recv) fixed it; the walk tools set it before importing MPI. One node
+  never leaves shared memory, so single-node runs never saw it. perf-1 step B.
 - **One destination directory takes ~1,250 creates per second from derecho and ~1,000 from
   Casper, whatever the file size.** A probe that makes files as rsync's receiver does (a
   temporary name, write, fchmod, close, utime, rename) with 32 processes: 1,231–1,296/s into
@@ -147,11 +179,15 @@ one node however the files are made; and campaign's numbers move with the day's 
 ## 6. Rules of thumb
 
 1. Small files: parallelize the round trips (readers, rsyncs), then give the rank the CPU
-   for them; `--cpu-bind depth` before any change to the walk.
+   for them: `mpiexec --cpu-bind depth --depth 2` (two cores per rank; wider buys nothing)
+   before any change to the walk, and read the `CPUs per rank` line of every log.
 2. Big files: one node reads scratch at ~2.5 GiB/s and campaign at ~6; more nodes, not more
-   threads.
-3. Metadata: spread stats over ranks and nodes; expect 6–9 ms each on a loaded campaign;
-   don't add per-entry work on the hot path.
+   threads. Small files on campaign scale with nodes too: 4, 8, 16, 24 GiB/s at 1, 2, 4,
+   8 nodes (the last one tail-bound: shrink the batches).
+3. Metadata: spread stats over ranks and nodes; expect 1–2 ms each on an idle campaign,
+   6–18 ms on a node that is also reading, where threads (walktar's readers, walkstat
+   `--stat-threads 16`) give it back; a node that only stats is at its client's ceiling
+   (~15–30k entries/s) and threads add nothing; don't add per-entry work on the hot path.
 4. Copies: the destination directory sets the create rate (~1,000–1,250/s per node); many
    directories or many nodes beat any K; K = 8 is safe everywhere.
 5. Measure in pairs, record the load and the binding, flush scratch, read CPU with the idle
@@ -159,11 +195,10 @@ one node however the files are made; and campaign's numbers move with the day's 
 
 ## 7. Open
 
-- Multi-node scaling of walktar on campaign (phase 5.5 question 5), now the lever for the
-  VIT-shaped case: one node is CPU- and client-bound at ~4.5 GiB/s with the binding fixed.
-- Whether walktar should size `--read-ahead` to the CPUs a rank actually has, or the
-  launcher should bind by default.
-- A thread pool for walkstat's stat batches on campaign (the same 6–9 ms per serial lstat).
+- Where campaign's write side or GDEX's read side stops scaling with nodes: 8 nodes gave
+  24 GiB/s with the one-batch tail taking 40% of the walk, so the per-node rate is not
+  known to have fallen yet; a smaller `--batch-size` at 8 nodes, then 16 nodes, would
+  say (phase 5.5 question 5 is answered to 8 nodes).
 - Why Part B's per-rank stats cost 4–7% on VIT under the one-CPU binding even threaded
   (the stats' CPU on the busy ranks is the hypothesis; with four CPUs per rank the threaded
   stats pay 7% instead). Also: a file's open and close cost ~5 and ~7 ms on a loaded

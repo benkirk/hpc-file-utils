@@ -45,7 +45,7 @@ echo && echo "Beginning ${0} at $(date)"
 sstart=$(date +%s)
 rm -f ${projname}.DONE
 time \
-mpiexec --no-transfer \
+mpiexec --no-transfer --cpu-bind depth --depth 2 \
         walkstat \
         --verbose \
         --summary-prefix "${projname}" \
