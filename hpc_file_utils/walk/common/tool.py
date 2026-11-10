@@ -25,7 +25,7 @@ class Tool:
         """Lines rank 0 prints before 'Running <tool> on N MPI ranks'."""
         if args.filters is None:
             return []
-        return ['Filters: {}'.format(args.filters.describe())]
+        return [f'Filters: {args.filters.describe()}']
 
     def report(self, manager, stats):
         """Rank 0, after the walk's balance lines: the tool's own reports (walkstat's

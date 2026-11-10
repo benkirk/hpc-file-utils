@@ -86,14 +86,14 @@ class BaseWorker(MPIClass):
         """Count what could not be done (an entry scanned, stat'ed, archived or copied) and
         say so on stderr: '[rank] Cannot <what>: <error>'."""
         self.stats.num_errors += 1
-        print('[{:3d}] Cannot {}: {}'.format(self.rank, what, error), file=sys.stderr)
+        print(f'[{self.rank:3d}] Cannot {what}: {error}', file=sys.stderr)
 
     def vanished(self, dirname):
         """True, after saying so, if a directory we were handed is gone: a last-minute
         check for a race with whoever is changing the tree."""
         if os.path.exists(dirname):
             return False
-        print('[{:3d}] directory \'{}\' vanished'.format(self.rank, dirname), file=sys.stderr)
+        print(f"[{self.rank:3d}] directory '{dirname}' vanished", file=sys.stderr)
         return True
 
     def push_dir(self, path):

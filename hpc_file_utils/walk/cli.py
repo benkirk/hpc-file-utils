@@ -40,7 +40,7 @@ def main(app, argv=None):
         except SystemExit as e:          # argparse errors and --help
             exit_status = e.code if isinstance(e.code, int) else 1
         except Exception as e:           # e.g. 'ERROR: no such directory'
-            print('ERROR: {}: {}'.format(type(e).__name__, e), file=sys.stderr)
+            print(f'ERROR: {type(e).__name__}: {e}', file=sys.stderr)
             exit_status = 1
         if args is None and exit_status == 0:
             exit_status = None           # --help: done, successfully
@@ -53,7 +53,7 @@ def main(app, argv=None):
 
     if size < 2:
         if rank == 0:
-            print('ERROR: {} needs at least 2 MPI ranks (a manager and a worker)'.format(app), file=sys.stderr)
+            print(f'ERROR: {app} needs at least 2 MPI ranks (a manager and a worker)', file=sys.stderr)
         return 2
 
     comm.Barrier()
@@ -66,12 +66,12 @@ def main(app, argv=None):
     else:
         from hpc_file_utils.walk.common.manager import Manager
         if args.verbose:
-            print('All Options: {}'.format(args))
+            print(f'All Options: {args}')
         else:
-            print('Processing Directories: {}'.format(args.dirs))
+            print(f'Processing Directories: {args.dirs}')
         for line in tool.banner(args):
             print(line)
-        print('Running {} on {} MPI ranks'.format(app, size), flush=True)
+        print(f'Running {app} on {size} MPI ranks', flush=True)
         walker = Manager(options=args)
 
     run_walker(walker, rank)
@@ -97,7 +97,7 @@ def run_walker(walker, rank):
         walker.run()
     finally:
         profile.disable()
-        profile.dump_stats('profile-r{:03d}.prof'.format(rank))
+        profile.dump_stats(f'profile-r{rank:03d}.prof')
 
 
 def report(manager, stats, tool):
@@ -108,8 +108,8 @@ def report(manager, stats, tool):
     options = manager.options
     # every worker's last 'ready' carried its final counts, so these must agree
     if (manager.progress.total_items, manager.progress.total_bytes) != (stats.num_items, stats.total_size):
-        print('WARNING: the Manager counted {} items / {} bytes, the workers {} / {}'.format(
-            manager.progress.total_items, manager.progress.total_bytes, stats.num_items, stats.total_size),
+        print(f'WARNING: the Manager counted {manager.progress.total_items} items / {manager.progress.total_bytes} bytes, '
+              f'the workers {stats.num_items} / {stats.total_size}',
             file=sys.stderr)
 
     print('\n'.join(balance_lines(stats, manager.walk_elapsed)))
@@ -119,8 +119,8 @@ def report(manager, stats, tool):
     tool.report(manager, stats)
 
     if stats.num_errors:
-        print('--> {} entries could not be scanned (see stderr)'.format(format_number(stats.num_errors)))
-    print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')), flush=True)
+        print(f'--> {format_number(stats.num_errors)} entries could not be scanned (see stderr)')
+    print(f"--> Done at {datetime.now().isoformat(sep=' ', timespec='seconds')}", flush=True)
 
 
 def walkstat():

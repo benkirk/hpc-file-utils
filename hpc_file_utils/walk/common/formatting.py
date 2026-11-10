@@ -12,17 +12,17 @@ except ImportError:          # optional; plain fallbacks below
 
 def format_size(val):
     if humanfriendly: return humanfriendly.format_size(val, binary=True)
-    return '{:.5e} bytes'.format(val)
+    return f'{val:.5e} bytes'
 
 
 def format_number(val):
     if humanfriendly: return humanfriendly.format_number(val)
-    return '{:,}'.format(val)
+    return f'{val:,}'
 
 
 def format_timespan(val):
     if humanfriendly: return humanfriendly.format_timespan(val)
-    return '{:.1f} seconds'.format(val)
+    return f'{val:.1f} seconds'
 
 
 def format_date(timestamp):
@@ -38,7 +38,7 @@ _ESCAPES = {'\n': '\\n', '\t': '\\t', '\r': '\\r'}
 
 def _escape(m):
     c = m.group()
-    return _ESCAPES.get(c) or '\\x{:02x}'.format(ord(c))
+    return _ESCAPES.get(c) or f'\\x{ord(c):02x}'
 
 
 def printable(path):

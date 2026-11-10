@@ -22,7 +22,7 @@ def rank_lines(stats):
         if r.rank == 0:         # the Manager scans nothing
             continue
         lines.append(row.format(r.rank, r.host, format_number(r.num_dirs), format_number(r.num_files),
-                                format_size(r.nbytes), '{:.2f}'.format(r.wait_time),
+                                format_size(r.nbytes), f'{r.wait_time:.2f}',
                                 format_number(r.max_local_dirs)))
     return lines
 
@@ -38,8 +38,8 @@ def balance_lines(stats, walk_elapsed):
     mean = sum(r.num_dirs for r in workers) // len(workers)
     rank_seconds = walk_elapsed * len(workers)
     waited = sum(r.wait_time for r in workers)
-    return ['--> Directories per rank: min {} (rank {}) / mean {} / max {} (rank {}); local queue high-water mark: {}'.format(
-                format_number(lo.num_dirs), lo.rank, format_number(mean), format_number(hi.num_dirs), hi.rank,
-                format_number(max(r.max_local_dirs for r in workers))),
-            '--> Workers waited for the Manager {:.1%} of the walk ({:,.1f} of {:,.1f} rank-seconds)'.format(
-                waited / rank_seconds if rank_seconds else 0.0, waited, rank_seconds)]
+    return [f'--> Directories per rank: min {format_number(lo.num_dirs)} (rank {lo.rank}) / mean {format_number(mean)} '
+            f'/ max {format_number(hi.num_dirs)} (rank {hi.rank}); '
+            f'local queue high-water mark: {format_number(max(r.max_local_dirs for r in workers))}',
+            f'--> Workers waited for the Manager {waited / rank_seconds if rank_seconds else 0.0:.1%} of the walk '
+            f'({waited:,.1f} of {rank_seconds:,.1f} rank-seconds)']

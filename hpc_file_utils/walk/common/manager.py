@@ -86,7 +86,7 @@ from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, wr
 from hpc_file_utils.walk.tools import TOOLS
 
 def _ms(seconds):
-    return '{:.3f} ms'.format(1e3 * seconds)
+    return f'{1e3 * seconds:.3f} ms'
 
 
 class Manager(MPIClass):
@@ -171,9 +171,9 @@ class Manager(MPIClass):
                                              None if forceprint else deltaprog)
 
         if not forceprint:
-            status += ' [dirlen={}, queued={}, idle={}, sends={}, recvs={}, shares={}]'.format(
-                format_number(len(self.dirs)), format_number(self.progress.total_queued), len(self.idle),
-                format_number(self.nsends), format_number(self.nrecvs), format_number(self.nshares))
+            status += (f' [dirlen={format_number(len(self.dirs))}, queued={format_number(self.progress.total_queued)}, '
+                       f'idle={len(self.idle)}, sends={format_number(self.nsends)}, recvs={format_number(self.nrecvs)}, '
+                       f'shares={format_number(self.nshares)}]')
 
         print(status, flush=True)
 
@@ -212,7 +212,7 @@ class Manager(MPIClass):
             self.idle_set.add(rank)
 
         else:
-            raise RuntimeError('Manager: unexpected tag {} from rank {}'.format(tag, rank))
+            raise RuntimeError(f'Manager: unexpected tag {tag} from rank {rank}')
 
     def dispatch(self):
         """Answer idle workers' 'ready' with work, while we have both.
@@ -282,20 +282,18 @@ class Manager(MPIClass):
         self.walk_elapsed = Wtime() - self.start_time
 
         # every worker is waiting on its 'ready': answer each with 'terminate'
-        print('  --> Progress loop completed ({} sends / {} recvs)'.format(format_number(self.nsends),
-                                                                           format_number(self.nrecvs)))
-        print('  --> Maximum # of dirs at once on manager: {}'.format(format_number(self.maxnumdirs)))
-        print('  --> Dispatches: {}; directories received as overflow: {}, shared: {} ({} share requests, {} answered empty)'.format(
-            format_number(self.ndispatches), format_number(self.ndirs_overflow), format_number(self.ndirs_shared),
-            format_number(self.nshares), format_number(self.nshares_empty)))
+        print(f'  --> Progress loop completed ({format_number(self.nsends)} sends / {format_number(self.nrecvs)} recvs)')
+        print(f'  --> Maximum # of dirs at once on manager: {format_number(self.maxnumdirs)}')
+        print(f'  --> Dispatches: {format_number(self.ndispatches)}; directories received as overflow: '
+              f'{format_number(self.ndirs_overflow)}, shared: {format_number(self.ndirs_shared)} '
+              f'({format_number(self.nshares)} share requests, {format_number(self.nshares_empty)} answered empty)')
         written = self.written()
         if self.nbatches_shared or written is not None:
-            line = '  --> Batches: {} received in share replies, {} handed out'.format(
-                format_number(self.nbatches_shared), format_number(self.nbatch_dispatches))
+            line = (f'  --> Batches: {format_number(self.nbatches_shared)} received in share replies, '
+                    f'{format_number(self.nbatch_dispatches)} handed out')
             if written is not None:
-                line += '; {} {} files, {} ({} bytes) in {} {}'.format(
-                    self.verb, format_number(written[1]), format_size(written[0]), format_number(written[0]),
-                    format_number(written[2]), self.units)
+                line += (f'; {self.verb} {format_number(written[1])} files, {format_size(written[0])} '
+                         f'({format_number(written[0])} bytes) in {format_number(written[2])} {self.units}')
             print(line)
         if self.options.verbose:
             self.print_counters()
@@ -306,8 +304,7 @@ class Manager(MPIClass):
             self.comm.send(None, dest=rank, tag=self.tags['terminate']); self.nsends += 1
             self.max_terminate_wait = max(self.max_terminate_wait, Wtime() - when)
         if self.options.verbose:
-            print('  --> Manager ready -> terminate: the first idle worker waited {:.2f} s for the end'.format(
-                self.max_terminate_wait))
+            print(f'  --> Manager ready -> terminate: the first idle worker waited {self.max_terminate_wait:.2f} s for the end')
 
         # OK, messages sent, report final progress
         self.report_progress(forceprint=True)
@@ -315,10 +312,10 @@ class Manager(MPIClass):
     def print_counters(self):
         """The Manager's load: how busy it was, and how long it held each 'ready'."""
         loop_time = self.wait_time + self.busy_time
-        print('  --> Manager messages: {}; handling {} mean, {} max per message'.format(
-            format_number(self.nrecvs), _ms(self.busy_time / max(self.nrecvs, 1)), _ms(self.max_handle_time)))
-        print('  --> Manager blocked in recv: {:.2f} s of {:.2f} s in the loop ({:.1f}%)'.format(
-            self.wait_time, loop_time, 100 * self.wait_time / loop_time if loop_time else 0))
-        print('  --> Manager ready -> execute: {} answered, held {} mean, {} max (includes waiting for work)'.format(
-            format_number(self.ndispatches), _ms(self.sum_ready_wait / max(self.ndispatches, 1)),
-            _ms(self.max_ready_wait)), flush=True)
+        print(f'  --> Manager messages: {format_number(self.nrecvs)}; '
+              f'handling {_ms(self.busy_time / max(self.nrecvs, 1))} mean, {_ms(self.max_handle_time)} max per message')
+        print(f'  --> Manager blocked in recv: {self.wait_time:.2f} s of {loop_time:.2f} s in the loop '
+              f'({100 * self.wait_time / loop_time if loop_time else 0:.1f}%)')
+        print(f'  --> Manager ready -> execute: {format_number(self.ndispatches)} answered, '
+              f'held {_ms(self.sum_ready_wait / max(self.ndispatches, 1))} mean, {_ms(self.max_ready_wait)} max '
+              '(includes waiting for work)', flush=True)

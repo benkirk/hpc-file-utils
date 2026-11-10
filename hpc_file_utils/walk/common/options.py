@@ -73,7 +73,7 @@ def parse_options(appname, argv=None):
 
     for d in args.dirs:
         if not os.path.isdir(d):
-            raise FileNotFoundError('no such directory: {}'.format(d))
+            raise FileNotFoundError(f'no such directory: {d}')
 
     tool.check(parser, args)
     return args

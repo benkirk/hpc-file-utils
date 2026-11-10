@@ -96,7 +96,7 @@ class SyncWorker(BaseWorker):
         c['new' if reason == NEW else 'changed'] += 1
         c['bytes_to_copy'] += size
         if self.dry_run:
-            lines.append('{} {}\n'.format('N' if reason == NEW else 'C', printable(rel)))
+            lines.append(f"{'N' if reason == NEW else 'C'} {printable(rel)}\n")
         else:
             self.add_to_batch(rel, size)
 
@@ -152,7 +152,7 @@ class SyncWorker(BaseWorker):
         extra = extraneous(src_names, dest, self.exclude)
         st.counters['extraneous'] += len(extra)
         if self.dry_run:
-            lines += ['X {}\n'.format(printable(join(reldir, n))) for n in extra]
+            lines += [f'X {printable(join(reldir, n))}\n' for n in extra]
         self.emit(lines)
 
     def process_batch(self, batch):
@@ -234,11 +234,11 @@ class SyncWorker(BaseWorker):
                 rc = rsync.wait(self.tick)
                 if rc == RSYNC_VANISHED:
                     vanished = True
-                    print('[{:3d}] rsync: some source files vanished (exit {})'.format(self.rank, rc), file=sys.stderr)
+                    print(f'[{self.rank:3d}] rsync: some source files vanished (exit {rc})', file=sys.stderr)
                 elif rc != 0:
                     failed = True
                     tail = rsync.tail()
-                    self.error('copy a batch of {} entries: rsync exit {}'.format(len(part), rc),
+                    self.error(f'copy a batch of {len(part)} entries: rsync exit {rc}',
                                '\n' + tail if tail else '(no output)')
                 rsync.close()
         except OSError as error:              # rsync would not start

@@ -112,7 +112,7 @@ class TarWorker(StatWorker):
                     if len(data) < tarinfo.size:
                         data += f.read(tarinfo.size - len(data))
                     if len(data) < tarinfo.size:
-                        raise tarfile.ReadError('unexpected end of data: {}'.format(path))
+                        raise tarfile.ReadError(f'unexpected end of data: {path}')
                     tar.addfile(tarinfo, io.BytesIO(memoryview(data)[:tarinfo.size]))
                 else:
                     tar.addfile(tarinfo, f)
@@ -175,7 +175,7 @@ class TarWorker(StatWorker):
         if os.path.exists(dirname):
             # the directory object itself, for its mode, owner and times, in our own dirs tar
             if self.dirs_tar is None:
-                self.dirs_tar = tarfile.open('output-r{:03d}-dirs.tar'.format(self.rank), 'w',
+                self.dirs_tar = tarfile.open(f'output-r{self.rank:03d}-dirs.tar', 'w',
                                              format=tarfile.PAX_FORMAT)
             self.add(self.dirs_tar, dirname)
 
@@ -201,7 +201,7 @@ class TarWorker(StatWorker):
         """One FileBatch's paths into their own tar file, read ahead by the reader threads.
         Between files we look for a 'share' (an iprobe costs microseconds, a file a read)
         and send our counts when due."""
-        name = 'output-r{:03d}-b{:05d}.tar'.format(self.rank, self.ntars)
+        name = f'output-r{self.rank:03d}-b{self.ntars:05d}.tar'
         self.ntars += 1
         with tarfile.open(name, 'w', format=tarfile.PAX_FORMAT, copybufsize=COPY_BUFSIZE) as tar:
             self.batch_tar = tar

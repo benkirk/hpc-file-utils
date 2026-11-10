@@ -95,7 +95,7 @@ class UIDCounts(IDCounts):
         try:
             return pwd.getpwuid(uid).pw_name
         except KeyError:
-            return 'uid-{}'.format(uid)
+            return f'uid-{uid}'
 
 class GIDCounts(IDCounts):
     @staticmethod
@@ -103,7 +103,7 @@ class GIDCounts(IDCounts):
         try:
             return grp.getgrgid(gid).gr_name
         except KeyError:
-            return 'gid-{}'.format(gid)
+            return f'gid-{gid}'
 
 
 # heaps of (key, DirEntry) or (key, FileEntry), largest key first

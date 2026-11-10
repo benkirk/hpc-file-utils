@@ -7,22 +7,21 @@ def sync_lines(stats, elapsed, options):
     """The lines printed after a walksync run."""
     c = stats.counters
     n = lambda k: format_number(c[k])
-    lines = ['--> Sync: {} new, {} changed, {} unchanged; {} only in the destination (kept)'.format(
-        n('new'), n('changed'), n('unchanged'), n('extraneous'))]
+    lines = [f"--> Sync: {n('new')} new, {n('changed')} changed, {n('unchanged')} unchanged; "
+             f"{n('extraneous')} only in the destination (kept)"]
     if stats.num_excluded or stats.num_unmatched:
-        lines.append('--> Not compared: {} excluded by name (--exclude), {} not selected by the filters'.format(
-            format_number(stats.num_excluded), format_number(stats.num_unmatched)))
+        lines.append(f'--> Not compared: {format_number(stats.num_excluded)} excluded by name (--exclude), '
+                     f'{format_number(stats.num_unmatched)} not selected by the filters')
     if options.dry_run:
-        lines.append('--> Dry run: would copy {} entries, {}; listed (N new, C changed, X only in the '
-                     'destination) in walksync-dryrun-r*.txt'.format(
-                         format_number(c['new'] + c['changed']), format_size(c['bytes_to_copy'])))
+        lines.append(f"--> Dry run: would copy {format_number(c['new'] + c['changed'])} entries, "
+                     f"{format_size(c['bytes_to_copy'])}; listed (N new, C changed, X only in the "
+                     'destination) in walksync-dryrun-r*.txt')
         return lines
     rate = c['copied_bytes'] / elapsed if elapsed > 0 else 0
-    lines.append('--> Copied {} entries, {} ({}/s) in {} rsync batches ({:.1f} rsync-seconds over {:.1f} s); '
-                 '{} failed, {} with vanished source files'.format(
-                     n('copied_files'), format_size(c['copied_bytes']), format_size(rate), n('rsync_batches'),
-                     c['rsync_seconds'], elapsed, n('rsync_failures'), n('rsync_vanished')))
-    missing = ''.join(', {} (this rsync has none)'.format(m) for m in options.rsync_missing)
-    lines.append('--> Not done here: deletions, hard links, directory modes and times{}; finish with '
-                 'rsync -aHAX --delete {}/ {}/'.format(missing, options.dirs[0], options.dest))
+    lines.append(f"--> Copied {n('copied_files')} entries, {format_size(c['copied_bytes'])} ({format_size(rate)}/s) "
+                 f"in {n('rsync_batches')} rsync batches ({c['rsync_seconds']:.1f} rsync-seconds over {elapsed:.1f} s); "
+                 f"{n('rsync_failures')} failed, {n('rsync_vanished')} with vanished source files")
+    missing = ''.join(f', {m} (this rsync has none)' for m in options.rsync_missing)
+    lines.append(f'--> Not done here: deletions, hard links, directory modes and times{missing}; finish with '
+                 f'rsync -aHAX --delete {options.dirs[0]}/ {options.dest}/')
     return lines

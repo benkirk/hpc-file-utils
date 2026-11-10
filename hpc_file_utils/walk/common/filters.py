@@ -114,10 +114,10 @@ def add_filter_options(parser):
                    help='skip entries whose name matches GLOB (fnmatch, case-sensitive; repeatable): '
                         'never stat\'ed, counted, descended or archived, like find\'s -name GLOB -prune')
     for f in TIME_FIELDS:
-        g.add_argument('--{}-older'.format(f), metavar='WHEN',
-                       help='only entries whose {} is before WHEN: {}'.format(f, WHEN_HELP))
-        g.add_argument('--{}-newer'.format(f), metavar='WHEN',
-                       help='only entries whose {} is after WHEN'.format(f))
+        g.add_argument(f'--{f}-older', metavar='WHEN',
+                       help=f'only entries whose {f} is before WHEN: {WHEN_HELP}')
+        g.add_argument(f'--{f}-newer', metavar='WHEN',
+                       help=f'only entries whose {f} is after WHEN')
     g.add_argument('--user', action='append', metavar='U[,U...]',
                    help='only entries owned by these users (names, or uids; repeatable)')
     g.add_argument('--group', action='append', metavar='G[,G...]',
@@ -138,9 +138,9 @@ def parse_when(text, now):
     try:
         when = datetime.fromisoformat(text)
     except ValueError:
-        raise ValueError('not an age (N[smhdwy]) or a date (YYYY-MM-DD[THH:MM[:SS]]): {!r}'.format(text))
+        raise ValueError(f'not an age (N[smhdwy]) or a date (YYYY-MM-DD[THH:MM[:SS]]): {text!r}')
     if when.tzinfo is not None:
-        raise ValueError('give a local date, without a time zone: {!r}'.format(text))
+        raise ValueError(f'give a local date, without a time zone: {text!r}')
     return when.timestamp()
 
 
@@ -152,12 +152,12 @@ def _ids(values, lookup, kind):
         for item in value.split(','):
             item = item.strip()
             if not item:
-                raise ValueError('empty {} in {!r}'.format(kind, value))
+                raise ValueError(f'empty {kind} in {value!r}')
             try:
                 ids.add(lookup(item))
             except KeyError:
                 if not item.isdigit():
-                    raise ValueError('no such {}: {}'.format(kind, item))
+                    raise ValueError(f'no such {kind}: {item}')
                 ids.add(int(item))
     return frozenset(ids)
 
@@ -169,7 +169,7 @@ def parse_size_option(text, option):
     try:
         return parse_size(text, binary=True)
     except InvalidSize as e:
-        raise ValueError('{}: {}'.format(option, e))
+        raise ValueError(f'{option}: {e}')
 
 
 def _stamp(epoch):
@@ -187,10 +187,10 @@ def compile_filters(args, now=None):
     if args.exclude:
         for glob in args.exclude:
             if not glob or '/' in glob:
-                raise ValueError('--exclude matches names, so GLOB cannot be empty or hold a \'/\': {!r}'.format(glob))
+                raise ValueError(f"--exclude matches names, so GLOB cannot be empty or hold a '/': {glob!r}")
         f.exclude = list(args.exclude)
         f.exclude_regex = '|'.join(fnmatch.translate(g) for g in f.exclude)
-        f.described += ['--exclude {}'.format(shlex.quote(g)) for g in f.exclude]
+        f.described += [f'--exclude {shlex.quote(g)}' for g in f.exclude]
 
     for name in TIME_FIELDS:
         newer_text = getattr(args, name + '_newer')
@@ -200,25 +200,25 @@ def compile_filters(args, now=None):
         newer = older = None
         if older_text is not None:
             older = parse_when(older_text, now)
-            f.described.append('--{}-older {} (before {})'.format(name, older_text, _stamp(older)))
+            f.described.append(f'--{name}-older {older_text} (before {_stamp(older)})')
         if newer_text is not None:
             newer = parse_when(newer_text, now)
-            f.described.append('--{}-newer {} (after {})'.format(name, newer_text, _stamp(newer)))
+            f.described.append(f'--{name}-newer {newer_text} (after {_stamp(newer)})')
         f.times[name] = [newer, older]
 
     if args.user:
         f.uids = _ids(args.user, lambda n: pwd.getpwnam(n).pw_uid, 'user')
-        f.described.append('--user {}'.format(','.join(args.user)))
+        f.described.append(f"--user {','.join(args.user)}")
     if args.group:
         f.gids = _ids(args.group, lambda n: grp.getgrnam(n).gr_gid, 'group')
-        f.described.append('--group {}'.format(','.join(args.group)))
+        f.described.append(f"--group {','.join(args.group)}")
 
     if args.min_size is not None:
         f.min_size = parse_size_option(args.min_size, '--min-size')
-        f.described.append('--min-size {}'.format(args.min_size))
+        f.described.append(f'--min-size {args.min_size}')
     if args.max_size is not None:
         f.max_size = parse_size_option(args.max_size, '--max-size')
-        f.described.append('--max-size {}'.format(args.max_size))
+        f.described.append(f'--max-size {args.max_size}')
     if f.min_size is not None and f.max_size is not None and f.min_size > f.max_size:
         raise ValueError('--min-size is larger than --max-size')
 
@@ -226,8 +226,8 @@ def compile_filters(args, now=None):
         letters = [t.strip() for t in args.type.split(',')]
         bad = [t for t in letters if t not in TYPES]
         if bad:
-            raise ValueError('--type: unknown type {!r} (use {})'.format(','.join(bad), ','.join(TYPES)))
+            raise ValueError(f"--type: unknown type {','.join(bad)!r} (use {','.join(TYPES)})")
         f.types = frozenset(TYPES[t] for t in letters)
-        f.described.append('--type {}'.format(','.join(letters)))
+        f.described.append(f"--type {','.join(letters)}")
 
     return f if f.described else None

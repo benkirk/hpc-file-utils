@@ -86,13 +86,12 @@ def id_lines(ids, label, options):
 def scanned_line(dirs):
     dirs = [d.rstrip('/') or '/' for d in dirs]
     if len(dirs) == 1:
-        return 'Scanned:     {}'.format(printable(dirs[0]))
+        return f'Scanned:     {printable(dirs[0])}'
     try:
         parent = os.path.commonpath([os.path.abspath(d) for d in dirs])
     except ValueError:
         parent = None
-    return 'Scanned:     {} directories{}'.format(format_number(len(dirs)),
-                                                  ' under ' + printable(parent) if parent else '')
+    return f"Scanned:     {format_number(len(dirs))} directories{' under ' + printable(parent) if parent else ''}"
 
 
 def filter_items(stats, options, per_user=False):
@@ -106,29 +105,29 @@ def filter_items(stats, options, per_user=False):
     if per_user:
         return items
     if filters.exclude:
-        items.append(('Excluded', '{} entries (never stat\'ed or descended)'.format(format_number(stats.num_excluded))))
+        items.append(('Excluded', f"{format_number(stats.num_excluded)} entries (never stat'ed or descended)"))
     if filters.selects:
-        items.append(('Unmatched', '{} entries scanned but not counted'.format(format_number(stats.num_unmatched))))
+        items.append(('Unmatched', f'{format_number(stats.num_unmatched)} entries scanned but not counted'))
     return items
 
 
 def filter_lines(stats, options, per_user=False):
-    return ['{:<13}{}'.format(label + ':', text) for label, text in filter_items(stats, options, per_user)]
+    return [f'{label + ":":<13}{text}' for label, text in filter_items(stats, options, per_user)]
 
 
 def summary_text(stats, options, now=None):
     now = now or datetime.now()
-    lines = [SEP, '# Summary as of {}'.format(now.isoformat(sep=' ', timespec='minutes')), SEP,
+    lines = [SEP, f"# Summary as of {now.isoformat(sep=' ', timespec='minutes')}", SEP,
              scanned_line(options.dirs)]
     lines += filter_lines(stats, options)
-    lines += ['Total Count: {} items'.format(format_number(stats.num_items)),
-              'Total Size:  {}'.format(format_size(stats.total_size))]
+    lines += [f'Total Count: {format_number(stats.num_items)} items',
+              f'Total Size:  {format_size(stats.total_size)}']
     if stats.num_errors:
-        lines.append('Scan Errors: {} entries could not be scanned, so these totals are incomplete'.format(
-            format_number(stats.num_errors)))
+        lines.append(f'Scan Errors: {format_number(stats.num_errors)} entries could not be scanned, '
+                     'so these totals are incomplete')
     lines.append('Type Counts:')
     for k, v in sorted_counts(stats.st_modes):
-        lines.append('{:>8} : {:>12}'.format(k, format_number(v)))
+        lines.append(f'{k:>8} : {format_number(v):>12}')
 
     lines += id_lines(stats.uids, 'Users', options)
     lines += id_lines(stats.gids, 'Groups', options)
@@ -144,20 +143,20 @@ def userlist_text(stats, counts, options, now=None):
     """One user's lists; counts: that user's UIDCounts."""
     now = now or datetime.now()
     uid, name = counts.id, printable(str(counts.name))
-    lines = [SEP, '# Summary as of {}'.format(now.isoformat(sep=' ', timespec='minutes')), SEP,
-             'User:        {}'.format(name)]
+    lines = [SEP, f"# Summary as of {now.isoformat(sep=' ', timespec='minutes')}", SEP,
+             f'User:        {name}']
     lines += filter_lines(stats, options, per_user=True)
-    lines += ['Total Count: {} items'.format(format_number(counts.nitems)),
-             'Total Size:  {}'.format(format_size(counts.nbytes)),
+    lines += [f'Total Count: {format_number(counts.nitems)} items',
+             f'Total Size:  {format_size(counts.nbytes)}',
              '', SEP, EXPLAINER, SEP]
     for heap_name, title in DIR_LISTS:
         heap = stats.user_heaps[heap_name].get(uid)
         if heap is not None:
-            lines += dir_lines(heap, '{} - {}'.format(name, title))
+            lines += dir_lines(heap, f'{name} - {title}')
     for heap_name, title in FILE_LISTS:
         heap = stats.user_heaps[heap_name].get(uid)
         if heap is not None:
-            lines += file_lines(heap, '{} - {}'.format(name, title))
+            lines += file_lines(heap, f'{name} - {title}')
     return '\n'.join(lines) + '\n'
 
 
@@ -172,7 +171,7 @@ def write_reports(stats, options, now=None):
     now = now or datetime.now()
 
     text = summary_text(stats, options, now)
-    _write('summary-{}'.format(options.summary_prefix or 'output'), text)
+    _write(f"summary-{options.summary_prefix or 'output'}", text)
     sys.stdout.flush()
     sys.stdout.buffer.write(text.encode('utf-8'))   # whatever the locale's encoding
     sys.stdout.buffer.flush()
@@ -186,5 +185,5 @@ def write_reports(stats, options, now=None):
 
     if options.spreadsheet:
         from hpc_file_utils.walk.stat.spreadsheet import write_spreadsheet
-        print('\n--> Writing summary to {}'.format(options.spreadsheet))
+        print(f'\n--> Writing summary to {options.spreadsheet}')
         write_spreadsheet(stats, options)
