@@ -18,6 +18,15 @@ log = logging.getLogger(__name__)
 
 
 def main(app, argv=None):
+    # Pickled receives go through Probe + Recv, not mpi4py's default matched probe
+    # (Mprobe + Mrecv): on derecho a walktar over two nodes hung every time with every
+    # rank in PMPI_Mprobe, the Manager's any-source receive never seeing a message that
+    # had been sent (perf-1, step B), and the same run with this switch finished; one
+    # thread per rank talks to MPI, so the unmatched probe is safe. HFU_RECV_MPROBE=1
+    # restores the matched probe, for experiments.
+    if os.environ.get('HFU_RECV_MPROBE') != '1':
+        import mpi4py
+        mpi4py.rc.recv_mprobe = False
     from mpi4py import MPI
 
     tool = TOOLS[app]
@@ -35,6 +44,14 @@ def main(app, argv=None):
         comm.Abort(1)
 
     sys.excepthook = abort_on_exception
+
+    # a rank that seems stuck can be asked where it is: 'kill -USR1 <pid>' writes every
+    # thread's Python stack to its stderr and the rank goes on (perf-1, step B: a run that
+    # hung at 2 nodes with every rank spinning in MPI's receive had no other way to say
+    # which receive)
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
 
     # options are parsed on rank 0 only; every rank learns whether that worked, so a bad
     # option (or --help) ends every rank with rank 0's exit status rather than a hang.
