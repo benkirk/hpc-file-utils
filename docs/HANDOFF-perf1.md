@@ -159,3 +159,16 @@ section 5).
     the serial run after it: the table pairs them by what the load was doing.
 - **Gates:** (filled in when the code lands after A and B: `make test`, `make test-pbs`,
   the race test, golden unchanged with `--stat-threads 4` in the golden tests.)
+
+## Next (agreed 2026-11-10)
+
+1. **A follow-on PR in this repo, the Part C cleanups** (`HANDOFF-sweep.md` 4.8): `--index=gz`
+   (the writer is nowhere near the bottleneck; a million-entry index is 121 MiB of text);
+   a walksync `--index`, a per-rank record of what it copied (the same `IndexWriter`, `E`
+   for a copied file; decide what a compared-but-unchanged file is); close 4.8 (the column
+   set stays fixed at v1). Loose ends to ride along if convenient: a quiet-day repeat of
+   the scratch half of step A's binding sweep (`benchbind.pbs`, `ROUND_OFFSET=1`), and
+   `--batch-size` 1–2 GiB at 8 nodes on VIT, where the one-batch tail is 40% of the walk.
+2. **Then, in hpc-usage-queries:** the hfu-index parser for `fs_scans/parsers`, from the
+   walk README's "Indexes" import contract (`E` records only; `P` are structure; the
+   header's `columns=` and `root=` fields; `decode_path()` for the names).
