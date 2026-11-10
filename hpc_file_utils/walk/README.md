@@ -390,13 +390,36 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   at 1. They compare each `.idx` with its tar's `getmembers()` (offsets included, the
   bytes at `offset_data`), every file's atime with the one the fixture set, and
   walksync's `E` set with rsync's own itemized list of what it would copy.
-- **Importing** (hpc-usage-queries `fs_scans/parsers`, a parser to write there):
-  `can_parse()` keys on the `# hfu-index v1` header or the names `index-*-r*.tsv` and
-  `*.tar.idx`; `parse_line()` maps `path`, `size`, `allocated = alloc`, `uid`, `gid`,
-  `is_dir = (type == 'd')`, `atime` and `inode = ino` onto `ParsedEntry`, skips the
-  header, and must keep `P` records out of the totals (pass 1 collects directories by path,
-  so repeats are harmless there; pass 2a counts every directory record into its parent, so
-  a `P` must not reach it as an entry).
+- **Importing** (hpc-usage-queries `fs_scans/parsers`, a parser to write there). The
+  contract:
+  - **Opening.** A file is plain text or gzip (`--index=gz`). Tell them apart by the first
+    two bytes, `1f 8b` for gzip, or by a `.gz` suffix. Read as UTF-8: the paths are
+    escaped, so a strict decode never fails.
+  - **Detection.** `can_parse()` keys on the first line starting `# hfu-index v1`, after
+    any gunzip. Failing that, the names are `index-r*.tsv`, `index-*-r*.tsv` (with
+    `--summary-prefix`) and `*.tar.idx`, each with an optional `.gz`. The earlier
+    `index-*-r*.tsv` alone missed the unprefixed name.
+  - **The header** is tab-separated `key=value` fields after `# hfu-index v1`: `tool=`
+    (`walkstat`, `walktar` or `walksync`), `columns=` (the column names, in order), one
+    `root=` per `--dirs` entry, and for walksync `dest=` and, for a dry run,
+    `dry-run=yes`. Map columns by name, and ignore fields you do not know. Any line
+    starting with `#` is a header: `cat` of several files has one per file, and each
+    starts a new file's records.
+  - **The column set is fixed at v1** (`docs/HANDOFF-sweep.md` 4.8): every column above,
+    for every tool, plus walktar's two offsets. A different set would be a new version, so
+    refuse a header that is not v1.
+  - **Records.** `parse_line()` maps `path` (through `decode_path()`), `size`,
+    `allocated = alloc`, `uid`, `gid`, `is_dir = (type == 'd')`, `atime` and
+    `inode = ino` onto `ParsedEntry`. A `-` field is unknown: only a vanished directory's
+    `P` has them.
+  - **`P` records stay out of the totals.** Pass 1 collects directories by path, so
+    repeats are harmless there. Pass 2a counts every directory record into its parent, so
+    a `P` must not reach it as an entry.
+  - **What a set of files means.** walkstat's `E` records are the tree's usage below its
+    roots. walktar's are what its tars hold, the roots included. walksync's are only what
+    one run copied, a subset of the tree, and a dry run's what it would copy: the stats
+    are the source's real ones, but the totals are not the tree's usage. An importer of a
+    usage database wants walkstat's indexes.
 
 ## Behaviour changes since the csg-utils import
 
@@ -995,3 +1018,19 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   name with a newline, an extraneous file), the `E` set of the run's indexes, and of a
   dry run's, is exactly the set rsync says it would copy. Every record's fields equal the
   source's lstat.
+
+### indexes-2, step C (the import contract, 4.8 closed)
+
+- **The column set stays fixed at v1** for every tool (`docs/HANDOFF-sweep.md` 4.8 has
+  why). gzip answers the size question that trimming would have, every column comes from
+  the `lstat` already taken, and one format means one parser. A different set would be
+  `# hfu-index v2`.
+- **The import contract** ([Indexes](#indexes-the-sweeps-part-c), "Importing") now says
+  what steps A and B add for a parser:
+  - gzip files, told apart by their first two bytes;
+  - the per-rank names, whose old pattern `index-*-r*.tsv` missed the unprefixed
+    `index-r001.tsv`, each with an optional `.gz`;
+  - `tool=walksync`, the header's other fields to ignore (`dest=`, `dry-run=`), and a
+    `#` line starting each file's records in a `cat` of several;
+  - and that walksync's `E` records are one run's copies, not a tree's usage.
+- No code changed beyond `common/index.py`'s docstring.

@@ -78,3 +78,25 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
   and a rerun recording nothing. After changes in the destination, the dry run's index and
   the real run's both equal the oracle and each other. A partial copy (`--min-size 2MiB`)
   records the selected files and every new directory. A failing rsync records nothing.
+- **Gates:** `make test` 585 passed, 1 failed, 4 skipped (macOS). The failure is
+  `test_walkstat_stats_a_big_directory_on_every_rank`, the timing-dependent test the
+  sweep's E3/E4 notes name: one rank did all 403 stats (`{1: 0, 2: 0, 3: 403}`). It passes
+  alone, and it failed the same way on `main`'s code in one of three full runs today; see
+  "Open" below. `make test-pbs` 373 passed, 2 skipped (job on hfu-test after the sync; 367
+  after step A plus the 6 new MPI tests). CI runs when the branch is pushed.
+
+## Step C, done (2026-11-10)
+
+- **`HANDOFF-sweep.md` 4.8 closed:** gzip and walksync's index are done (steps A and B),
+  and the column set stays fixed at v1 for every tool. The reasons are recorded there:
+  gzip answers the size question, every column comes from the one `lstat` already taken,
+  one format means one parser, and a change would be `# hfu-index v2`, which a v1 reader
+  refuses.
+- **The README's import contract** ("Indexes", "Importing") is now a list a parser can be
+  written from: opening (plain or gzip by the magic), detection (the first line, or the
+  names `index-r*.tsv`, `index-*-r*.tsv` and `*.tar.idx` with an optional `.gz`; the old
+  `index-*-r*.tsv` alone missed the unprefixed name), the header (map columns by name,
+  ignore unknown fields, a `#` line per file in a `cat`), the records, `P` out of the
+  totals, and what each tool's `E` set means. A usage database wants walkstat's indexes;
+  walksync's are one run's copies.
+- No code beyond `common/index.py`'s docstring, so the gates are step B's.

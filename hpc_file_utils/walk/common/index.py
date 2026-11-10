@@ -5,6 +5,8 @@ metadata per entry, TSV, written by every rank in parallel with no coordination.
              entry the rank counted, at walk speed, like a policy-engine list or find -ls
   walktar    <tar>.idx beside each tar: every member with its offsets, so one member can
              be found or extracted without reading the whole tar
+  walksync   index-r{rank}.tsv: every entry the rank's rsyncs copied (sync/worker.py),
+             with dest= (and dry-run=yes for a dry run) in the header
 
 The rule: parents before children, in every file. Before any record, every ancestor
 directory up to its --dirs root has a record earlier in the *same* file, so a reader never
@@ -29,8 +31,9 @@ catches nearly every repeat; without the cap walkstat's one file per rank would 
 directory the rank ever touched. HFU_INDEX_CACHE_MAX in the environment sets the cap (the
 tests set it to 1, so every record's parents are re-derived and the P repeats happen).
 
-Format: a versioned header, then one record per line:
-  # hfu-index v1<TAB>tool=walkstat<TAB>columns=rec,type,...,path<TAB>root=<root>[<TAB>root=...]
+Format: a versioned header, then one record per line (the column set is fixed at v1, for
+every tool: docs/HANDOFF-sweep.md 4.8):
+  # hfu-index v1<TAB>tool=walkstat<TAB>columns=rec,type,...,path<TAB>root=<root>[<TAB>root=...][<TAB>key=value...]
   rec type size alloc mode uid gid nlink ino atime mtime ctime [offset offset_data] path
 type is one of f d l p s b c ('?' otherwise), alloc st_blocks*512, mode the permission
 bits in octal, the times integer epochs; nlink and ino let an importer find the hard

@@ -843,11 +843,30 @@ default in both tools.
   exercised on a small tree.
 - **Off by default.** Without `--index`, no index files are written.
 
-### 4.8 Open questions
-- gzip the index (`--index=gz`)?
-- Give walksync an `--index` too, as a per-rank list of what it copied?
-- A configurable column set, or a fixed v1? (Decided so far: atime is in, and both tools share
-  the columns; see 4.4.)
+### 4.8 Open questions (closed 2026-11-10, sprint indexes-2; `HANDOFF-indexes2.md`)
+- ~~gzip the index (`--index=gz`)?~~ **Done** (indexes-2 step A): `--index=gz` on walkstat
+  and walktar (and walksync, step B) writes the same records through gzip, one stream per
+  file at level 6, `.gz` on each name. The readers tell the two apart by the first two
+  bytes. Measured: 7–12× smaller, ~3 µs of CPU per record, no wall time.
+- ~~Give walksync an `--index` too?~~ **Done** (indexes-2 step B): `index-r{rank}.tsv`,
+  one `E` per entry an rsync copied, from the compare's source lstat. Unchanged entries are
+  not recorded, and a `--dry-run` writes the index the run would write, marked
+  `dry-run=yes` in the header.
+- ~~A configurable column set, or a fixed v1?~~ **Fixed at v1**, the 4.4 columns for every
+  tool (walktar adds its two offsets, as before). Why:
+  - **The only reason to drop a column was size, and gzip answers it.** The writer was
+    never the bottleneck (Part C: within the noise), and step A's gzip makes a
+    million-entry index 13 MiB instead of 137. A trimmed column set would save less than
+    that, and only for whoever chose the trim.
+  - **Every column comes from the one `lstat` the tool already took.** Dropping one
+    saves a few bytes of formatting, never a system call.
+  - **One format means one parser.** A configurable set makes every importer handle
+    absent columns and every index file a question of which columns it has. hpc-usage-
+    queries maps `size`, `alloc`, `uid`, `gid`, `type`, `atime` and `ino`, and all of
+    them are always there.
+  - **A change is a new version, not an option.** The header's `columns=` stays, so a
+    parser maps by name. A v2 would add columns behind a new `# hfu-index v2` line, which
+    a v1 reader refuses outright rather than misreading.
 
 ### Part C, done (2026-11-09, branch `sweep-C`)
 - **`common/index.py`:** `IndexWriter(RankFile)` with `add(path, statinfo, offsets=None)`
