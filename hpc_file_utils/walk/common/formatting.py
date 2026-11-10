@@ -4,25 +4,19 @@ import os
 import re
 from datetime import datetime
 
-try:
-    import humanfriendly
-except ImportError:          # optional; plain fallbacks below
-    humanfriendly = None
+import humanfriendly
 
 
 def format_size(val):
-    if humanfriendly: return humanfriendly.format_size(val, binary=True)
-    return f'{val:.5e} bytes'
+    return humanfriendly.format_size(val, binary=True)
 
 
 def format_number(val):
-    if humanfriendly: return humanfriendly.format_number(val)
-    return f'{val:,}'
+    return humanfriendly.format_number(val)
 
 
 def format_timespan(val):
-    if humanfriendly: return humanfriendly.format_timespan(val)
-    return f'{val:.1f} seconds'
+    return humanfriendly.format_timespan(val)
 
 
 def format_date(timestamp):

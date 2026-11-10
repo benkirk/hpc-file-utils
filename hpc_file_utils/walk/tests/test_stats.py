@@ -33,7 +33,7 @@ def test_a_directory_counts_as_an_item_and_as_a_dir_only_when_asked():
     assert st.uids[1000].nitems == 1
     st.count("/t/e", entry(stat.S_IFDIR), totals, True)         # a selecting filter: an entry that matched
     assert dict(st.st_modes) == {"dir": 1}
-    assert st.heaps["nbytes_files"].empty()                     # directories never go in the file lists
+    assert not st.heaps["nbytes_files"]                         # directories never go in the file lists
 
 
 def test_heaps_keep_the_largest_files_overall_and_per_user():

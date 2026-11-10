@@ -226,7 +226,7 @@ class WalkStats:
             self.heaps[name].merge(heap)
         for name, per_user in other.user_heaps.items():
             for uid, heap in per_user.items():
-                if heap.empty():
+                if not heap:
                     continue
                 self.user_heaps[name][uid].merge(heap)
         self.ranks += other.ranks
