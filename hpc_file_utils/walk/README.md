@@ -35,8 +35,8 @@ Outputs (in the working directory, written by rank 0):
   each worker's walk), for `python -m pstats`.
 - `--index`: walkstat's `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with
   `--summary-prefix`), one per worker; walktar's `<tar>.idx` beside each tar (see
-  [Indexes](#indexes-the-sweeps-part-c)). `--index=gz` writes the same through gzip, with
-  `.gz` on each name.
+  [Indexes](#indexes-the-sweeps-part-c)); walksync's `index-r{rank}.tsv`, a record of what
+  the rank copied. `--index=gz` writes the same through gzip, with `.gz` on each name.
 
 ## Filtering (phase 4)
 
@@ -251,6 +251,10 @@ rerun with nothing changed copies nothing: it costs only the walk.
 - **`--dry-run`:** copies nothing. Each rank lists `N path` (new), `C path` (changed) and
   `X path` (only in the destination) in its own `walksync-dryrun-r{rank}.txt`. Lines from
   several ranks on one stdout got spliced together mid-line under mpiexec.
+- **`--index`** (`--index=gz`): each rank's record of what it copied, `index-r{rank}.tsv`, in
+  walkstat's index format ([Indexes](#indexes-the-sweeps-part-c)): one `E` per entry an
+  rsync copied, from the source lstat the compare took. Unchanged entries are not listed.
+  With `--dry-run` it lists what the run would copy.
 - **Exit status:** 1 on any error: a failed stat or scan, or an rsync failure. rsync's exit
   24 (source files vanished) is counted and reported, but it is not an error.
 - **Tested** (`tests/test_walksync.py`, as root and non-root):
@@ -291,9 +295,8 @@ more the default 16 is already past the point where more threads pay.
 
 ## Indexes (the sweep's Part C)
 
-`--index` makes walkstat and walktar also write one line of metadata per entry, TSV,
-every rank in parallel with no coordination (`common/index.py`). Off by default; walksync
-has none.
+`--index` makes walkstat, walktar and walksync also write one line of metadata per entry,
+TSV, every rank in parallel with no coordination (`common/index.py`). Off by default.
 
 - **`--index=gz`** writes the same records through gzip, `.gz` on each name
   (`index-r001.tsv.gz`, `output-r001-b00003.tar.idx.gz`). Each file is one gzip stream
@@ -310,7 +313,23 @@ has none.
 - **walktar:** `<tar>.idx` beside each tar (`output-r001-b00003.tar.idx`,
   `output-r001-dirs.tar.idx`), every member with its offsets, so one member can be found or
   extracted without reading the whole tar. Made with the tar, even if it stays empty.
-- **What is listed:** what the tool counted or archived. An `--exclude`d entry never
+- **walksync:** `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv`), every entry the
+  rank's rsyncs copied. The header has `tool=walksync`, `root=` the source and `dest=` the
+  destination. The rules:
+  - **`E` is "copied here"**, recorded from the source lstat the compare took, by the rank
+    that ran the rsync, after it returned. A new directory's stat is one `lstat` at the
+    scan, taken only with `--index`. The copy batch carries the stats, so a shared batch
+    records on the rank that copies it.
+  - **A failed part records nothing.** A part whose rsync exited 24 (source files
+    vanished) records only the entries still in the source.
+  - **An entry compared and found unchanged is not recorded**, neither as `E` nor as `P`
+    unless it is an ancestor of a copied entry. The index is what this run copied, not a
+    listing of the tree: walkstat `--index` is that. A rerun that copies nothing writes
+    no index. Entries only in the destination are never listed: they have no source stat.
+  - **`--dry-run` writes the index the run would write**, recorded at the compare, and its
+    header says `dry-run=yes`. Its records are the real run's, which the dry-run list
+    (paths only) lacks: the sizes, owners and times of the pending copy.
+- **What is listed:** what the tool counted, archived or copied. An `--exclude`d entry never
   appears; with a selecting filter only the selected entries appear, the same rule as the
   reports and the tars.
 
@@ -361,13 +380,16 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   atimes as it found them; `--read-ahead 0` reads through `tar.add()`, which does not.
   `tarfile` records a member's offsets only when it reads a tar, so the writer derives
   them from the tar's position around each add.
-- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` (plain or gzip,
-  told apart by the first two bytes) checks each file for closure, the `E` paths for repeats across the files, and with `--find` the `E`
-  set against `find` of the header's roots (walkstat: below the roots, as Total Count;
-  walktar: the roots too, as the tars). The tests run the same checks on the golden tree
-  and on a big directory whose batches move between ranks, unfiltered and filtered, with
-  the cache cap at 1, and compare each `.idx` with its tar's `getmembers()` (offsets
-  included, the bytes at `offset_data`) and every file's atime with the one the fixture set.
+- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` reads plain or
+  gzip files, told apart by their first two bytes. It checks each file for closure and the
+  `E` paths for repeats across the files. With `--find` it compares the `E` set against
+  `find` of the header's roots: below the roots for walkstat, as Total Count, and for
+  walksync, which matches only a copy into an empty destination; the roots too for
+  walktar, as the tars. The tests run the same checks on the golden tree and on a big
+  directory whose batches move between ranks, unfiltered and filtered, with the cache cap
+  at 1. They compare each `.idx` with its tar's `getmembers()` (offsets included, the
+  bytes at `offset_data`), every file's atime with the one the fixture set, and
+  walksync's `E` set with rsync's own itemized list of what it would copy.
 - **Importing** (hpc-usage-queries `fs_scans/parsers`, a parser to write there):
   `can_parse()` keys on the `# hfu-index v1` header or the names `index-*-r*.tsv` and
   `*.tar.idx`; `parse_line()` maps `path`, `size`, `allocated = alloc`, `uid`, `gid`,
@@ -953,3 +975,23 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   - Nothing stayed on scratch. A first submission (job 8142303) was stopped after its
     walkstat rows, because the bench passed the checkers unexpanded globs; its tars were
     deleted.
+
+### indexes-2, step B (walksync `--index`)
+
+- **`walksync --index`** (`--index=gz`): each rank's record of what it copied, in the
+  index format ([Indexes](#indexes-the-sweeps-part-c) above), `tool=walksync` with `root=`
+  and `dest=` in the header. `E` is an entry an rsync copied, recorded from the compare's
+  source lstat after the rsync returned. Unchanged entries are not recorded, and a
+  `--dry-run` writes the index the run would write, marked `dry-run=yes`. Without
+  `--index` nothing changed: the copy batches are `FileBatch`es as before, and the golden
+  output is the same.
+- **What it costs:** one `lstat` per new directory (the scan stats no directory
+  otherwise), and the copy batch carries an `IndexStat` per entry, ten integers, so a
+  shared batch's message grows by ~100 bytes per entry. Next to an rsync per batch that
+  is nothing, so no bench was run.
+- **The oracle:** rsync's own dry run (`-nax[A][X] --chmod=Du+w --out-format='%i %n'`, no
+  `--delete`), taken before each run. On a fresh destination, and after changes in one
+  (a size, an mtime, a symlink's target, one name of a hard link, a removed subtree, a
+  name with a newline, an extraneous file), the `E` set of the run's indexes, and of a
+  dry run's, is exactly the set rsync says it would copy. Every record's fields equal the
+  source's lstat.

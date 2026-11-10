@@ -31,12 +31,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
-from hpc_file_utils.walk.common.index import IndexWriter
+from hpc_file_utils.walk.common.index import IndexWriter, rank_index_name
 from hpc_file_utils.walk.common.stats import DirTotals
 from hpc_file_utils.walk.common.worker import BaseWorker
-
-INDEX_FILE = 'index-r{:03d}.tsv'
-PREFIXED_INDEX_FILE = 'index-{}-r{:03d}.tsv'
 
 
 class StatBatch(NamedTuple):
@@ -66,9 +63,7 @@ class StatWorker(BaseWorker):
         o = self.options
         if not o.index:
             return None
-        name = (PREFIXED_INDEX_FILE.format(o.summary_prefix, self.rank) if o.summary_prefix
-                else INDEX_FILE.format(self.rank))
-        index = IndexWriter(name, 'walkstat', o.dirs, how=o.index)
+        index = IndexWriter(rank_index_name(o.summary_prefix, self.rank), 'walkstat', o.dirs, how=o.index)
         self.files.append(index)
         return index
 

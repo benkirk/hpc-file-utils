@@ -40,3 +40,41 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
   Every checker passed on round 1's plain and gzip indexes. A first submission (job
   8142303) passed the checkers unexpanded globs and was stopped after its walkstat rows;
   its tars were deleted.
+
+## Step B, done (2026-11-10)
+
+- **Code** (`sync/worker.py`, `sync/tool.py`, `common/index.py`): `walksync --index`
+  writes `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv`, `.gz` with `--index=gz`), the
+  per-rank naming now in `index.rank_index_name()`, shared with walkstat. The header adds
+  `dest=` (encoded as a path) and, for a dry run, `dry-run=yes`, through `IndexWriter`'s
+  new `fields`. `read_header()` returns the other fields in `Header.fields`.
+- **Decisions:**
+  - **`E` is "an rsync copied it"**, from the compare's source lstat, written by the rank
+    that ran the rsync after it returned. With `--index`, `SyncWorker.close_batch()` makes
+    a `CopyBatch(paths, nbytes, stats)` instead of a `FileBatch`; the stats are
+    `IndexStat`s (ten integers, named like `os.stat_result`'s fields), small enough to ride
+    in a share reply. A new directory's stat is one `lstat` at the scan, only with
+    `--index`; if it fails, the copy goes ahead as without `--index` and the entry is not
+    recorded.
+  - **The parts of a batch record separately**, as their rsyncs return: exit 0 records the
+    part, exit 24 records the entries still in the source (one `lexists` each, only then),
+    anything else records nothing. The batch still fails as one unit, as before.
+  - **Compared-but-unchanged entries are not recorded.** Three reasons. The index answers
+    "what did this run copy", and listing the unchanged would make it a full listing,
+    which is walkstat `--index`'s job. `E` must stay "done here, exactly once" across
+    every tool. A third record kind would change v1's `rec` column, and with it the parser.
+    An unchanged directory still appears as `P` when it is an ancestor of a copied entry.
+  - **`--dry-run` writes the index the run would write**, recorded at the compare, with
+    `dry-run=yes` in the header. It carries what the `N`/`C` list lacks: the sizes, owners
+    and times of the pending copy. Entries only in the destination (`X`) have no source
+    stat and are not recorded.
+- **Tests** (11 new): in process, the parts of one batch whose rsyncs exit 0, 24 and 23
+  (only the first part, and the surviving entry of the second, are recorded; the batch
+  fails as a unit); `CopyBatch` carrying stats through a pickle, and `FileBatch` without
+  `--index`; a dry run recording at the compare; header fields round-tripping. Under MPI
+  (`test_walksync.py`): the `E` set equals rsync's own itemized dry run (`--out-format
+  '%i %n'`, its `\#ooo` escapes decoded) on a fresh destination, plain, cap 1, and gzip
+  with cap 1, every record's fields equal to the source's lstat, `main --find` passing,
+  and a rerun recording nothing. After changes in the destination, the dry run's index and
+  the real run's both equal the oracle and each other. A partial copy (`--min-size 2MiB`)
+  records the selected files and every new directory. A failing rsync records nothing.

@@ -3,6 +3,9 @@
 The gate (docs/HANDOFF.md, phase 6): after a run, the oracle
     rsync -naxAX --delete -i [--chmod=Du+w] [--exclude ...] SRC/ DEST/
 lists only directory-time lines, and a rerun copies nothing.
+
+--index (indexes-2, step B): the E records of a run are what the same oracle, run before
+it (without --delete), says rsync would copy; a --dry-run's index is the real run's.
 """
 
 import os
@@ -14,6 +17,8 @@ import time
 
 import pytest
 
+from hpc_file_utils.walk.common import index as index_mod
+from hpc_file_utils.walk.common.index import closure_errors, decode_path, entries, read_index
 from hpc_file_utils.walk.sync.rsync import choose_rsync
 
 pytestmark = [
@@ -52,6 +57,44 @@ def oracle(src, dest, *extra, delete=True, final=False):
     out = subprocess.run(cmd + [f"{src}/", f"{dest}/"], capture_output=True, check=True).stdout
     lines = out.decode(errors="surrogateescape").splitlines()
     return lines if final else [line for line in lines if not DIR_ATTRS_RE.match(line)]
+
+
+RSYNC_ESCAPE_RE = re.compile(rb"\\#([0-7]{3})")
+
+
+def would_copy(src, dest, *extra):
+    """The oracle before a run: the entries rsync -nax[A][X] --chmod=Du+w (no --delete)
+    would transfer or create, relative to src, from its itemized names (--out-format
+    '%i %n'; rsync writes an unprintable byte as \\#ooo). Directory lines that are only
+    times, permissions or ACLs, and the root's, are not copies."""
+    rsync, acls, xattrs, _ = choose_rsync()
+    flags = "-nax" + ("A" if acls else "") + ("X" if xattrs else "")
+    cmd = [rsync, flags, "--chmod=Du+w", "--out-format=%i %n", *extra, f"{src}/", f"{dest}/"]
+    out = subprocess.run(cmd, capture_output=True, check=True).stdout
+    paths = set()
+    for line in out.split(b"\n"):
+        if not line or DIR_ATTRS_RE.match(line.decode(errors="surrogateescape")):
+            continue
+        name = RSYNC_ESCAPE_RE.sub(lambda m: bytes([int(m[1], 8)]), line.split(b" ", 1)[1]).rstrip(b"/")
+        if name not in (b"", b"."):
+            paths.add(os.fsdecode(name))
+    return paths
+
+
+def index_records(cwd, src, pattern="index-r*"):
+    """Every rank's walksync index in cwd: each file closed, no E path twice; (files, the E
+    records by path relative to src)."""
+    files = sorted(cwd.glob(pattern))
+    for f in files:
+        assert closure_errors(f) == [], f
+    paths, repeated = entries(files)
+    assert not repeated, sorted(repeated)[:5]
+    recs = {}
+    for f in files:
+        header, records = read_index(f)
+        assert header.tool == "walksync" and header.roots == {str(src)}, header
+        recs.update((os.path.relpath(r.path, src), r) for r in records if r.rec == "E")
+    return files, recs
 
 
 def final_rsync(src, dest):
@@ -235,3 +278,103 @@ def test_a_failing_rsync_fails_the_run(walk, big_dir, dest, tmp_path, rsyncs):
     assert walk.exit_status_matches(r.returncode, 1), r.report()
     assert copied(r)[2] > 0 and copied(r)[0] == 0, r.report()
     assert "rsync exit" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# --index
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("how,cap", [("--index", None), ("--index", "1"), ("--index=gz", "1")],
+                         ids=["tsv", "tsv-cap1", "gz-cap1"])
+def test_index_is_what_rsync_would_copy(walk, private_golden_tree, dest, tmp_path, monkeypatch, how, cap):
+    """A fresh destination: the E records are rsync's own list of what it would copy (the
+    whole tree), each from the source's lstat, the header naming both ends; the checkers
+    pass, --find included; a rerun copies nothing and records nothing."""
+    src = private_golden_tree.root
+    if cap:
+        monkeypatch.setenv("HFU_INDEX_CACHE_MAX", cap)
+    dest.mkdir()
+    expected = would_copy(src, dest)
+    assert expected == {os.path.relpath(p, src) for p in find_all(src)}
+    r = sync(walk, src, dest, tmp_path / "run1", how, "--batch-files", "5")
+    assert r.ok, r.report()
+    files, recs = index_records(tmp_path / "run1", src)
+    assert files and all(f.name.endswith(".tsv.gz" if how.endswith("gz") else ".tsv") for f in files)
+    assert set(recs) == expected
+    for rel, rec in recs.items():
+        s = os.lstat(os.path.join(src, rel))
+        assert (rec.size, rec.mode, rec.ino, rec.nlink, rec.mtime) == \
+            (s.st_size, s.st_mode & 0o7777, s.st_ino, s.st_nlink, int(s.st_mtime)), rel
+        assert rec.type == ("d" if stat.S_ISDIR(s.st_mode) else "l" if stat.S_ISLNK(s.st_mode)
+                            else "p" if stat.S_ISFIFO(s.st_mode) else "f"), rel
+    header, _ = read_index(files[0])
+    assert decode_path(header.fields["dest"]) == str(dest) and "dry-run" not in header.fields
+    assert index_mod.main([str(f) for f in files] + ["--find"]) == 0
+    assert oracle(src, dest) == [], r.report()
+
+    r = sync(walk, src, dest, tmp_path / "run2", how)
+    assert r.ok, r.report()
+    assert copied(r)[0] == 0 and not list((tmp_path / "run2").glob("index-*")), r.report()
+
+
+def find_all(root):
+    """Every path below root, as os.walk sees it (links not followed)."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        out += [os.path.join(dirpath, n) for n in dirnames + filenames]
+    return out
+
+
+def test_index_of_changes_and_its_dry_run(walk, private_golden_tree, dest, tmp_path):
+    """After changes in the destination: a --dry-run's index and the real run's both hold
+    exactly what rsync says it would copy (new, changed, a removed subtree), nothing that
+    was compared and found unchanged and nothing only in the destination; the dry run's
+    header says so, and its records are the real run's."""
+    src = private_golden_tree.root
+    assert sync(walk, src, dest, tmp_path / "run1").ok
+    with open(dest / "data/big.dat", "ab") as f:                      # size
+        f.write(b"x")
+    os.utime(dest / "data/medium.dat", (1, 1))                       # whole-second mtime
+    os.remove(dest / "links/file-link")                              # symlink target
+    os.symlink("elsewhere", dest / "links/file-link")
+    os.remove(dest / "special/hard-b.dat")                           # one name of a hard link
+    shutil.rmtree(dest / "data/nested")                              # a subtree
+    os.remove(dest / "odd names/new\nline.dat")                      # an odd name
+    (dest / "data/only-in-dest.txt").write_text("keep me")           # extraneous
+    expected = would_copy(src, dest)
+    assert expected == {"data/big.dat", "data/medium.dat", "links/file-link", "special/hard-b.dat",
+                        "data/nested", "data/nested/deeper", "data/nested/deeper/leaf.dat",
+                        "odd names/new\nline.dat"}
+
+    r = sync(walk, src, dest, tmp_path / "run2", "--dry-run", "--index")
+    assert r.ok, r.report()
+    files, dry = index_records(tmp_path / "run2", src)
+    assert set(dry) == expected
+    assert {line[2:] for line in dryrun_lines(tmp_path / "run2") if line[0] in "NC"} == \
+        {p.replace("\n", "\\n") for p in expected}                   # printable()'s list
+    assert all(read_index(f)[0].fields["dry-run"] == "yes" for f in files)
+    assert not (dest / "data/nested").exists()                        # the dry run copied nothing
+
+    r = sync(walk, src, dest, tmp_path / "run3", "--index", "--batch-files", "3")
+    assert r.ok, r.report()
+    _, real = index_records(tmp_path / "run3", src)
+    assert real == dry
+    assert oracle(src, dest, delete=False) == []
+
+
+def test_index_of_a_partial_copy_holds_the_selected_files_and_every_new_directory(walk, private_golden_tree,
+                                                                                   dest, tmp_path):
+    src = private_golden_tree.root
+    r = sync(walk, src, dest, tmp_path / "run", "--index", "--min-size", "2MiB")
+    assert r.ok, r.report()
+    _, recs = index_records(tmp_path / "run", src)
+    expected = {os.path.relpath(p, src) for p in find_all(src)
+                if os.path.isdir(p) and not os.path.islink(p) or os.lstat(p).st_size >= 2 * MiB}
+    assert set(recs) == expected
+
+
+def test_a_failing_rsync_records_nothing(walk, big_dir, dest, tmp_path):
+    r = sync(walk, big_dir, dest, tmp_path / "run", "--rsync-opts=--no-such-rsync-option", "--index")
+    assert not r.timed_out, r.report()
+    assert walk.exit_status_matches(r.returncode, 1), r.report()
+    assert not list((tmp_path / "run").glob("index-*"))

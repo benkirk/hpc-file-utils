@@ -8,15 +8,21 @@ and --index=gz, the same records through gzip."""
 import errno
 import gzip
 import os
+import pickle
 import zlib
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from hpc_file_utils.walk.common import index as index_mod
 from hpc_file_utils.walk.common.index import (IndexWriter, closure_errors, decode_path, encode_path,
-                                              entries, read_index)
+                                              entries, index_stat, read_index)
+from hpc_file_utils.walk.common.stats import WalkStats
+from hpc_file_utils.walk.common.worker import FileBatch
+from hpc_file_utils.walk.sync.compare import NEW
+from hpc_file_utils.walk.sync.worker import CopyBatch, SyncWorker
 from hpc_file_utils.walk.tar import worker as tar_worker
 from hpc_file_utils.walk.tests.test_filtering import find
 
@@ -194,6 +200,107 @@ def test_gz_files_concatenate_into_one_readable_index(tmp_path):
         text = f.read()
     with gzip.open(a, "rt", encoding="utf-8") as fa, gzip.open(b, "rt", encoding="utf-8") as fb:
         assert text == fa.read() + fb.read()
+
+
+class _FakeRsync:
+    """An rsync that has already exited with rc."""
+
+    def __init__(self, rc):
+        self.rc = rc
+
+    def wait(self, tick):
+        return self.rc
+
+    def tail(self):
+        return "fake rsync output"
+
+    def close(self):
+        pass
+
+
+def _sync_worker(tmp_path, root, index=True, dry_run=False):
+    w = object.__new__(SyncWorker)   # skip MPIClass.__init__: no MPI here
+    w.rank, w.src, w.dest, w.src_prefix = 1, str(root), str(tmp_path / "dest"), len(str(root)) + 1
+    w.rsyncs, w.dry_run = 3, dry_run
+    w.stats = WalkStats(heap_size=10)
+    w.check_share = w.report_progress = lambda *a, **k: None
+    w.copied_bytes = w.copied_files = w.nrsync = 0
+    w.local_batches, w.batch, w.batch_bytes = [], [], 0
+    w.options = SimpleNamespace(batch_files=2, batch_size=1 << 40)
+    w.index = IndexWriter(str(tmp_path / "index-r001.tsv"), "walksync", [str(root)]) if index else None
+    w.batch_stats = [] if index else None
+    return w
+
+
+def test_walksync_records_what_each_rsync_copied(tmp_path, monkeypatch):
+    """A part whose rsync exited 0 is recorded whole, one that exited 24 (vanished) only
+    for the entries still in the source, one that failed not at all; an entry without a
+    stat (vanished before its compare's) never."""
+    root = tmp_path / "src"
+    (root / "sub").mkdir(parents=True)
+    for n in ("sub/a", "c", "d", "e", "f"):
+        (root / n).write_bytes(b"x")
+    w = _sync_worker(tmp_path, root)
+    paths = ["sub", "sub/a", "c", "d", "e", "f"]
+    stats = [index_stat(os.lstat(root / p)) for p in paths]
+    stats[1] = None
+    os.unlink(root / "d")                                         # vanished after its compare
+    rcs = iter([0, 24, 23])
+    monkeypatch.setattr(w, "start_rsync", lambda part: _FakeRsync(next(rcs)))
+    w.copy_batch(paths, 6, stats)
+    w.index.close()
+    _, recs = _records(w.index.name)
+    assert [(r.rec, os.path.relpath(r.path, root)) for r in recs] == [("P", "."), ("E", "sub"), ("E", "c")]
+    assert w.stats.num_errors == 1 and w.stats.counters["rsync_failures"] == 1
+    assert w.stats.counters["copied_files"] == 0                 # the batch failed, as a unit
+
+
+@pytest.mark.parametrize("index", [True, False], ids=["index", "no-index"])
+def test_walksync_copy_batches_carry_their_stats(tmp_path, index):
+    root = tmp_path / "src"
+    root.mkdir()
+    for n in ("a", "b", "c"):
+        (root / n).write_bytes(b"x" * 10)
+    w = _sync_worker(tmp_path, root, index=index)
+    for n in ("a", "b", "c"):
+        w.want_copy(n, 10, NEW, [], os.lstat(root / n))
+    w.close_batch()
+    first, second = w.local_batches
+    if not index:
+        assert type(first) is FileBatch and first == FileBatch(["a", "b"], 20)
+        return
+    assert type(first) is CopyBatch and first.paths == ["a", "b"] and first.nbytes == 20
+    assert first.stats == [index_stat(os.lstat(root / n)) for n in ("a", "b")]
+    assert second.stats == [index_stat(os.lstat(root / "c"))] and w.batch_stats == []
+    assert pickle.loads(pickle.dumps(first)) == first            # a share hands it over whole
+    assert len(pickle.dumps(first.stats[0])) < 200
+
+
+def test_walksync_dry_run_records_at_the_compare(tmp_path):
+    root = tmp_path / "src"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub/a").write_bytes(b"x")
+    w = _sync_worker(tmp_path, root, dry_run=True)
+    lines = []
+    w.want_copy("sub", 0, NEW, lines, os.lstat(root / "sub"))
+    w.want_copy("sub/a", 1, NEW, lines, os.lstat(root / "sub/a"))
+    w.want_copy("gone", 0, NEW, lines, None)                      # vanished before its stat: listed, not recorded
+    assert lines == ["N sub\n", "N sub/a\n", "N gone\n"] and not w.local_batches and not w.batch
+    w.index.close()
+    _, recs = _records(w.index.name)
+    assert [(r.rec, os.path.relpath(r.path, root)) for r in recs] == [("P", "."), ("E", "sub"), ("E", "sub/a")]
+
+
+def test_header_fields_round_trip(tmp_path):
+    out = tmp_path / "idx"
+    w = IndexWriter(str(out), "walksync", ["/src"], fields=[("dest", encode_path("/d\test")), ("dry-run", "yes")])
+    w.open()
+    w.close()
+    header, _ = read_index(out)
+    assert header.roots == {"/src"} and header.fields == {"dest": "/d\\test", "dry-run": "yes"}
+    assert decode_path(header.fields["dest"]) == "/d\test"
+    assert out.read_text().startswith("# hfu-index v1\ttool=walksync\tcolumns=")
+    assert out.read_text().rstrip("\n").endswith("\troot=/src\tdest=/d\\test\tdry-run=yes")
 
 
 def test_a_truncated_gz_index_is_refused(tmp_path):

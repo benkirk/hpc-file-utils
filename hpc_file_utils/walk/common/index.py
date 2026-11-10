@@ -72,6 +72,8 @@ FORMATS = ('tsv', 'gz')          # --index's values: --index alone is tsv
 GZIP_SUFFIX = '.gz'
 GZIP_LEVEL = 6
 GZIP_MAGIC = b'\x1f\x8b'
+RANK_INDEX = 'index-r{:03d}.tsv'              # walkstat's and walksync's per-rank index
+PREFIXED_RANK_INDEX = 'index-{}-r{:03d}.tsv'  # ... with --summary-prefix
 
 TYPE_LETTERS = {stat.S_IFREG: 'f', stat.S_IFDIR: 'd', stat.S_IFLNK: 'l', stat.S_IFIFO: 'p',
                 stat.S_IFSOCK: 's', stat.S_IFBLK: 'b', stat.S_IFCHR: 'c'}
@@ -96,6 +98,33 @@ def add_index_argument(parser, help):
                         help=help + '. --index=gz writes the same through gzip, ".gz" on each name')
 
 
+def rank_index_name(prefix, rank):
+    """A per-rank index's name (walkstat, walksync), before any '.gz': index-r{rank}.tsv,
+    or index-<prefix>-r{rank}.tsv with --summary-prefix."""
+    return PREFIXED_RANK_INDEX.format(prefix, rank) if prefix else RANK_INDEX.format(rank)
+
+
+class IndexStat(NamedTuple):
+    """What a record needs of an lstat, named as os.stat_result's fields: small to carry in
+    a batch that a share may pickle to another rank (walksync's copy batches)."""
+    st_mode     : int
+    st_size     : int
+    st_blocks   : int
+    st_uid      : int
+    st_gid      : int
+    st_nlink    : int
+    st_ino      : int
+    st_atime_ns : int
+    st_mtime_ns : int
+    st_ctime_ns : int
+
+
+def index_stat(s):
+    """An lstat result as an IndexStat."""
+    return IndexStat(s.st_mode, s.st_size, s.st_blocks, s.st_uid, s.st_gid, s.st_nlink, s.st_ino,
+                     s.st_atime_ns, s.st_mtime_ns, s.st_ctime_ns)
+
+
 def encode_path(path):
     """A path as one line of valid UTF-8 text without tabs, reversibly (decode_path())."""
     if isinstance(path, bytes):
@@ -118,11 +147,13 @@ class IndexWriter(RankFile):
     records of the ancestors the file lacks. Opened at its first record, as a RankFile, or
     by open() for a file that must exist even empty (walktar's, beside its tar); close()
     forgets the written cache. how is --index's value: 'gz' writes name + '.gz' through
-    gzip, anything else name as plain text."""
+    gzip, anything else name as plain text. fields are more (key, value) pairs for the
+    header, after the roots (walksync's dest= and dry-run=)."""
 
-    def __init__(self, name, tool, roots, offsets=False, cache_max=None, how='tsv'):
+    def __init__(self, name, tool, roots, offsets=False, cache_max=None, how='tsv', fields=()):
         self.gz = how == 'gz'
         super().__init__(name + GZIP_SUFFIX if self.gz else name)
+        self.fields = tuple(fields)
         self.tool = tool
         # as the walk names them: os.path.join() gives root/name even for a root given as 'root/'
         self.roots = frozenset(r.rstrip('/') or '/' for r in roots)
@@ -138,7 +169,8 @@ class IndexWriter(RankFile):
             self.file = (gzip.open(self.name, 'wt', encoding='utf-8', compresslevel=GZIP_LEVEL) if self.gz
                          else open(self.name, 'w', encoding='utf-8'))
             roots = ''.join(f'\troot={encode_path(r)}' for r in sorted(self.roots))
-            self.file.write(f'{HEADER}\ttool={self.tool}\tcolumns={",".join(self.columns)}{roots}\n')
+            fields = ''.join(f'\t{k}={v}' for k, v in self.fields)
+            self.file.write(f'{HEADER}\ttool={self.tool}\tcolumns={",".join(self.columns)}{roots}{fields}\n')
 
     def write(self, text):
         self.open()
@@ -151,7 +183,8 @@ class IndexWriter(RankFile):
     def add(self, path, statinfo, offsets=None):
         """Record one entry, counted or archived here: its E line, after the P lines of any
         ancestor this file lacks. statinfo is its lstat, the found one (before any read);
-        offsets is walktar's (offset, offset_data) of its member."""
+        offsets is walktar's (offset, offset_data) of its member. Any object with
+        os.stat_result's field names will do (an IndexStat)."""
         if path not in self.roots:
             parent = os.path.dirname(path)
             if parent in self.written:
@@ -234,6 +267,7 @@ class Header(NamedTuple):
     tool    : str
     columns : tuple
     roots   : frozenset
+    fields  : dict = {}   # the header's other key=value fields, as written (walksync: dest, dry-run)
 
 
 def _int(s):
@@ -256,7 +290,8 @@ def read_header(line):
     tool = next(v for k, v in fields if k == 'tool')
     columns = tuple(next(v for k, v in fields if k == 'columns').split(','))
     roots = frozenset(decode_path(v) for k, v in fields if k == 'root')
-    return Header(tool, columns, roots)
+    others = {k: v for k, v in fields if k not in ('tool', 'columns', 'root')}
+    return Header(tool, columns, roots, others)
 
 
 def open_index(name):
