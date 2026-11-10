@@ -5,6 +5,7 @@ between the tools comes from their Tool (walk/tools.py, common/tool.py).
 """
 
 import logging
+import os
 import sys
 from datetime import datetime
 
@@ -61,6 +62,7 @@ def main(app, argv=None):
             log.error('%s needs at least 2 MPI ranks (a manager and a worker)', app)
         return 2
 
+    cpus = cpus_per_rank(comm)
     comm.Barrier()
 
     # workers on ranks [1,size)
@@ -77,6 +79,9 @@ def main(app, argv=None):
         for line in tool.banner(args):
             print(line)
         print(f'Running {app} on {size} MPI ranks', flush=True)
+        if cpus is not None:
+            print(f"CPUs per rank: {cpus} (the launcher's binding; a rank's threads share them: "
+                  f"mpiexec --cpu-bind depth --depth 2 gives each rank two cores, the walk README's 'CPU binding')", flush=True)
         walker = Manager(options=args)
 
     walk_log.setup(rank, walker.options.verbose)   # now that every rank has the options
@@ -88,6 +93,20 @@ def main(app, argv=None):
 
     # exit-status policy: collect() summed the error counts on every rank
     return tool.exit_status(walker.total_errors, walker.options)
+
+
+def cpus_per_rank(comm):
+    """The CPUs each rank may run on (its affinity mask, which the launcher's binding
+    sets: PALS gives each rank one by default, 'mpiexec --cpu-bind depth --depth N' N),
+    gathered on rank 0 as '4' or '1-4'; None where there is no mask to read (macOS). The
+    binding bounds what a rank's threads (walktar's readers, walkstat's --stat-threads)
+    can do, so every run records it (perf-1, step A)."""
+    getaffinity = getattr(os, 'sched_getaffinity', None)
+    counts = comm.gather(len(getaffinity(0)) if getaffinity else None, root=0)
+    if counts is None or None in counts:
+        return None
+    lo, hi = min(counts), max(counts)
+    return str(lo) if lo == hi else f'{lo}-{hi}'
 
 
 def run_walker(walker, rank):

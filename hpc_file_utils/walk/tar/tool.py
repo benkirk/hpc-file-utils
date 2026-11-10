@@ -12,7 +12,7 @@ class TarTool(Tool):
     batches_bytes = True
 
     def add_arguments(self, parser):
-        parser.add_argument('--read-ahead', default=16, type=int, required=False, help='Files each rank opens and reads (whole, up to 16 MiB) ahead of the one it is archiving, in as many reader threads: a small file costs one storage round trip, ~35 ms on campaign GPFS and scratch, and these overlap them (default: 16; 0 reads one file at a time)')
+        parser.add_argument('--read-ahead', default=16, type=int, required=False, help='Files each rank opens and reads (whole, up to 16 MiB) ahead of the one it is archiving, in as many reader threads: a small file costs one storage round trip, ~35 ms on campaign GPFS and scratch, and these overlap them (default: 16; 0 reads one file at a time). The threads need CPU: under PALS\'s default binding of one CPU per rank they lose a third of the rate on small files, so launch with mpiexec --cpu-bind depth --depth 2 (the walk README, "CPU binding")')
         parser.add_argument('--index', action='store_true', help='Write an index beside each tar, <tar>.idx: one line per member with its metadata (type, size, allocation, mode, owner, the times as found before the read, inode) and its offsets in the tar, so a member can be found or extracted without reading the whole tar; see the walk README, "Indexes"')
 
     def check(self, parser, args):

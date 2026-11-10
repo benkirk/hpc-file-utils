@@ -336,9 +336,20 @@ def test_walktar_indexes_of_a_big_directory_spread_over_ranks(walk, big_dir_tree
     paths = _check_tar_indexes(tmp_path)
     assert paths == set(find(big_dir_tree, mindepth=0))
     assert len(_index_files(tmp_path, "output-r*-b*.tar.idx")) > 3
-    # a batch index of the big directory starts with its ancestors as P, then its files
-    some = _records(_index_files(tmp_path, "output-r*-b*.tar.idx")[-1])[1]
-    assert [x.rec for x in some[:3]] == ["P", "P", "E"] and some[1].path == str(big_dir_tree / "big")
+    # every batch index holding files of the big directory starts with the root as P and
+    # has the big directory as P before the first of its files (which batch holds what,
+    # and whether a small directory's file came first in it, depends on the ranks' timing)
+    big = str(big_dir_tree / "big")
+    with_big = []
+    for f in _index_files(tmp_path, "output-r*-b*.tar.idx"):
+        recs = _records(f)[1]
+        firsts = [i for i, x in enumerate(recs) if x.rec == "E" and os.path.dirname(x.path) == big]
+        if firsts:
+            with_big.append((recs, firsts[0]))
+    assert len(with_big) > 3
+    for recs, first in with_big:
+        assert (recs[0].rec, recs[0].path) == ("P", str(big_dir_tree))
+        assert any(x.rec == "P" and x.path == big for x in recs[:first])
 
 
 @pytest.mark.mpi
