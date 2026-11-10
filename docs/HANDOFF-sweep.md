@@ -849,6 +849,83 @@ default in both tools.
 - A configurable column set, or a fixed v1? (Decided so far: atime is in, and both tools share
   the columns; see 4.4.)
 
+### Part C, done (2026-11-09, branch `sweep-C`)
+- **`common/index.py`:** `IndexWriter(RankFile)` with `add(path, statinfo, offsets=None)`
+  (4.6's `kind` argument is not needed: the type comes from the stat), the P chain
+  (`parents()`), the written cache and `record()`; `encode_path()` / `decode_path()`;
+  `read_index()`, `closure_errors()`, `entries()` and a `__main__` that runs the checks
+  (closure per file, E exactly once, `--find` completeness) on any set of index files, used
+  by the tests and the smoke run. The walk README's "Indexes" section is the format.
+- **Shape decisions that differ from the plan above:**
+  - **walktar's roots are `E`, not `P`.** 4.2 says the roots appear only as `P`; that holds
+    for walkstat (`count()` never sees a root). walktar archives every directory it walks,
+    roots included, into a dirs tar, and 4.7 wants each `.idx` to match its tar's
+    `getmembers()` with offsets: so in walktar's indexes every member is `E`, the roots and
+    the directories that fail a selecting filter included. `E` means "archived here" there,
+    "counted here" in walkstat's.
+  - **The header's fields are tab-separated** (`# hfu-index v1<TAB>tool=…<TAB>columns=…<TAB>root=…`,
+    one `root=` per `--dirs` entry): a root may hold spaces, and the file is a TSV anyway.
+  - **The cache is an `OrderedDict`, LRU, not a plain dict FIFO.** Evicting the oldest key of
+    a plain dict (`next(iter(d))`) walks the deleted slots at the front until the next
+    resize, which is quadratic at the cap; `OrderedDict.popitem(last=False)` is O(1), and
+    `move_to_end()` on each hit keeps the directory being processed (and the root) in the
+    cache instead of the oldest-inserted. The knob is `HFU_INDEX_CACHE_MAX` in the
+    environment, read at import, since the tests run the tools as subprocesses.
+  - **`tarfile` sets a member's `offset`/`offset_data` only when it reads a tar**; on write
+    `tar.members[-1]` has both at 0. `tar/worker.py`'s `member_offsets(tar, start)` derives
+    them from `tar.offset` before the add and after it, less the member's padded size. The
+    test compares them with what a reader reports, a pax-headered member included.
+  - **`open_member()` returns `(file, data, lstat)`** for a regular file, the lstat taken
+    before the open (the found atime), and still `None` for anything else; `add()` and
+    `add_member()` take the index and record the member themselves (one lstat before
+    `tar.add()` when the index needs it). `TarWorker.open_index()` returns None (walkstat's
+    per-rank index is `StatWorker.open_index()`); `TarWorker.dirs_index` is a class
+    attribute so the tests' `object.__new__` workers need no edit.
+  - **`O_NOATIME`** is in `_open_nofollow()`: tried first, retried without on `EPERM` only
+    (an `EACCES` is a real refusal and propagates). The `--read-ahead 0` path reads through
+    `tar.add()`, which does not use it. A non-owner, non-root run pays a second open per
+    file on the `EPERM`; the uid check that would avoid it (the lstat's `st_uid` against
+    `geteuid()`) is not done, the scans run as root.
+- **Tests** (`tests/test_index.py`, 48 + 1 skipped on APFS): the encoding on 13 odd names
+  (control characters, backslash, NEL, mixed invalid UTF-8) and the non-UTF-8 tree; the
+  writer's P chain, a root without a parent, a vanished parent's `-` fields, eviction at
+  cap 1 with the exact record sequence; the checkers on a hand-broken file;
+  `member_offsets()` against a reader; the `EPERM` fallback with a fake flag. Under MPI:
+  walkstat on the golden tree and the big directory (`--batch-files 10`), unfiltered,
+  `--mtime-older 3y` (every directory P-only; no file at all from a rank that counted
+  nothing) and `--mtime-newer`, each with the default cache and the cap at 1, closure,
+  exactly once, completeness against `find`, `--summary-prefix` naming, two roots in one
+  header; walktar on the private golden tree (`--read-ahead` 16 and 0, the same three
+  filters, both caps) and the big directory: each `.idx` against its tar's `getmembers()`
+  with offsets and the bytes at `offset_data`, the found atime of every file equal to the
+  fixture's, the fifo, links and hard links' records; no index files without `--index`.
+  `test_tar_members.py` changed in one line (`open_member()`'s third value); its
+  assertions are as they were. `big_dir_tree` moved from `test_batches.py` to `conftest.py`;
+  `Tree.atimes` carries the fixture's ages.
+  - **One limitation, found by `make test-pbs`:** with `--read-ahead 0` on Linux the second
+    name of a hard link records the read's atime, not the found one: `tar.add()` reads the
+    first name without `O_NOATIME` (relatime updates it, the fixture's atime equals its
+    mtime), and the second name's lstat comes after. The found-atime test skips hard links
+    under `--read-ahead 0` and says why; the default path is right (the readers' lstats
+    precede every read and the reads do not touch atimes).
+- **Gates:** `make test` 549 passed, 4 skipped (macOS); `make test-pbs` 605 passed, 2
+  skipped (job 8132225, after the hard-link fix; 8132016 before it: 601 passed and the 4
+  `--read-ahead 0` found-atime cases, nothing else); the race test 500/500 at
+  `HFU_RACE_RUNS=100`;
+  `make shellcheck` green. Two tests on `main` are timing-dependent and fail now and then
+  under a loaded local run (`test_walkstat_stats_a_big_directory_on_every_rank`, as noted
+  under E3/E4; and `test_split_directory_parts_merge_across_ranks`, where APFS moved a
+  file's ctime between the two walks): both pass alone, and both fail the same way with
+  this branch's changes stashed.
+- **Smoke run** (job 8132015, `hfu-bench/benchC.pbs`, the walk README's "Part C" has the
+  table): 1 × 32, scratch, warm caches, two rounds per pair. walkstat `million` 1.88/1.64 s
+  against 1.76/1.73 with `--index` (121 MiB in 31 files, 1,000,000 E + 31 P, the checker
+  16 s), `manyfiles` 0.56/0.57 against 0.59/0.68; walktar `manyfiles` 57.4/51.8 s against
+  53.5/53.1 (CPU 40.5/40.7 against 41.1/40.3 s per rank), 201 `.idx` matched their tars.
+  Lustre honours `O_NOATIME` (sampled atimes unchanged after the warm-up read). Nothing
+  stayed on scratch; csg was not used.
+- Golden output never changed.
+
 ---
 
 ## 5. Part D: logging and console output
