@@ -2,16 +2,11 @@
 
 import platform
 
-from hpc_file_utils.walk.common.protocol import TAGS
 from hpc_file_utils.walk.common.stats import RankInfo, WalkStats
 
 
-################################################################################
 class MPIClass:
 
-    tags = TAGS
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self, options=None):
         from mpi4py import MPI
         self.MPI = MPI
@@ -20,23 +15,15 @@ class MPIClass:
         self.rank   = self.comm.Get_rank()
         self.nranks = self.comm.Get_size()
         self.options = self.comm.bcast(options)
-        self.maxnumdirs = 0
-        self.stats = WalkStats(self.options.heap_size)
+        self.stats = WalkStats(self.options.heap_size, self.options.now)
         self.total_errors = 0 # sum over all ranks, set in collect()
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def rank_info(self):
         """This rank's own counts for --verbose. The Manager waits for no work and keeps
         no stack: zeros; the workers fill those in."""
         return RankInfo(self.rank, platform.node(), self.stats.num_dirs, self.stats.num_files,
                         self.stats.total_size, 0.0, 0)
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def collect(self):
         """Combine every rank's stats on rank 0 (collective: every rank calls it).
 
@@ -50,7 +37,8 @@ class MPIClass:
         result = self.comm.reduce(self.stats, op=WalkStats.merged, root=0)
         if result is not None:
             result.ranks.sort()
+            result.resolve_names()         # uid and gid names, once each, here only
             # walkstat's directories split over stat batches: their parts are all here now
             result.finish_directories(self.options.threshold_count, self.options.threshold_size,
-                                      getattr(self.options, 'filters', None) is not None)
+                                      self.options.filters is not None)
         return result

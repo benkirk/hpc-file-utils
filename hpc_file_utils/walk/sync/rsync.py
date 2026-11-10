@@ -70,8 +70,8 @@ def choose_rsync(requested=None, alternatives=RSYNC_ALTERNATIVES):
         if (re.search(r'\bACLs\b', text) and re.search(r'\bxattrs\b', text)
                 and parse_rsync_capabilities(text) == (True, True)):
             lacks = ' and '.join(name for name, ok in (('ACLs', acls), ('xattrs', xattrs)) if not ok)
-            why = 'rsync on PATH ({}) has no {}'.format(path, lacks) if path else 'no rsync on PATH'
-            return alt_path, True, True, 'using {}, which has ACLs and xattrs: {}'.format(alt_path, why)
+            why = f'rsync on PATH ({path}) has no {lacks}' if path else 'no rsync on PATH'
+            return alt_path, True, True, f'using {alt_path}, which has ACLs and xattrs: {why}'
     return path, acls, xattrs, ''
 
 

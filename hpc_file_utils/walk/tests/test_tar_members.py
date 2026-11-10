@@ -5,13 +5,14 @@ In-process, no MPI."""
 import concurrent.futures
 import os
 import tarfile
-import types
 
 import pytest
 
 from hpc_file_utils.walk.common.stats import WalkStats
+from hpc_file_utils.walk.common.worker import FileBatch
 from hpc_file_utils.walk.tar import worker as tar_worker
 from hpc_file_utils.walk.tar.worker import TarWorker
+from hpc_file_utils.walk.tests.helpers import make_options
 
 FIELDS = ("name", "type", "mode", "uid", "gid", "uname", "gname", "mtime", "size", "linkname",
           "pax_headers", "devmajor", "devminor")
@@ -43,7 +44,7 @@ def _tar_worker(read_ahead):
     w = object.__new__(TarWorker)   # skip MPIClass.__init__: no MPI here
     w.rank, w.ntars, w.nwritten_files, w.nwritten_closed = 1, 0, 0, 0
     w.batch_tar, w.dirs_tar, w.readers = None, None, None
-    w.options = types.SimpleNamespace(read_ahead=read_ahead)
+    w.options = make_options("walktar", read_ahead=read_ahead)
     w.stats = WalkStats(heap_size=10)
     w.check_share = w.report_progress = lambda *a, **k: None
     return w
@@ -72,7 +73,7 @@ def test_members_are_tar_adds(entries, tmp_path, monkeypatch, read_ahead, whole_
     monkeypatch.setattr(tar_worker, "READ_WHOLE_MAX", whole_max)
     monkeypatch.chdir(tmp_path)
     w = _tar_worker(read_ahead)
-    w.process_batch((entries, 0))
+    w.process_batch(FileBatch(entries, 0))
     got = _members(tmp_path / "output-r001-b00000.tar")
     assert got == expected
     assert [m[0][1] for m in got].count(tarfile.LNKTYPE) == 1        # hard-b links to hard-a
@@ -83,15 +84,15 @@ def test_members_are_tar_adds(entries, tmp_path, monkeypatch, read_ahead, whole_
 
 
 @pytest.mark.parametrize("read_ahead", [0, 4])
-def test_a_vanished_file_costs_one_error(entries, tmp_path, monkeypatch, read_ahead, capsys):
+def test_a_vanished_file_costs_one_error(entries, tmp_path, monkeypatch, read_ahead, caplog):
     os.unlink(entries[1])                                   # between the scan and the tar
     monkeypatch.chdir(tmp_path)
     w = _tar_worker(read_ahead)
-    w.process_batch((entries, 0))
+    w.process_batch(FileBatch(entries, 0))
     names = [m[0][0] for m in _members(tmp_path / "output-r001-b00000.tar")]
     assert (w.nwritten_files, w.stats.num_errors) == (len(entries) - 1, 1)
     assert entries[1].lstrip("/") not in names and len(names) == len(entries) - 1
-    assert "Cannot add to tar file" in capsys.readouterr().err
+    assert "Cannot add to tar file" in caplog.text
     if w.readers is not None:
         w.readers.shutdown()
 

@@ -14,12 +14,14 @@ sums into the progress line's write rate. Built by BaseWorker.progress_payload()
 Manager.update_progress().
 """
 
-TAGS = {
-    'ready':       10,   # worker -> manager: payload; the worker then waits for the answer
-    'execute':     11,   # manager -> worker: (dirs, batches), the answer to a 'ready'
-    'dir_reply':   31,   # worker -> manager: (dirs, payload), overflow of its local stack
-    'share':       32,   # manager -> worker: None, "send me some of your stack"
-    'share_reply': 33,   # worker -> manager: (dirs, batches, payload), possibly neither
-    'progress':    40,   # worker -> manager: payload
-    'terminate':   1000, # manager -> worker: None, the answer to a 'ready': the walk is done
-}
+from enum import IntEnum
+
+class Tag(IntEnum):
+    """The message tags; an int to mpi4py."""
+    READY       = 10     # worker -> manager: payload; the worker then waits for the answer
+    EXECUTE     = 11     # manager -> worker: (dirs, batches), the answer to a 'ready'
+    DIR_REPLY   = 31     # worker -> manager: (dirs, payload), overflow of its local stack
+    SHARE       = 32     # manager -> worker: None, "send me some of your stack"
+    SHARE_REPLY = 33     # worker -> manager: (dirs, batches, payload), possibly neither
+    PROGRESS    = 40     # worker -> manager: payload
+    TERMINATE   = 1000   # manager -> worker: None, the answer to a 'ready': the walk is done

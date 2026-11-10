@@ -6,11 +6,12 @@ break on the path), so the job combines its ranks' stats with one tree reduction
 """
 
 import grp
+import os
 import pwd
 import stat
 import time
 from collections import Counter, defaultdict
-from functools import partial
+from functools import lru_cache, partial
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.heaps import MaxHeap
@@ -66,11 +67,29 @@ THREE_YEARS = 3*SECONDS_IN_YEAR
 FIVE_YEARS  = 5*SECONDS_IN_YEAR
 SEVEN_YEARS = 7*SECONDS_IN_YEAR
 
-NOW_TIMESTAMP = time.time()
+
+@lru_cache(maxsize=None)
+def uid_name(uid):
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f'uid-{uid}'
+
+
+@lru_cache(maxsize=None)
+def gid_name(gid):
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return f'gid-{gid}'
 
 
 class IDCounts:
-    """Bytes and entries owned by one uid or gid."""
+    """Bytes and entries owned by one uid or gid. The workers carry the id only; rank 0
+    resolves the names once, after the reduction (WalkStats.resolve_names()), instead of
+    every rank asking sssd for every id it meets."""
+    _id_to_name = None   # UIDCounts and GIDCounts: the lookup
+
     def __init__(self):
         self.id = None
         self.name = None
@@ -78,9 +97,10 @@ class IDCounts:
         self.nitems = 0
 
     def set_id(self, id_in):
-        if id_in != self.id:
-            self.id = id_in
-            self.name = self._id_to_name(id_in)
+        self.id = id_in
+
+    def resolve(self):
+        self.name = self._id_to_name(self.id)
 
     def add(self, other):
         self.nbytes += other.nbytes
@@ -89,21 +109,13 @@ class IDCounts:
     def to_dict(self):
         return {'name': self.name, 'nbytes': self.nbytes, 'nitems': self.nitems}
 
+
 class UIDCounts(IDCounts):
-    @staticmethod
-    def _id_to_name(uid):
-        try:
-            return pwd.getpwuid(uid).pw_name
-        except KeyError:
-            return 'uid-{}'.format(uid)
+    _id_to_name = staticmethod(uid_name)
+
 
 class GIDCounts(IDCounts):
-    @staticmethod
-    def _id_to_name(gid):
-        try:
-            return grp.getgrgid(gid).gr_name
-        except KeyError:
-            return 'gid-{}'.format(gid)
+    _id_to_name = staticmethod(gid_name)
 
 
 # heaps of (key, DirEntry) or (key, FileEntry), largest key first
@@ -136,18 +148,27 @@ def _add_into(mine, theirs):
             mine[k] = v
 
 
+# WalkStats' scalar counters, every one summed by merge() (a counter added here and
+# nowhere else is enough)
+COUNTERS = (
+    'num_files',       # non-directories counted
+    'num_dirs',        # directories walked
+    'num_items',       # entries counted (num_files plus the directories that count)
+    'total_size',      # their bytes, min(st_size, st_blocks * 512)
+    'num_errors',      # entries that could not be scanned, stat'ed, archived or copied
+    'num_excluded',    # entries pruned by --exclude (never stat'ed or descended)
+    'num_unmatched',   # entries stat'ed but not counted: they failed a selecting filter
+)
+
+
 class WalkStats:
     """One rank's accumulators (or, after merge(), several ranks')."""
 
-    def __init__(self, heap_size):
+    def __init__(self, heap_size, now=None):
         self.heap_size = heap_size
-        self.num_files = 0
-        self.num_dirs = 0
-        self.num_items = 0
-        self.total_size = 0
-        self.num_errors = 0   # entries that could not be scanned (or archived)
-        self.num_excluded = 0   # entries pruned by --exclude (never stat'ed or descended)
-        self.num_unmatched = 0  # entries stat'ed but not counted: they failed a selecting filter
+        self.now = time.time() if now is None else now   # the job's one "now" (options.now)
+        for name in COUNTERS:
+            setattr(self, name, 0)
         self.st_modes = defaultdict(int)
         self.uids = defaultdict(UIDCounts)
         self.gids = defaultdict(GIDCounts)
@@ -162,7 +183,7 @@ class WalkStats:
         # summed by merge()
         self.counters = Counter()
 
-    def count(self, path, statinfo, totals, count_dirs):
+    def count(self, path: str, statinfo: os.stat_result, totals: DirTotals, count_dirs: bool) -> None:
         """Count one entry that passed the filters: the walk's accounting, into these
         totals and into its directory's 'totals' (a DirTotals). Every tool's walk keeps
         it. count_dirs: whether a directory counts in the type counts here (with a
@@ -191,7 +212,8 @@ class WalkStats:
         g.nbytes += item_size
 
         if stat.S_ISDIR(fmode):
-            if count_dirs: self.st_modes['dir'] += 1
+            if count_dirs:
+                self.st_modes['dir'] += 1
             return
 
         self.num_files += 1
@@ -208,15 +230,10 @@ class WalkStats:
         self.heaps['nbytes_files'].add((item_size, fe))
         self.user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
 
-    def merge(self, other):
+    def merge(self, other: 'WalkStats') -> 'WalkStats':
         """Add 'other' into this one (in place); returns self."""
-        self.num_files += other.num_files
-        self.num_dirs += other.num_dirs
-        self.num_items += other.num_items
-        self.total_size += other.total_size
-        self.num_errors += other.num_errors
-        self.num_excluded += other.num_excluded
-        self.num_unmatched += other.num_unmatched
+        for name in COUNTERS:
+            setattr(self, name, getattr(self, name) + getattr(other, name))
         for k, v in other.st_modes.items():
             self.st_modes[k] += v
         _add_into(self.uids, other.uids)
@@ -225,7 +242,7 @@ class WalkStats:
             self.heaps[name].merge(heap)
         for name, per_user in other.user_heaps.items():
             for uid, heap in per_user.items():
-                if heap.empty():
+                if not heap:
                     continue
                 self.user_heaps[name][uid].merge(heap)
         self.ranks += other.ranks
@@ -233,11 +250,11 @@ class WalkStats:
         _add_into(self.partial_dirs, other.partial_dirs)
         return self
 
-    def add_partial_dir(self, path, totals):
+    def add_partial_dir(self, path: str, totals: DirTotals) -> None:
         """Part of a directory's totals, from one stat batch; listed once all are merged."""
         _add_into(self.partial_dirs, {path: totals})
 
-    def record_directory(self, path, totals, threshold_count, threshold_size):
+    def record_directory(self, path: str, totals: DirTotals, threshold_count: int, threshold_size: int) -> None:
         """A walked directory's own (non-recursive) totals, into the directory lists."""
         heaps = self.heaps
         user_heaps = self.user_heaps
@@ -251,7 +268,7 @@ class WalkStats:
 
         # are the contents owned by a single user id?  If so, track per-user info as well
         # (None if not: uid 0 is a valid owner, and root runs the scans)
-        single_owner = next(iter(totals.uids)) if 1 == len(totals.uids) else None
+        single_owner = next(iter(totals.uids)) if len(totals.uids) == 1 else None
 
         # granular directory tracking by timestamp thresholds.
         # check against thresholds to avoid tracking users that only have
@@ -263,17 +280,22 @@ class WalkStats:
                 user_heaps['nbytes_dirs'][single_owner].add((nbytes, de))
 
             # ignore UNIX epoch (atime ~0 seconds) in timeframe accounting
-            if 10 < max_atime:
-                age = NOW_TIMESTAMP - max_atime
+            if max_atime > 10:
+                age = self.now - max_atime
                 name = ('nbytes_dirs_7yrs' if SEVEN_YEARS < age else
                         'nbytes_dirs_5yrs' if FIVE_YEARS < age else
                         'nbytes_dirs_3yrs' if THREE_YEARS < age else None)
                 if name is not None:
                     heaps[name].add((nbytes, de))
-                    if single_owner is not None: user_heaps[name][single_owner].add((nbytes, de))
-        return
+                    if single_owner is not None:
+                        user_heaps[name][single_owner].add((nbytes, de))
 
-    def finish_directories(self, threshold_count, threshold_size, filtered):
+    def resolve_names(self) -> None:
+        """The uid and gid names, looked up once each (rank 0, after the reduction)."""
+        for counts in (*self.uids.values(), *self.gids.values()):
+            counts.resolve()
+
+    def finish_directories(self, threshold_count: int, threshold_size: int, filtered: bool) -> None:
         """After the reduction: list the directories that were split over stat batches.
         With a selecting filter, one that holds no matching entries goes in no list."""
         for path in sorted(self.partial_dirs):

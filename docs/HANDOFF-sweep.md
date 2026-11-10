@@ -442,6 +442,53 @@ Six commits. "Done" for the whole part:
   tool (section 7); E3's `make_options()` test helper; the README's phase notes beyond the
   Layout table, the `--profile` and `--rsyncs` entries.
 
+### "K rsyncs", done (2026-11-09, branch `sweep-B`: the default is 8)
+- **The ceiling, measured** (`hfu-bench/createprobe.py` + `probe-matrix.sh`: PROCS processes
+  each create 1,000 files of SIZE bytes as rsync's receiver does, a temporary name, write,
+  fchmod, close, utime, rename; `benchK.pbs` ran it on derecho, `probe-casper.log` on a
+  claimed Casper node; files/s, the 32-process rows twice):
+
+  | | derecho | Casper |
+  |---|---:|---:|
+  | 1 process, 80 KB / 1 MiB (ms per file) | 1.9 / 3.0 | 2.4 / 3.1 |
+  | 32 processes, one directory, 80 KB | 1,231, 1,296 | 1,007, 977 |
+  | 32 processes, one directory, 1 MiB | 1,283, 1,262 | 1,030, 1,003 |
+  | 32 processes, a directory each, 80 KB | 2,621, 4,278 | 4,258, 3,519 |
+  | 32 processes, a directory each, 1 MiB | 3,815, 4,174 | 3,921, 4,240 |
+
+  - **One directory caps creates at ~1,250/s (derecho) or ~1,000/s (Casper), whatever the
+    size**; many directories reach 2,600–4,300/s. The file's bytes are not the limit (80 KB
+    and 1 MiB are the same), the directory is. A single stream costs 2–3 ms per file, so
+    32 streams into one directory are ~10× slower each than alone.
+- **walksync at 1 × 32** (`benchK/8129741`, `/usr/bin/rsync`, copies onto scratch, the oracle
+  clean, each rank under GNU time, the csgteam scans running):
+
+  | tree | K = 1 | K = 4 | K = 8 | K = 8, `--cpu-bind depth --depth 4` |
+  |---|---:|---:|---:|---:|
+  | `manyfiles`: 200,000 × 1 MiB, one directory | 451.5 s (443 files/s) | 565.5 s | 385.5 s (519 files/s) | 449.7 s |
+  | `.Radiosonde`: 584,851 × 80 KB, 292 directories | 891.9 s (656 files/s) | 405.4 s | 341.7 s (1,712 files/s) | **285.2 s** (2,051 files/s) |
+
+  - **Into one directory walksync makes ~450–520 files/s at any K**, 2.5× below the probe's
+    ~1,250 creates/s: rsync's own directory operations per file (the stat of the destination
+    name, the temporary name, the rename, the xattr and ACL calls) share the directory's
+    rate, so 31 × K rsyncs cannot beat it however many there are. K = 4 was slower than K = 1
+    on that tree; the scratch runs are noisy to ±15%, as the probe's many-directory rows are.
+  - **Across 292 directories K pays: 892 → 405 → 342 s for K = 1, 4, 8 (2.6×), and 285 s
+    (3.1×, 2,050 files/s) with `--cpu-bind depth`**, where the 8 × 31 rsyncs are not pinned
+    to 31 CPUs. Part A had 912 → 382 under the same scans.
+  - Worker CPU: 49–52 s per rank on `.Radiosonde` at K = 4–8, 69 s at K = 1 (the long run's
+    MPI spin); 72–103 s on `manyfiles`. The oracle passed every copy (the one non-time line
+    on `.Radiosonde` is the destination root's own attributes, as in Part A).
+- **Decision: `--rsyncs` defaults to 8.** Over every pair measured (Part A: derecho 443 → 400
+  and 912 → 382, Casper 805 → 398 and 402 → 362; here 451 → 385 and 892 → 342) K = 8 is
+  the fastest or within noise of it and never slower than K = 1: 2.6× on a tree of many
+  directories, 1.2× into one directory, where the directory's own create rate binds and
+  no K can help. 0.4's one-rank 6–7× does not carry to 1 × 32 because that ceiling is per
+  destination directory, not per stream; the lever for a one-directory copy is more
+  nodes, not more rsyncs. `--cpu-bind depth` adds another 1.2× on the many-directory tree
+  (the rsyncs' CPU) and nothing on the one-directory tree. `sync/tool.py`'s help text and
+  the walk README say so. `test_options.py` expects 8.
+
 ### A1. Duplicates and leftovers
 - `sync/worker.py` uses `printable()`, and `show()` goes. The dry-run lists change only for names
   holding control characters other than `\n` and `\t`, which are now escaped too.
@@ -580,6 +627,77 @@ GPFS directory, walktar's scanning rank, which stats every file, sets the pace.
     Record the numbers in a "Part B" entry after the walk README's "Phase 5.5".
   - Watch the stat batches' own rate under read load. If their stats slow as the scanner's did,
     it shows up as per-batch time, not idle ranks.
+
+### Part B, done (2026-11-09, branch `sweep-B`)
+- **Shape:** `TarWorker(StatWorker)`. `StatWorker.process_batch` hands every entry it stats
+  and counts to a `process_file(path, statinfo)` hook (a no-op for walkstat, one bound-method
+  call per entry); walktar's puts a non-directory into the open `FileBatch` through
+  `add_to_batch(path, st_size)`, so `--batch-size` closes by the real size and `--batch-files`
+  by count, as before. `TarWorker.process_batch` dispatches on `isinstance(batch, StatBatch)`;
+  a `FileBatch` goes to `tar_batch()`, phase 5.5's loop unchanged. `TarWorker.process_directory`
+  still writes the directory into the dirs tar, then runs walkstat's scan.
+  `BaseWorker.process_directory` is a `NotImplementedError` stub, like `process_batch`, and
+  `BaseWorker.process_file` is gone. manager.py's docstring gained two descriptive words
+  (walktar's stat batches close file batches); the argument is untouched.
+- **Not done, on purpose: the reader keeps its own lstat.** Section 3 suggested handing the
+  stat batch's lstat to `open_member()` so the reader could skip its own. The reader's lstat
+  is a fresh type check just before the open: it is what keeps a file that became a fifo
+  from being opened (which blocks) and keeps `tar.add()`'s treatment of one that became a
+  symlink or device. It runs in a reader thread, overlapped with the reads, so it is not on
+  the critical path; and carrying stats in `FileBatch` (shared with walksync) is a protocol
+  choice that Part C, which needs the lstat for the index, should make. Left for C.
+- **Tests:** `test_worker.py` builds the real `TarWorker` (no MPI) on a tree beside its tar
+  directory: the scan stats no file, a stat batch taken by another rank fills that rank's
+  open batch, file batches close by count or real size and stay on the processing rank's
+  list, a file that became a directory is counted but archived nowhere, and the drain order
+  is directory, stat batches, their tar, next directory. `test_tar_members.py` passes a
+  `FileBatch`. `make test` 491 passed; `make test-pbs` 326 passed, 2 skipped; the race test
+  500/500 at `HFU_RACE_RUNS=100`; CI green. `HFU_UPDATE_GOLDEN` was never needed.
+- **Measured on derecho** (jobs 8128927 scratch, 8128928 VIT → csg; 1 × 32, read-ahead 16,
+  two rounds, baseline `hfu-bench/mainB` = main at 3ba9582; the walk README's "Part B" has
+  the table). Each rank ran under GNU `time` (`hfu-bench/cpu-wrap.sh`, `cpu-r<rank>.txt`
+  per run; `benchtar.pbs` prints the per-rank user+sys summary on each result line).
+  - scratch `bigdir`: 434.9, 424.0 s → 447.1, 421.5 s; `manyfiles`: 61.4, 58.8 → 58.8,
+    58.5 s. Unchanged.
+  - **VIT: 380.1, 360.9 s → 402.3, 404.4 s. No gain, and 6–11% slower.** The scan is over
+    within the first 30 s (139 batches waiting, idle 0, where main had 3–15 idle ranks all
+    run), but both land at the same ~3.2–3.6 GiB/s, ~850 files/s, phase 5.5's ceiling for
+    every read-ahead setting. **Phase 5.5's reading was wrong: the scanner's ~1,000 entries/s
+    tracked the archive rate, it did not set it.** The one-node ceiling on VIT is the storage
+    path for 4 MiB files; multi-node scaling (phase 5.5 question 5) is the lever, not the
+    scan. The slowdown is the serial stat batch: 1,000 GPFS lstats on the worker thread with
+    the rank's readers idle, a few percent of each rank's time during which the node reads
+    with 30 ranks instead of 31. main did those stats on one rank, overlapped with the
+    others' reads. The csgteam `scan_dirs` array (8 × 1 × 128) ran throughout.
+  - The halved worker CPU on VIT (~210 → ~105 s per rank) is main's idle ranks spinning in
+    MPI's receive, not work saved: user+sys includes the spin, so a waiting rank costs as
+    much as a working one (the Manager's CPU equals its wall time).
+  - **`--profile` (job 8129483, `hfu-bench/newprof`, 14 intact worker profiles; the run's
+    exit 255 was the launcher's cleanup racing, since fixed):** per worker rank, of ~400 s,
+    `posix.lstat` 97 s tottime, nearly all of it `StatWorker.process_batch` (~95 s cum
+    beyond `tar_batch`'s 290): ~9 ms per lstat on campaign GPFS under the readers' load,
+    serial, on the worker thread. The stat batches' rate did slow as the scanner's had.
+  - **`--cpu-bind depth --depth 4`** (job 8128929): `bigdir` 417.0 s (unchanged), `manyfiles`
+    **45.0 s** against 58.5–58.8: the one-CPU binding costs the reader threads 23% on small
+    files. The VIT row with the same binding: job 8129484 (below).
+- **B2, the second commit: the stat batch's lstats in the reader threads.**
+  `StatWorker.process_batch` takes its stats from `lstats(dirname, names)`, a generator of
+  `(path, lstat result or OSError)` in order (walkstat: one call at a time, as before).
+  `TarWorker.lstats` overlaps them `--read-ahead` deep in the reader pool through
+  `in_flight()`, so the order, the counting and the tars are unchanged; `--read-ahead 0` is
+  the serial path. walkstat on campaign GPFS pays the same ~6–9 ms per serial lstat, so
+  the same trick (a thread pool for its stat batches, a new option) is the obvious next
+  walkstat speed-up; not done here, it is a feature.
+  - **Re-measured (jobs 8129867, 8129868, 8131570; the walk README's Part B):** under PALS's
+    default binding B2 is where B was (400.8, 402.4 s against mainB's 375.5, 387.2: the
+    same 4–7%), its profile shows `lstat` down from 97 to 24 s per rank but the rank waiting
+    on the shared reader pool (210 s in `lstats`) with the files' open/read/write/close
+    calls dominating (~5 ms per open, ~7 per close on loaded GPFS) and only 110 s of CPU in
+    399; **with `--cpu-bind depth --depth 4` it is 268.7 s, 4.81 GiB/s, the best VIT run**
+    (B's first commit 287.6 under the same binding, mainB 361–387 under the default). The
+    binding is the ceiling on the loaded campaign node; once it is lifted, B2's overlap pays.
+    Why the per-rank stats cost 4–7% under the one-CPU binding is left open (the stats' CPU
+    on the busy ranks is the hypothesis).
 
 ---
 
@@ -778,6 +896,60 @@ contract (see the rules above). Part D changes only how they are flushed.
   - a `rich.table` for the `--verbose` per-rank table, under the same guard
 
   Both would match hpc-usage-queries' `console.print`. Revisit if interactive use grows.
+
+### Part D, done (2026-11-09, branch `sweep-B`, one commit)
+- `common/log.py`: `setup(rank, verbose)` puts one `StreamHandler(sys.stderr)` on the
+  `hpc_file_utils.walk` logger, format `[%(rank)3d] %(levelname)s %(message)s` (the rank from a
+  `logging.Filter`), level DEBUG with `--verbose` else INFO, `propagate=False`. `cli.main()`
+  calls it right after the rank is known (so rank 0's option errors are logged) and again once
+  every rank has the options (the level). Modules use `logging.getLogger(__name__)`.
+- Routed: `BaseWorker.error()` (ERROR, still the counter), `vanished()` (WARNING), walksync's
+  rsync exit 24 (WARNING), rank 0's "no such directory" and "needs at least 2 MPI ranks"
+  (ERROR), and the Manager-against-workers count mismatch (WARNING). The stderr text changed
+  from `[  1] Cannot scan: ...` to `[  1] ERROR Cannot scan: ...`; the tests match substrings.
+- Not routed, on purpose: the `-->` lines, the Manager's counters and the `--verbose` per-rank
+  table stay `print` on stdout. 5.1 listed the counters as INFO, but `test_batches.py` parses
+  both from stdout and so would the scans: 5.2 wins. No `--log-level` option: nothing is at
+  INFO or DEBUG yet.
+- `tests/test_log.py`: the format and levels with `capfd`, the handler replaced on a second
+  `setup()`, and `error()` counting while it logs.
+
+### Part E1/E2, done (2026-11-09, three commits, the two E1 ones in `.git-blame-ignore-revs`)
+- E1a: 57 trailing bare returns (found by `ast`, so early returns stayed), 70 banners, the
+  blank-line runs, 12 one-line bodies, 10 Yoda conditions, 4 `super().__init__()`, 6
+  `flush=True` pairs (`cli.py`'s excepthook flush and `stat/report.py`'s after `_write()` are
+  not print-then-flush pairs and stayed), `import io, os, stat` split, `class MaxHeap:`.
+- E1b: 107 `.format()` calls on literals are f-strings; the seven on templates (`DIR_ROW`,
+  `FILE_ROW`, `row`, `pattern`) stay. An `ast`-based converter did 97 (it refused nested
+  specs, escapes, concatenated literals and quote clashes under Python 3.10's rules), the
+  rest by hand; the lines it collapsed were re-wrapped as implicitly concatenated f-strings.
+- E2: the `humanfriendly` fallback, `MaxHeap`'s `heapify([])`, `get_list()` and `empty()`
+  (callers test the heap through `__len__`). `MPIClass.i_am_root` and `.dirs` were already
+  gone (A1).
+- Golden output never changed through any of it; `make test` after every commit.
+
+### Part E3/E4, done (2026-11-09, three commits)
+- **E3a:** `protocol.Tag(IntEnum)` replaces `TAGS` and `MPIClass.tags` (16 sites). `WalkStats`'
+  seven scalar counters are named once in `COUNTERS`, which `__init__` zeroes and `merge()`
+  sums: the plan's dataclass part would have renamed every `st.num_files` across the tools
+  and tests, and the tuple gives the same guarantee flat. The Manager's 17 counters are a
+  `Counters` dataclass, `self.c` (`maxnumdirs` moved there from `MPIClass`); the `-->` lines
+  and `print_counters()` are unchanged.
+- **E3b:** `tests/helpers.py` `make_options(app, **overrides)` goes through `parse_options()`
+  on the current directory, so every attribute exists with its real default; the hand-built
+  `SimpleNamespace`s in `test_worker.py`, `test_tar_members.py` and `test_report.py` use it,
+  and the three `getattr(options, 'filters', None)` sites read the attribute. Type hints on
+  `tool`, `log`, `options`, `filters` and `stats`' public signatures.
+- **E4:** `args.now = time.time()` once on rank 0 in `parse_options()`, given to
+  `compile_filters()` and, through the options bcast, to every rank's `WalkStats(heap_size,
+  now)`; `record_directory()`'s 3/5/7-year buckets use it (`NOW_TIMESTAMP` is gone).
+  `IDCounts.set_id()` keeps the id only; `WalkStats.resolve_names()` fills the names once
+  on rank 0 in `collect()`, through `lru_cache`d `uid_name()`/`gid_name()`. The golden
+  userlists are unchanged (the names are the same names, looked up once instead of on every
+  rank).
+- One MPI test, `test_walkstat_stats_a_big_directory_on_every_rank`, failed once in a full
+  local run under load and passed 3/3 alone: its "at least two ranks took a batch" check is
+  timing-dependent, as its docstring says.
 
 ---
 

@@ -8,6 +8,16 @@ Restore: extract the batch tars in any order (or in parallel), then the -dirs ta
 set the directories' modes and times after their files are in place (a read-only
 directory would otherwise refuse files from another tar).
 
+Two levels of batches (the sweep's Part B): the scan is walkstat's (stat/worker.py), so
+the scanning rank stats only the subdirectories and cuts the other names into
+StatBatches by count. The rank that processes a StatBatch stats, filters and counts
+each name, and puts the selected files in its open FileBatch, which closes at
+--batch-files files or --batch-size bytes of real st_size and is written as one tar,
+here or on an idle rank. Before this, the scanning rank stat'ed every file itself: on
+one huge campaign GPFS directory it made ~1,000 entries/s while the other ranks waited
+(phase 5.5). The StatBatch's FileBatches are created only on the rank processing it
+and processed before its next 'ready', so the Manager's termination argument holds.
+
 Read-ahead (phase 5.5): a small file costs one storage round trip, ~35 ms on campaign GPFS
 and on scratch, whatever its size up to a few MiB; one stream waiting on each in turn made
 ~26 files/s. --read-ahead reader threads open and read the batch's next files while this
@@ -15,11 +25,13 @@ thread writes the current one into the tar, in order. tarfile's own gettarinfo()
 addfile() build and write each member, so the members are exactly tar.add()'s.
 """
 
-import io, os, stat
+import io
+import os
+import stat
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
 
-from hpc_file_utils.walk.common.worker import BaseWorker
+from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
 
 # tarfile copies a member's data in chunks of copybufsize bytes, 16 KiB by default. Bigger
 # reads and writes cost fewer calls; 16 MiB was 2-5% faster on derecho scratch (phase 5).
@@ -31,11 +43,9 @@ COPY_BUFSIZE = 16 * 1024 * 1024
 READ_WHOLE_MAX = COPY_BUFSIZE
 
 
-
 def _open_nofollow(path, flags):
     """open()'s opener: never follow a symlink (the entry was a regular file at its lstat)."""
     return os.open(path, flags | os.O_NOFOLLOW)
-
 
 
 def open_member(path):
@@ -57,13 +67,10 @@ def open_member(path):
         raise
 
 
-################################################################################
-class TarWorker(BaseWorker):
+class TarWorker(StatWorker):
 
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self):
-        BaseWorker.__init__(self)
+        super().__init__()
 
         self.dirs_tar = None          # output-r{rank}-dirs.tar, opened at our first directory
         self.ntars = 0                # batch tars written
@@ -71,11 +78,7 @@ class TarWorker(BaseWorker):
         self.nwritten_closed = 0      # bytes in the batch tars closed so far
         self.batch_tar = None         # the batch tar being written, for progress_extra()
         self.readers = None           # --read-ahead reader threads, started at our first batch
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def add(self, tar, path):
         """Add one entry (never its contents, for a directory); count a failure."""
         try:
@@ -85,9 +88,6 @@ class TarWorker(BaseWorker):
             self.error('add to tar file', error)
             return False
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def add_member(self, tar, path, opened):
         """Add one batch entry; opened is open_member(path)'s Future, or None (--read-ahead
         0) for plain tar.add(), phase 5's path. Counts a failure, as add() does."""
@@ -112,7 +112,7 @@ class TarWorker(BaseWorker):
                     if len(data) < tarinfo.size:
                         data += f.read(tarinfo.size - len(data))
                     if len(data) < tarinfo.size:
-                        raise tarfile.ReadError('unexpected end of data: {}'.format(path))
+                        raise tarfile.ReadError(f'unexpected end of data: {path}')
                     tar.addfile(tarinfo, io.BytesIO(memoryview(data)[:tarinfo.size]))
                 else:
                     tar.addfile(tarinfo, f)
@@ -121,28 +121,43 @@ class TarWorker(BaseWorker):
                 self.error('add to tar file', error)
                 return False
 
+    def reader_pool(self):
+        """The --read-ahead reader threads, started at their first use."""
+        if self.readers is None:
+            self.readers = ThreadPoolExecutor(max_workers=self.options.read_ahead, thread_name_prefix='reader')
+        return self.readers
 
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def read_ahead(self, paths):
         """(path, Future of open_member(path)) in order, keeping --read-ahead files in the
         reader threads ahead of the one yielded (in_flight()); (path, None) with
         --read-ahead 0. Files opened but never archived (an error broke the loop) are closed."""
         depth = self.options.read_ahead
-        if depth and self.readers is None:
-            self.readers = ThreadPoolExecutor(max_workers=depth, thread_name_prefix='reader')
+        if depth:
+            self.reader_pool()
         return self.in_flight(paths, self.open_ahead, depth, self.discard_member)
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def open_ahead(self, path):
         """Start a reader on a file: its open_member() Future."""
         return self.readers.submit(open_member, path)
 
+    def lstats(self, dirname, names):
+        """A stat batch's lstats, --read-ahead of them at a time in the reader threads,
+        yielded in order (in_flight()); walkstat's one at a time with --read-ahead 0. On
+        campaign GPFS under the readers' load one lstat took ~9 ms, so a batch's 1,000 in a
+        row kept a rank's readers idle for a quarter of its time (the walk README, Part B)."""
+        depth = self.options.read_ahead
+        if depth == 0:
+            yield from super().lstats(dirname, names)
+            return
+        submit = self.reader_pool().submit
+        join = os.path.join
+        paths = (join(dirname, name) for name in names)
+        for path, future in self.in_flight(paths, lambda p: submit(os.lstat, p), depth):
+            try:
+                yield path, future.result()
+            except OSError as error:
+                yield path, error
 
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     @staticmethod
     def discard_member(future):
         """A reader's Future whose file will never be archived: close the file."""
@@ -152,39 +167,41 @@ class TarWorker(BaseWorker):
         if member is not None:
             member[0].close()
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
+        """walkstat's scan (the subdirectories stat'ed here, the other names into
+        StatBatches), after the directory itself goes into our dirs tar."""
 
         # last-minute check for a race condition:
         if os.path.exists(dirname):
             # the directory object itself, for its mode, owner and times, in our own dirs tar
             if self.dirs_tar is None:
-                self.dirs_tar = tarfile.open('output-r{:03d}-dirs.tar'.format(self.rank), 'w',
+                self.dirs_tar = tarfile.open(f'output-r{self.rank:03d}-dirs.tar', 'w',
                                              format=tarfile.PAX_FORMAT)
             self.add(self.dirs_tar, dirname)
 
         super().process_directory(dirname)
-        return
 
+    def process_file(self, path, statinfo):
+        """A stat batch's entry, selected and counted: into the open batch (closed past
+        --batch-files files or --batch-size bytes of st_size). Not a directory: one that
+        became a directory since the scan is counted, as walkstat counts it, but belongs
+        in no tar (it was never walked)."""
+        if not stat.S_ISDIR(statinfo.st_mode):
+            self.add_to_batch(path, statinfo.st_size)
 
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    def process_file(self, filename, statinfo):
-        # a selected file: into the open batch (closed past --batch-files / --batch-size)
-        self.add_to_batch(filename, statinfo.st_size)
-        return
-
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """One batch, ours or shared, into its own tar file, its files read ahead by the
-        reader threads. Between files we look for a 'share' (an iprobe costs microseconds, a
-        file a read) and send our counts when due."""
-        paths, nbytes = batch
-        name = 'output-r{:03d}-b{:05d}.tar'.format(self.rank, self.ntars)
+        """A StatBatch (the stats, which fill our open FileBatch) or a FileBatch (one tar),
+        ours or shared."""
+        if isinstance(batch, StatBatch):
+            super().process_batch(batch)
+        else:
+            self.tar_batch(batch.paths)
+
+    def tar_batch(self, paths):
+        """One FileBatch's paths into their own tar file, read ahead by the reader threads.
+        Between files we look for a 'share' (an iprobe costs microseconds, a file a read)
+        and send our counts when due."""
+        name = f'output-r{self.rank:03d}-b{self.ntars:05d}.tar'
         self.ntars += 1
         with tarfile.open(name, 'w', format=tarfile.PAX_FORMAT, copybufsize=COPY_BUFSIZE) as tar:
             self.batch_tar = tar
@@ -194,11 +211,7 @@ class TarWorker(BaseWorker):
                 self.tick()
             self.batch_tar = None
         self.nwritten_closed += os.path.getsize(name)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def progress_extra(self):
         """(bytes, files, archives) written into batch tars so far: the progress line's
         write rate. The dirs tar (headers only) is left out, so at the end these are
@@ -208,9 +221,6 @@ class TarWorker(BaseWorker):
             nbytes += self.batch_tar.offset
         return (nbytes, self.nwritten_files, self.ntars)
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def run(self):
 
         super().run()
@@ -223,4 +233,3 @@ class TarWorker(BaseWorker):
         if self.readers is not None:
             self.readers.shutdown()
             self.readers = None
-        return

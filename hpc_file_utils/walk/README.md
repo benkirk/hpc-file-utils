@@ -11,6 +11,11 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 | `tar/` | walktar: `tool.py`, `worker.py` (TarWorker) |
 | `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
 
+What these tools measured about GLADE itself (read latency and parallelism, stat costs, the
+directory create ceiling, CPU binding, how to measure) is collected in
+[docs/GLADE_PERFORMANCE.md](../../docs/GLADE_PERFORMANCE.md); the phase notes below are the
+sources.
+
 Only `manager.py`, `worker.py`, `mpiclass.py` and `cli.py` touch MPI, and they import mpi4py when
 called rather than when imported, so the rest unit-tests without it. A fourth tool is one
 `<tool>/tool.py` and one `<tool>/worker.py`, added to `TOOLS`.
@@ -76,19 +81,29 @@ What a filter changes:
 
 ### walktar
 
-The scanning rank turns the files it selects into **batches**: a batch closes after
-`--batch-files` files [1000] or `--batch-size` bytes of `st_size` [16GiB], whichever comes
-first. A file bigger than `--batch-size` makes a batch on its own. Batches are units of work,
-just as directories are, so one huge directory no longer ties up one rank for hours.
+The files a walk selects go into **batches**: a batch closes after `--batch-files` files
+[1000] or `--batch-size` bytes of `st_size` [16GiB], whichever comes first. A file bigger
+than `--batch-size` makes a batch on its own. Batches are units of work, just as
+directories are, so one huge directory no longer ties up one rank for hours.
+- **Two levels (the sweep's Part B).** walktar's scan is walkstat's (below): the scanning
+  rank stats only the subdirectories and cuts a directory's other names into *stat
+  batches* of `--batch-files`, without a stat. The rank that processes a stat batch stats,
+  filters and counts each name, and puts the selected files in its open *file batch*,
+  which closes by the real `st_size` and is written as one tar. So `--batch-size` keeps
+  its meaning, and the per-file stats run on every rank instead of the scanning one.
+  Before Part B the scanning rank stat'ed every file itself; on one huge campaign GPFS
+  directory it made ~1,000 entries/s while the other ranks waited (Phase 5.5, below).
 - **Where batches go:**
-  - The scanning rank keeps its batches and archives them itself, batches before
-    directories. The open batch carries over from one directory to the next, so small
-    directories combine.
+  - A rank keeps the batches it makes and processes them itself, batches before
+    directories: a stat batch's file batches go on the same list and are written before
+    the next stat batch. The open file batch carries over from one stat batch and one
+    directory to the next, so small directories combine.
   - A batch leaves its rank only in the answer to the Manager's `share`: the oldest half of
     the rank's closed batches, rounded up, plus the oldest half of its stack.
   - The Manager hands out one batch per `execute`, and hands batches out before directories.
-  - The termination argument covers batches (see `manager.py`).
-- **walkstat batches too**, but its batches are names still to stat (below).
+  - The termination argument covers batches (see `manager.py`): a stat batch creates file
+    batches only on the rank processing it, which processes them before its next `ready`.
+- **walkstat's batches are the stat batches alone** (below).
 - **Outputs**, in the working directory:
   - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
     selected files.
@@ -184,12 +199,29 @@ rerun with nothing changed copies nothing: it costs only the walk.
   the worker polls it every 0.5 s and still answers `share` requests and sends progress.
   `--chmod=Du+w` is needed for two reasons: ranks' batches create the same parent
   directories, and a read-only source's directories would refuse the next batch's files.
-- **`--rsyncs K`** [1]: K rsyncs side by side over one copy batch, each over a K-th of its
+- **`--rsyncs K`** [8]: K rsyncs side by side over one copy batch, each over a K-th of its
   files, the batch still one unit of work (it fails if any of them does). A cold file costs
   one storage round trip whatever rsync does with it, and K rsyncs overlap those round trips
   as walktar's `--read-ahead` does; `docs/HANDOFF-sweep.md` 0.4 measured 8 as the sweet spot
-  with one CPU per rank (6× on 1 MiB files, 7× on 80 KB files). The default stays 1 until
-  that is confirmed at scale.
+  for one rank with one CPU (6× on 1 MiB files, 7× on 80 KB files). At 1 × 32 the gain is
+  smaller, because the ranks share a ceiling that one rank never meets:
+  - **The small-file create ceiling** (the sweep's "K rsyncs" step; `hfu-bench/createprobe.py`,
+    32 processes creating 1,000 files each the way rsync's receiver does, onto scratch):
+    **~1,250 files/s into one directory from derecho, ~1,000 from Casper, whatever the file
+    size** (80 KB or 1 MiB alike), against 2,600–4,300 files/s into one directory per
+    process and 1.9–3.1 ms per file for a single stream. The directory is the serialization
+    point, not the bytes.
+  - walksync into one directory reaches ~450–520 files/s at any K (manyfiles, 200,000 ×
+    1 MiB, derecho 1 × 32: K = 1 451 s, K = 4 565 s, K = 8 385 s, K = 8 with
+    `--cpu-bind depth` 450 s; Part A: 443 and 400 s; Casper 805 and 398 s): about 2.5× below
+    the probe, which is rsync's extra directory work per file (its stat of the destination
+    name, the temporary name and the rename, the xattr and ACL calls) sharing that one
+    directory's rate. Across many directories K pays: `.Radiosonde` (584,851 × 80 KB in 292
+    directories, campaign → scratch) went 892 → 405 → 342 s for K = 1, 4, 8, and 285 s
+    (2,050 files/s) with `--cpu-bind depth --depth 4`, the rsyncs' CPU unpinned. K = 8 is
+    the best or within noise of it on every tree and machine measured and never worse than
+    1 (1.2× into one directory, 2.6× across many). Hence 8.
+  - `--rsyncs 1` is phase 6's behaviour, one rsync per batch.
 - **Which rsync:** `--rsync` if given. Otherwise rsync on PATH, unless it lacks ACLs or xattrs
   and `/usr/bin/rsync` explicitly lists both, in which case the banner says it uses
   `/usr/bin/rsync` and why.
@@ -227,6 +259,13 @@ rerun with nothing changed copies nothing: it costs only the walk.
 
 ## Behaviour changes since the csg-utils import
 
+- **Diagnostics go through `logging` (the sweep's Part D).** Every rank's warnings and
+  errors reach stderr as `[rank] LEVEL message`, one write per line: `[  3] ERROR Cannot
+  scan: ...`, `[  3] WARNING directory '...' vanished`, rsync's exit 24, and rank 0's
+  startup errors (`[  0] ERROR no such directory ...`). `--verbose` also enables DEBUG
+  records (none yet). The results (the banner, the progress line, the `-->` lines, the
+  summary and the userlists) stay `print` on rank 0's stdout, byte-identical: the scans
+  and the tests parse them. `BaseWorker.error()` is still the one place that counts errors.
 - **Termination is race-free.** The Manager now treats a worker as idle only while it holds
   that worker's unanswered `ready`, and receives each worker's messages in order (see the
   docstring at the top of `manager.py`). Before, a walk could
@@ -463,3 +502,86 @@ rerun with nothing changed copies nothing: it costs only the walk.
   - `--read-ahead` with `--cpu-bind depth`.
   - Per-filesystem defaults, if a later measurement needs them.
   - Why the scan slows on GPFS.
+
+### Part B (the sweep: walktar onto stat batches)
+
+- **walktar's scan is walkstat's** ([File batches](#walktar) above): the scanning rank stats
+  only the subdirectories and cuts the other names into stat batches by count; the rank that
+  processes a stat batch stats, filters and counts each name and closes file batches by the
+  real `st_size`. `BaseWorker`'s inline scan is gone, so every tool walks the same way, and
+  a file that vanishes between the scan and its stat costs one error instead of the rest of
+  its directory. The tars, the members (`tar.add()`'s), the golden output and the Manager's
+  protocol are unchanged.
+- **Measured on derecho**, 1 node × 32 ranks, `--read-ahead` 16, PALS's default binding, two
+  rounds each, against a side copy of `main` at 3ba9582 (Part A: phase 5.5's walktar). Each
+  `manyfiles` run follows a `bigdir` run (the scratch cache, phase 5.5). "CPU" is user+sys
+  per worker rank, mean over the 31, from GNU `time` around each rank; it includes the time
+  an idle rank spends spinning in MPI's receive, so a rank that waits costs as much as one
+  that works (the Manager's CPU is its wall time for that reason).
+
+  | tree, read → write | `main` (3ba9582) | Part B |
+  |---|---|---|
+  | scratch `bigdir`: 1,024 × 1 GiB, Lustre → Lustre | 434.9, 424.0 s (2.35–2.42 GiB/s); CPU 174, 170 s | 447.1, 421.5 s (2.29–2.43 GiB/s); CPU 167, 168 s |
+  | scratch `manyfiles`: 200,000 × 1 MiB, Lustre → Lustre | 61.4, 58.8 s (3.19–3.33 GiB/s); CPU 40, 42 s | 58.8, 58.5 s (3.32–3.34 GiB/s); CPU 41, 42 s |
+  | GDEX VIT zarr: 333,110 × ~4 MiB, one directory, GPFS → GPFS (csg) | 380.1, 360.9 s (3.40–3.58 GiB/s); CPU 199, 219 s | 402.3, 404.4 s (3.19–3.21 GiB/s); CPU 107, 104 s |
+
+  - **Scratch is unchanged**, within the noise, for big and small files alike.
+  - **The GPFS case did not gain: the scan was not its ceiling.** Phase 5.5 read the scanning
+    rank's ~1,000 entries/s as the pace-setter. With Part B the scan is over at once (at the
+    first progress line, 30 s in, 139 stat batches were waiting and no rank was idle, where
+    `main` showed 3–15 idle ranks at every line), yet both run at 3.2–3.6 GiB/s, about
+    850 files/s: the same ceiling every `--read-ahead` setting met in phase 5.5. The
+    scanner's rate matched the archive rate; it did not set it. What limits VIT from one
+    node is the storage path for 4 MiB files, not the walk, so the lever there is more nodes
+    (phase 5.5's question 5), not the scan.
+  - **Part B evens the load**: `main`'s scanning rank archived 3.9–4.3 GiB against the others'
+    ~42; the least any rank archives is now 31–35 GiB.
+  - **The VIT rounds are 6–11% slower with Part B**, both rounds, so not noise. A
+    `--profile` run (job 8129483, 14 intact worker profiles) says why: of a worker's ~400 s,
+    97 s are in `lstat`, nearly all of it the stat batches' serial calls on the worker
+    thread, about 9 ms each on campaign GPFS under the readers' load (an unloaded GPFS
+    lstat costs ~1 ms, phase 5.5), with the rank's 16 readers idle meanwhile. So each rank
+    read nothing for a quarter of its time, where `main` did those stats on one rank,
+    overlapped with the other 30's reads. Hence the next entry, Part B's second commit. The
+    csgteam `scan_dirs` array (8 subjobs of 1 × 128) was running throughout these campaign
+    runs, as during Part A's.
+  - **The halved CPU on VIT** (199–219 → 104–107 s per rank) is mostly `main`'s idle ranks
+    spinning in MPI, not work saved.
+  - **`--cpu-bind depth --depth 4`** (job 8128929, Part B, one round): `bigdir` 417.0 s, as
+    before; **`manyfiles` 45.0 s against 58.5–58.8** (4.35 GiB/s), so PALS's one CPU per
+    rank costs the 16 reader threads about 23% on small files, and nothing on big ones.
+    Phase 5.5's question 2 is answered for scratch; the VIT row with the same binding is
+    below.
+- **Part B's second commit: the stat batch's lstats in the reader threads.** walktar's
+  `lstats()` runs a stat batch's `os.lstat` calls `--read-ahead` at a time in the reader
+  pool, yielded in order (the same `in_flight()` as the reads), so the counting, the
+  batches and the tars are as before and `--read-ahead 0` is the serial path. walkstat's
+  stat batches stay serial (it has no threads; a pool for them would be its own option,
+  and the same ~6–9 ms per GPFS lstat says it would pay).
+  - **VIT with `--cpu-bind depth --depth 4`** (job 8129484, Part B's first commit, the
+    serial stat batches still in): **287.6 s, 4.49 GiB/s**, against 361–380 s for `main`
+    and 402–404 s for the same code under PALS's default binding, under the same
+    production-scan load. So on campaign GPFS too the ceiling was the one CPU per rank
+    that the 16 reader threads shared, not the scan and not the storage path: phase 5.5's
+    question 2, answered on both filesystems. Worker CPU 58 s per rank (the ranks spend
+    their time in I/O, not spinning).
+  - **VIT re-measured with the threaded lstats** (job 8129867, `main` 3ba9582 against this,
+    two rounds, PALS's default binding, the production scans running): **`main` 375.5,
+    387.2 s; this 400.8, 402.4 s.** The threaded lstats bought nothing: the same 4–7% gap
+    as the first commit, and the same even load (every rank 38.6–43.1 GiB against `main`'s
+    3.9–46.8). So the serial stat batch was not the cost either. What is left is the
+    stats' CPU: under PALS's one CPU per rank, each rank's CPU is the bottleneck (the
+    `--cpu-bind depth` row above), and Part B moved ~333k lstats, with their Python, from
+    `main`'s scanning rank, whose CPU was otherwise idle, onto the 31 busy ones. The
+    profile of this run (job 8129868, 31 worker profiles, 398.7 s) does not settle it:
+    `lstat` fell from 97 to 24 s per rank, yet the generator that waits on the threaded
+    lstats (`TarWorker.lstats`) shows 210 s cumulative, so the rank waited on the shared
+    reader pool, not on the stat calls; its CPU is 110 s of 399, so it is not saturated
+    either; and the files' own calls dominate (per rank, summed over threads: `read` 94 s,
+    `write` 92, `close` 80, `open` 56: ~7 ms per close and ~5 per open on loaded GPFS). An
+    open point for the multi-node work.
+  - **VIT with `--cpu-bind depth --depth 4`, this code** (job 8131570): **268.7 s, 4.81
+    GiB/s**, the fastest VIT run so far: against 287.6 s for Part B's first commit under the
+    same binding (the threaded lstats pay 7% once the CPU is not the limit) and 361–387 s
+    for `main` under PALS's default. So Part B plus the binding is 1.34× over `main` on the
+    tree it was for, and the binding, not the walk, is what to fix in the launcher.

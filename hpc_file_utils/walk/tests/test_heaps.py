@@ -16,8 +16,8 @@ def test_keeps_the_n_largest_largest_first():
         h.add((n, de(f"/d{n}", n)))
     assert [k for k, _ in h.top()] == [9, 7, 5]
     assert [k for k, _ in h.top(2)] == [9, 7]
-    assert len(h) == 3 and not h.empty()
-    assert MaxHeap(3).empty()
+    assert len(h) == 3 and h
+    assert not MaxHeap(3)
 
 
 def test_ties_at_the_cutoff_break_on_path_whatever_the_order():

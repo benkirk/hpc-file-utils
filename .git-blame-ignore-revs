@@ -1,0 +1,4 @@
+# Mechanical commits (the sweep, Part E1): skip them in git blame
+# git config blame.ignoreRevsFile .git-blame-ignore-revs
+f7b248ea98634d3dd388ef69a41be23b3ed69f98  # sweep E1a: mechanical cleanup, no logic change
+13a629d2f2460114ea669c4c3d0c55464a573a8f  # sweep E1b: f-strings

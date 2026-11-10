@@ -1,11 +1,14 @@
-"""StatWorker: walkstat's worker, with stat batches (phase 5).
+"""StatWorker: walkstat's worker, with stat batches (phase 5); the scan every tool's
+worker builds on (walktar's TarWorker is a StatWorker whose stat batches fill tar batches).
 
 The scan of a directory reads its names and types from scandir (d_type: no stat on
 GPFS or Lustre) and stats only the subdirectories, which it must count and walk. The
 other names go into batches of --batch-files, StatBatch(dirname, names, tail), and the
 stats happen in process_batch(): on this rank, or on an idle one the Manager's 'share'
 hands the batch to (see manager.py). A 1M-entry directory is no longer one rank's hour
-of stats while the others wait.
+of stats while the others wait. process_batch() hands each entry it counts to
+process_file(), the hook a tool fills (walktar: into the open FileBatch, sized by the
+real st_size).
 
 A directory's own totals (its line in the directory lists) are assembled from its
 parts: the scan's subdirectories, carried by the directory's last batch as 'tail', and
@@ -32,11 +35,8 @@ class StatBatch(NamedTuple):
                        # the directory's last batch, which lists it (whole) or adds the last part
 
 
-
-################################################################################
 class StatWorker(BaseWorker):
 
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
         if self.vanished(dirname):
             return
@@ -48,7 +48,8 @@ class StatWorker(BaseWorker):
         st.num_dirs += 1
         # with a selecting filter, directories are counted as entries that match (in count()),
         # as find does; without one, every directory walked, the roots included
-        if select is None: st.st_modes['dir'] += 1
+        if select is None:
+            st.st_modes['dir'] += 1
 
         subdirs = DirTotals()     # this directory's subdirectories, stat'ed here
         names = []                # its other entries, for the stat batches
@@ -88,28 +89,25 @@ class StatWorker(BaseWorker):
             st.add_partial_dir(dirname, subdirs)
         else:
             self.list_directory(dirname, subdirs)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
-        """Stat one StatBatch of a directory's names, ours or shared, and count them."""
+        """Stat one StatBatch of a directory's names, ours or shared, count them, and
+        hand each one counted to process_file()."""
         dirname, names, tail = batch
         st = self.stats
         select = self.select
+        count_dirs = select is not None
+        process_file = self.process_file
         totals = DirTotals()
-        for name in self.ticked(names):
-            path = os.path.join(dirname, name)
-            try:
-                statinfo = os.lstat(path)
-            except OSError as error:
-                self.error('stat', error)
+        for path, statinfo in self.lstats(dirname, self.ticked(names)):
+            if isinstance(statinfo, OSError):
+                self.error('stat', statinfo)
                 continue
             if select is not None and not select(statinfo):
                 st.num_unmatched += 1
                 continue
-            st.count(path, statinfo, totals, select is not None)
+            st.count(path, statinfo, totals, count_dirs)
+            process_file(path, statinfo)
 
         if tail is None:                        # one part of a split directory
             st.add_partial_dir(dirname, totals)
@@ -120,4 +118,20 @@ class StatWorker(BaseWorker):
             self.list_directory(dirname, totals)
         else:                                   # the last part of a split directory
             st.add_partial_dir(dirname, totals)
-        return
+
+    def lstats(self, dirname, names):
+        """(path, lstat result) for a stat batch's names, in order, an OSError in place of
+        the result for a name that could not be stat'ed: one call at a time here (walktar
+        overlaps them in its reader threads)."""
+        join = os.path.join
+        for name in names:
+            path = join(dirname, name)
+            try:
+                yield path, os.lstat(path)
+            except OSError as error:
+                yield path, error
+
+    def process_file(self, path, statinfo):
+        """A stat batch's entry, just stat'ed and counted: the hook a tool fills (walktar
+        puts a non-directory in its open batch). walkstat needs nothing more. Only the
+        batches' names come here, never the scan's subdirectories."""

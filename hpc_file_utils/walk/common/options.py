@@ -3,12 +3,13 @@ ones here, each tool's own from its Tool (walk/tools.py, common/tool.py)."""
 
 import argparse
 import os
+import time
 
 from hpc_file_utils.walk.common.filters import add_filter_options, compile_filters, parse_size_option
 from hpc_file_utils.walk.tools import TOOLS
 
 
-def parse_options(appname, argv=None):
+def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse argv (default: sys.argv[1:]) for the tool named appname; args.app names it.
 
     Usage errors and --help raise SystemExit, as argparse does; a --dirs entry that is
@@ -59,7 +60,7 @@ def parse_options(appname, argv=None):
             if args.batch_size < 1:
                 parser.error('--batch-size must be at least 1 byte')
 
-        if 0 >= args.progress:
+        if args.progress <= 0:
             args.progress = float('inf')
 
         if '0' == args.threshold_size:
@@ -67,13 +68,16 @@ def parse_options(appname, argv=None):
         else:
             args.threshold_size = parse_size_option(args.threshold_size, '--threshold-size')
 
-        args.filters = compile_filters(args)   # None without a filter
+        # one "now" for the whole job: the filters' ages and the reports' 3/5/7-year
+        # buckets measure from it on every rank (it travels with the options)
+        args.now = time.time()
+        args.filters = compile_filters(args, args.now)   # None without a filter
     except ValueError as e:
         parser.error(str(e))
 
     for d in args.dirs:
         if not os.path.isdir(d):
-            raise FileNotFoundError('no such directory: {}'.format(d))
+            raise FileNotFoundError(f'no such directory: {d}')
 
     tool.check(parser, args)
     return args

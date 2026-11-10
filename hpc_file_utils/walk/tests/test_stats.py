@@ -33,7 +33,7 @@ def test_a_directory_counts_as_an_item_and_as_a_dir_only_when_asked():
     assert st.uids[1000].nitems == 1
     st.count("/t/e", entry(stat.S_IFDIR), totals, True)         # a selecting filter: an entry that matched
     assert dict(st.st_modes) == {"dir": 1}
-    assert st.heaps["nbytes_files"].empty()                     # directories never go in the file lists
+    assert not st.heaps["nbytes_files"]                         # directories never go in the file lists
 
 
 def test_heaps_keep_the_largest_files_overall_and_per_user():
@@ -62,3 +62,33 @@ def test_size_is_the_smaller_of_st_size_and_the_blocks():
     st.count("/t/small", entry(size=10, blocks=8), totals, False)         # a whole block for 10 bytes
     assert (st.total_size, totals.nbytes) == (4096 + 10, 4096 + 10)
     assert [e.nbytes for _, e in st.heaps["nbytes_files"].top()] == [4096, 10]
+
+
+# ---------------------------------------------------------------------------
+# sweep E4: one "now" per job; names resolved once, on rank 0
+# ---------------------------------------------------------------------------
+
+def test_names_are_resolved_once_on_request_not_at_count_time():
+    import grp
+    import os
+    import pwd
+    st, totals = WalkStats(heap_size=5), DirTotals()
+    st.count("/t/f", entry(uid=os.getuid(), gid=os.getgid()), totals, False)
+    st.count("/t/g", entry(uid=2**31 - 7, gid=2**31 - 7), totals, False)     # no such user or group
+    assert all(c.name is None for c in (*st.uids.values(), *st.gids.values()))   # the workers carry ids
+    st.resolve_names()                                                         # rank 0, after the reduction
+    assert st.uids[os.getuid()].name == pwd.getpwuid(os.getuid()).pw_name
+    assert st.gids[os.getgid()].name == grp.getgrgid(os.getgid()).gr_name
+    assert (st.uids[2**31 - 7].name, st.gids[2**31 - 7].name) == (f"uid-{2**31 - 7}", f"gid-{2**31 - 7}")
+
+
+def test_the_age_buckets_measure_from_the_given_now():
+    year = 365 * 86400
+    now = 2_000_000_000.0
+    old, new = WalkStats(heap_size=5, now=now), WalkStats(heap_size=5, now=now - 10 * year)
+    for st in (old, new):
+        totals = DirTotals()
+        st.count("/t/f", entry(atime=now - 4 * year), totals, False)         # 4 years before 'now'
+        st.record_directory("/t", totals, 1, 0)
+    assert [e.path for _, e in old.heaps["nbytes_dirs_3yrs"].top()] == ["/t"]
+    assert not new.heaps["nbytes_dirs_3yrs"]                                   # not old at that rank's "now"

@@ -32,9 +32,9 @@ What is left to a final serial rsync -aHAX --delete SRC/ DEST/: deletions, hard 
 (copied here as separate files) and the directories' real modes and times.
 """
 
+import logging
 import os
 import stat
-import sys
 import time
 from typing import NamedTuple
 
@@ -42,6 +42,8 @@ from hpc_file_utils.walk.common.formatting import printable
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy
 from hpc_file_utils.walk.sync.rsync import RSYNC_VANISHED, Rsync, rsync_command, split
+
+log = logging.getLogger(__name__)
 
 DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'
 
@@ -52,12 +54,10 @@ class CompareBatch(NamedTuple):
     names  : list   # (name, kind): kind is None (the destination lacks it), True (a directory there) or False
 
 
-################################################################################
 class SyncWorker(BaseWorker):
 
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def __init__(self):
-        BaseWorker.__init__(self)
+        super().__init__()
         o = self.options
         self.src = o.dirs[0]                  # normalized by options.py: no trailing '/'
         self.dest = o.dest
@@ -69,18 +69,11 @@ class SyncWorker(BaseWorker):
         self.copied_files = 0
         self.nrsync = 0
         self.dryrun = self.rank_file(DRYRUN_FILE)   # --dry-run's list, a file at its first line
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def rel(self, path):
         """A source path relative to the source root ('' for the root)."""
         return '' if path == self.src else path[self.src_prefix:]
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def dest_kinds(self, destdir):
         """One scandir of a destination directory: name -> True for a directory, False
         for anything else. Empty if the destination has no such directory yet."""
@@ -98,9 +91,6 @@ class SyncWorker(BaseWorker):
             self.error('scan destination', error)
         return kinds
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def want_copy(self, rel, size, reason, lines):
         """An entry that must be copied: count it, then list it (--dry-run, into 'lines')
         or put it in the open copy batch."""
@@ -108,23 +98,15 @@ class SyncWorker(BaseWorker):
         c['new' if reason == NEW else 'changed'] += 1
         c['bytes_to_copy'] += size
         if self.dry_run:
-            lines.append('{} {}\n'.format('N' if reason == NEW else 'C', printable(rel)))
+            lines.append(f"{'N' if reason == NEW else 'C'} {printable(rel)}\n")
         else:
             self.add_to_batch(rel, size)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def emit(self, lines):
         """--dry-run's lines, into this rank's own list."""
         if lines:
             self.dryrun.write(''.join(lines))
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_directory(self, dirname):
         if self.vanished(dirname):
             return
@@ -172,24 +154,16 @@ class SyncWorker(BaseWorker):
         extra = extraneous(src_names, dest, self.exclude)
         st.counters['extraneous'] += len(extra)
         if self.dry_run:
-            lines += ['X {}\n'.format(printable(join(reldir, n))) for n in extra]
+            lines += [f'X {printable(join(reldir, n))}\n' for n in extra]
         self.emit(lines)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def process_batch(self, batch):
         """A CompareBatch, or a FileBatch to copy, ours or shared."""
         if isinstance(batch, CompareBatch):
             self.compare_batch(batch.reldir, batch.names)
         else:
             self.copy_batch(batch.paths, batch.nbytes)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def compare_batch(self, reldir, names):
         """lstat a batch of one directory's names on both sides, and queue the ones to copy."""
         st = self.stats
@@ -243,18 +217,11 @@ class SyncWorker(BaseWorker):
             self.want_copy(join(reldir, name), s.st_size if stat.S_ISREG(s.st_mode) else 0, reason, lines)
 
         self.emit(lines)
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def start_rsync(self, paths):
         """One rsync over a part of a copy batch, started (in_flight()'s start)."""
         return Rsync(self.cmd, paths)
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def copy_batch(self, paths, nbytes):
         """One copy batch of relative paths: --rsyncs rsyncs side by side, each over its
         part of the batch, waited for in turn. While they run we look for a 'share' and
@@ -269,11 +236,11 @@ class SyncWorker(BaseWorker):
                 rc = rsync.wait(self.tick)
                 if rc == RSYNC_VANISHED:
                     vanished = True
-                    print('[{:3d}] rsync: some source files vanished (exit {})'.format(self.rank, rc), file=sys.stderr)
+                    log.warning('rsync: some source files vanished (exit %d)', rc)
                 elif rc != 0:
                     failed = True
                     tail = rsync.tail()
-                    self.error('copy a batch of {} entries: rsync exit {}'.format(len(part), rc),
+                    self.error(f'copy a batch of {len(part)} entries: rsync exit {rc}',
                                '\n' + tail if tail else '(no output)')
                 rsync.close()
         except OSError as error:              # rsync would not start
@@ -295,11 +262,7 @@ class SyncWorker(BaseWorker):
         self.stats.num_files += len(paths)      # each rank's share of the copying (--verbose)
         c['copied_files'] += len(paths)
         c['copied_bytes'] += nbytes
-        return
 
-
-
-    #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     def progress_extra(self):
         """(bytes, entries, rsync batches) copied so far, for the progress line's copy
         rate; None with --dry-run, which copies nothing."""

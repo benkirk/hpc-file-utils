@@ -17,7 +17,7 @@ def write_spreadsheet(stats, options):
 
     path = options.spreadsheet
     heap_size = options.heap_size
-    sheet_prefix = '{} - '.format(options.summary_prefix) if options.summary_prefix else ''
+    sheet_prefix = f'{options.summary_prefix} - ' if options.summary_prefix else ''
     mode = 'a' if os.path.exists(path) else 'w'
     if_sheet_exists = None if 'w' == mode else 'replace'
 

@@ -34,11 +34,8 @@ def progress_line(items, nbytes, elapsed, now=None):
     """'[time] Walked N items / S in T (R items/sec)'."""
     now = now or datetime.now()
     rate = int(items / elapsed) if elapsed > 0 else 0
-    return '[{}] Walked {} items / {} in {} ({} items/sec)'.format(now.isoformat(sep=' ', timespec='seconds'),
-                                                                  format_number(items),
-                                                                  format_size(nbytes),
-                                                                  format_timespan(elapsed),
-                                                                  format_number(rate))
+    return (f"[{now.isoformat(sep=' ', timespec='seconds')}] Walked {format_number(items)} items / {format_size(nbytes)} "
+            f"in {format_timespan(elapsed)} ({format_number(rate)} items/sec)")
 
 
 def written_status(nbytes, elapsed, delta=None, interval=None, waiting=None, verb='wrote'):
@@ -48,9 +45,9 @@ def written_status(nbytes, elapsed, delta=None, interval=None, waiting=None, ver
     the average."""
     avg = nbytes / elapsed if elapsed > 0 else 0
     if delta is None or interval is None:
-        return ' | {} {} ({}/s avg)'.format(verb, format_size(nbytes), format_size(avg))
+        return f' | {verb} {format_size(nbytes)} ({format_size(avg)}/s avg)'
     now = delta / interval if interval > 0 else 0
-    status = ' | {} {} ({}/s now, {}/s avg)'.format(verb, format_size(nbytes), format_size(now), format_size(avg))
+    status = f' | {verb} {format_size(nbytes)} ({format_size(now)}/s now, {format_size(avg)}/s avg)'
     if waiting is not None:
-        status += ', batches waiting {}'.format(format_number(waiting))
+        status += f', batches waiting {format_number(waiting)}'
     return status

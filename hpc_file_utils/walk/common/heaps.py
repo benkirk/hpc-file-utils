@@ -6,15 +6,14 @@ cut-off does not depend on the order they were added (or on which rank saw them)
 """
 
 # https://stackoverflow.com/questions/30443150/maintain-a-fixed-size-heap-python
-from heapq import heapify, heappush, heappushpop, nlargest
+from heapq import heappush, heappushpop, nlargest
 
 
-class MaxHeap():
+class MaxHeap:
 
     def __init__(self, top_n):
         self.h = []
         self.maxsize = top_n
-        heapify(self.h)
 
     def add(self, element):
         if len(self.h) < self.maxsize:
@@ -33,14 +32,9 @@ class MaxHeap():
 
     def top(self, count=None):
         """The largest 'count' elements (all, if None), largest first."""
-        if not count: count = len(self.h)
+        if not count:
+            count = len(self.h)
         return nlargest(count, self.h)
-
-    def get_list(self):
-        return self.h
-
-    def empty(self):
-        return 0 == len(self.h)
 
     def __len__(self):
         return len(self.h)

@@ -4,12 +4,16 @@ Rank 0 runs the Manager, every other rank a worker of the requested tool. What d
 between the tools comes from their Tool (walk/tools.py, common/tool.py).
 """
 
+import logging
 import sys
 from datetime import datetime
 
+from hpc_file_utils.walk.common import log as walk_log
 from hpc_file_utils.walk.common.formatting import format_number
 from hpc_file_utils.walk.common.options import parse_options
 from hpc_file_utils.walk.tools import TOOLS
+
+log = logging.getLogger(__name__)
 
 
 def main(app, argv=None):
@@ -19,6 +23,7 @@ def main(app, argv=None):
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
+    walk_log.setup(rank)                 # diagnostics on stderr, '[rank] LEVEL ...' (common/log.py)
 
     # An uncaught exception on any rank aborts the whole job. Otherwise the other ranks
     # wait forever in their next collective or receive (a hang, not a failure).
@@ -34,13 +39,13 @@ def main(app, argv=None):
     # option (or --help) ends every rank with rank 0's exit status rather than a hang.
     args = None
     exit_status = 0
-    if 0 == rank:
+    if rank == 0:
         try:
             args = parse_options(app, argv)
         except SystemExit as e:          # argparse errors and --help
             exit_status = e.code if isinstance(e.code, int) else 1
-        except Exception as e:           # e.g. 'ERROR: no such directory'
-            print('ERROR: {}: {}'.format(type(e).__name__, e), file=sys.stderr)
+        except Exception as e:           # e.g. 'no such directory'
+            log.error('%s: %s', type(e).__name__, e)
             exit_status = 1
         if args is None and exit_status == 0:
             exit_status = None           # --help: done, successfully
@@ -52,8 +57,8 @@ def main(app, argv=None):
         return exit_status
 
     if size < 2:
-        if 0 == rank:
-            print('ERROR: {} needs at least 2 MPI ranks (a manager and a worker)'.format(app), file=sys.stderr)
+        if rank == 0:
+            log.error('%s needs at least 2 MPI ranks (a manager and a worker)', app)
         return 2
 
     comm.Barrier()
@@ -66,19 +71,19 @@ def main(app, argv=None):
     else:
         from hpc_file_utils.walk.common.manager import Manager
         if args.verbose:
-            print('All Options: {}'.format(args))
+            print(f'All Options: {args}')
         else:
-            print('Processing Directories: {}'.format(args.dirs))
+            print(f'Processing Directories: {args.dirs}')
         for line in tool.banner(args):
             print(line)
-        print('Running {} on {} MPI ranks'.format(app, size))
-        sys.stdout.flush()
+        print(f'Running {app} on {size} MPI ranks', flush=True)
         walker = Manager(options=args)
 
+    walk_log.setup(rank, walker.options.verbose)   # now that every rank has the options
     run_walker(walker, rank)
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
-    if 0 == rank:
+    if rank == 0:
         report(walker, stats, tool)
 
     # exit-status policy: collect() summed the error counts on every rank
@@ -98,7 +103,7 @@ def run_walker(walker, rank):
         walker.run()
     finally:
         profile.disable()
-        profile.dump_stats('profile-r{:03d}.prof'.format(rank))
+        profile.dump_stats(f'profile-r{rank:03d}.prof')
 
 
 def report(manager, stats, tool):
@@ -109,21 +114,18 @@ def report(manager, stats, tool):
     options = manager.options
     # every worker's last 'ready' carried its final counts, so these must agree
     if (manager.progress.total_items, manager.progress.total_bytes) != (stats.num_items, stats.total_size):
-        print('WARNING: the Manager counted {} items / {} bytes, the workers {} / {}'.format(
-            manager.progress.total_items, manager.progress.total_bytes, stats.num_items, stats.total_size),
-            file=sys.stderr)
+        log.warning('the Manager counted %d items / %d bytes, the workers %d / %d',
+                    manager.progress.total_items, manager.progress.total_bytes, stats.num_items, stats.total_size)
 
     print('\n'.join(balance_lines(stats, manager.walk_elapsed)))
     if options.verbose:
-        print('\n'.join(rank_lines(stats)))
-    sys.stdout.flush()
+        print('\n'.join(rank_lines(stats)), flush=True)
 
     tool.report(manager, stats)
 
     if stats.num_errors:
-        print('--> {} entries could not be scanned (see stderr)'.format(format_number(stats.num_errors)))
-    print('--> Done at {}'.format(datetime.now().isoformat(sep=' ', timespec='seconds')))
-    sys.stdout.flush()
+        print(f'--> {format_number(stats.num_errors)} entries could not be scanned (see stderr)')
+    print(f"--> Done at {datetime.now().isoformat(sep=' ', timespec='seconds')}", flush=True)
 
 
 def walkstat():

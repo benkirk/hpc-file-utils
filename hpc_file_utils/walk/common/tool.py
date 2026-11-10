@@ -5,6 +5,8 @@ cli.py and options.py see a tool through this interface only, so a fourth tool i
 <tool>/tool.py and one <tool>/worker.py, registered in walk/tools.py.
 """
 
+import argparse
+
 
 class Tool:
 
@@ -14,29 +16,26 @@ class Tool:
                              # last line: walktar ('wrote', 'archives'), walksync ('copied', 'rsync batches')
     batches_bytes = False    # True: --batch-size closes a batch by bytes too (walktar, walksync)
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """The tool's own options, after the common ones and the filters."""
-        return
 
-    def check(self, parser, args):
+    def check(self, parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         """After parsing, once the --dirs exist: the tool's consistency checks (parser.error)
         and derived settings; FileNotFoundError for a path of its own that is missing."""
-        return
 
-    def banner(self, args):
+    def banner(self, args: argparse.Namespace) -> list[str]:
         """Lines rank 0 prints before 'Running <tool> on N MPI ranks'."""
         if args.filters is None:
             return []
-        return ['Filters: {}'.format(args.filters.describe())]
+        return [f'Filters: {args.filters.describe()}']
 
-    def report(self, manager, stats):
+    def report(self, manager, stats) -> None:
         """Rank 0, after the walk's balance lines: the tool's own reports (walkstat's
         summary and userlists, unless the tool says otherwise)."""
         from hpc_file_utils.walk.stat.report import write_reports
         write_reports(stats, manager.options)
-        return
 
-    def exit_status(self, total_errors, options):
+    def exit_status(self, total_errors: int, options: argparse.Namespace) -> int:
         """Errors are counted; only --fail-on-errors makes them fatal (2)."""
         return 2 if total_errors and options.fail_on_errors else 0
 
