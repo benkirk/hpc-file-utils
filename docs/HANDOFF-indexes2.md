@@ -136,4 +136,5 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
 
 - **Push `indexes-2` and open the PR** when you say so; CI has not run on it yet.
 - **Then, in hpc-usage-queries:** the hfu-index parser for `fs_scans/parsers`, from the
-  walk README's "Indexes" import contract as step C left it.
+  walk README's "Indexes" import contract as step C left it. `HANDOFF-parser.md` is its
+  hand-off, with what the importer's code needs and a kickoff prompt.
