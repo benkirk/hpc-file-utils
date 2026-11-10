@@ -105,7 +105,7 @@ class Filters:
         return select
 
 
-def add_filter_options(parser):
+def add_filter_options(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group('filters', 'find-like; different kinds AND together. '
                                   '--exclude prunes (never stat\'ed or descended); the others select what is '
                                   'counted (walkstat), archived (walktar) or copied (walksync), and are tested '
@@ -130,7 +130,7 @@ def add_filter_options(parser):
     return g
 
 
-def parse_when(text, now):
+def parse_when(text: str, now: float) -> float:
     """An age or a date (see WHEN_HELP) as an absolute epoch; ValueError if neither."""
     m = AGE_RE.match(text)
     if m:
@@ -162,7 +162,7 @@ def _ids(values, lookup, kind):
     return frozenset(ids)
 
 
-def parse_size_option(text, option):
+def parse_size_option(text: str, option: str) -> int:
     """A size option's value ('10MB', '1GiB': binary units) in bytes; ValueError, naming
     the option, if it is not a size. parse_options() turns that into a parser error."""
     from humanfriendly import InvalidSize, parse_size
@@ -176,7 +176,7 @@ def _stamp(epoch):
     return datetime.fromtimestamp(epoch).strftime('%Y-%m-%d %H:%M')
 
 
-def compile_filters(args, now=None):
+def compile_filters(args: argparse.Namespace, now: float | None = None) -> 'Filters | None':
     """The Filters for parsed args, or None if no filter is given.
 
     Raises ValueError with a usage message; parse_options() turns it into a parser error.

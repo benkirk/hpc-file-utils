@@ -70,7 +70,7 @@ class BaseWorker(MPIClass):
         self.files = []               # RankFiles (rank_file()), closed by run()
 
         # the filters rank 0 compiled, as this rank's callables (None: no cost in the loop)
-        filters = getattr(self.options, 'filters', None)
+        filters = self.options.filters
         if filters is not None:
             self.exclude = filters.exclude_matcher()
             self.select = filters.predicate()

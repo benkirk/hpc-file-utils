@@ -12,6 +12,7 @@ from hpc_file_utils.walk.common.stats import WalkStats
 from hpc_file_utils.walk.common.worker import FileBatch
 from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
 from hpc_file_utils.walk.tar.worker import TarWorker
+from hpc_file_utils.walk.tests.helpers import make_options
 
 
 def _with_uid(s, uid):
@@ -54,12 +55,11 @@ class _Entry:
         return _with_uid(self._entry.stat(follow_symlinks=follow_symlinks), self._uid)
 
 
-def _worker(cls=StatWorker):
+def _worker(cls=StatWorker, app="walkstat", **options):
     w = object.__new__(cls)   # skip MPIClass.__init__: no MPI here
     w.rank, w.local_dirs, w.local_batches, w.batch, w.batch_bytes = 1, [], [], [], 0
     w.max_local_dirs = 0
-    w.options = types.SimpleNamespace(threshold_count=1, threshold_size=0, local_queue_max=1000,
-                                      batch_files=1000)
+    w.options = make_options(app, threshold_count=1, threshold_size=0, **options)
     w.stats = WalkStats(heap_size=10)
     w.check_share = w.report_progress = lambda *a, **k: None
     return w
@@ -222,8 +222,7 @@ def tree(tmp_path, monkeypatch):
 def _batch_worker(batch_files, batch_size, read_ahead=0):
     """A TarWorker: walkstat's scan and stat batches, whose selected files fill the open
     FileBatch (the tars go into the current directory: the tree fixture's out/)."""
-    w = _worker(TarWorker)
-    w.options.batch_files, w.options.batch_size, w.options.read_ahead = batch_files, batch_size, read_ahead
+    w = _worker(TarWorker, "walktar", batch_files=batch_files, batch_size=batch_size, read_ahead=read_ahead)
     w.ntars = w.nwritten_files = w.nwritten_closed = 0
     w.batch_tar = w.dirs_tar = w.readers = None
     return w

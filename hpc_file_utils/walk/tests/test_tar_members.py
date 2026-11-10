@@ -5,7 +5,6 @@ In-process, no MPI."""
 import concurrent.futures
 import os
 import tarfile
-import types
 
 import pytest
 
@@ -13,6 +12,7 @@ from hpc_file_utils.walk.common.stats import WalkStats
 from hpc_file_utils.walk.common.worker import FileBatch
 from hpc_file_utils.walk.tar import worker as tar_worker
 from hpc_file_utils.walk.tar.worker import TarWorker
+from hpc_file_utils.walk.tests.helpers import make_options
 
 FIELDS = ("name", "type", "mode", "uid", "gid", "uname", "gname", "mtime", "size", "linkname",
           "pax_headers", "devmajor", "devminor")
@@ -44,7 +44,7 @@ def _tar_worker(read_ahead):
     w = object.__new__(TarWorker)   # skip MPIClass.__init__: no MPI here
     w.rank, w.ntars, w.nwritten_files, w.nwritten_closed = 1, 0, 0, 0
     w.batch_tar, w.dirs_tar, w.readers = None, None, None
-    w.options = types.SimpleNamespace(read_ahead=read_ahead)
+    w.options = make_options("walktar", read_ahead=read_ahead)
     w.stats = WalkStats(heap_size=10)
     w.check_share = w.report_progress = lambda *a, **k: None
     return w

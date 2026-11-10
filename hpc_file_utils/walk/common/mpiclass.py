@@ -39,5 +39,5 @@ class MPIClass:
             result.ranks.sort()
             # walkstat's directories split over stat batches: their parts are all here now
             result.finish_directories(self.options.threshold_count, self.options.threshold_size,
-                                      getattr(self.options, 'filters', None) is not None)
+                                      self.options.filters is not None)
         return result

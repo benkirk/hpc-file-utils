@@ -43,7 +43,7 @@ class _RankFilter(logging.Filter):
         return True
 
 
-def setup(rank, verbose=False):
+def setup(rank: int, verbose: bool = False) -> logging.Logger:
     """This rank's diagnostics: to stderr, prefixed by the rank; DEBUG with --verbose.
     Calling it again replaces the handler (the level is known only once the options are)."""
     logger = logging.getLogger(ROOT)

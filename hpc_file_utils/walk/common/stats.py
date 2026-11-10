@@ -6,6 +6,7 @@ break on the path), so the job combines its ranks' stats with one tree reduction
 """
 
 import grp
+import os
 import pwd
 import stat
 import time
@@ -170,7 +171,7 @@ class WalkStats:
         # summed by merge()
         self.counters = Counter()
 
-    def count(self, path, statinfo, totals, count_dirs):
+    def count(self, path: str, statinfo: os.stat_result, totals: DirTotals, count_dirs: bool) -> None:
         """Count one entry that passed the filters: the walk's accounting, into these
         totals and into its directory's 'totals' (a DirTotals). Every tool's walk keeps
         it. count_dirs: whether a directory counts in the type counts here (with a
@@ -217,7 +218,7 @@ class WalkStats:
         self.heaps['nbytes_files'].add((item_size, fe))
         self.user_heaps['nbytes_files'][statinfo.st_uid].add((item_size, fe))
 
-    def merge(self, other):
+    def merge(self, other: 'WalkStats') -> 'WalkStats':
         """Add 'other' into this one (in place); returns self."""
         for name in COUNTERS:
             setattr(self, name, getattr(self, name) + getattr(other, name))
@@ -237,11 +238,11 @@ class WalkStats:
         _add_into(self.partial_dirs, other.partial_dirs)
         return self
 
-    def add_partial_dir(self, path, totals):
+    def add_partial_dir(self, path: str, totals: DirTotals) -> None:
         """Part of a directory's totals, from one stat batch; listed once all are merged."""
         _add_into(self.partial_dirs, {path: totals})
 
-    def record_directory(self, path, totals, threshold_count, threshold_size):
+    def record_directory(self, path: str, totals: DirTotals, threshold_count: int, threshold_size: int) -> None:
         """A walked directory's own (non-recursive) totals, into the directory lists."""
         heaps = self.heaps
         user_heaps = self.user_heaps
@@ -277,7 +278,7 @@ class WalkStats:
                     if single_owner is not None:
                         user_heaps[name][single_owner].add((nbytes, de))
 
-    def finish_directories(self, threshold_count, threshold_size, filtered):
+    def finish_directories(self, threshold_count: int, threshold_size: int, filtered: bool) -> None:
         """After the reduction: list the directories that were split over stat batches.
         With a selecting filter, one that holds no matching entries goes in no list."""
         for path in sorted(self.partial_dirs):

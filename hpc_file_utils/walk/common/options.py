@@ -8,7 +8,7 @@ from hpc_file_utils.walk.common.filters import add_filter_options, compile_filte
 from hpc_file_utils.walk.tools import TOOLS
 
 
-def parse_options(appname, argv=None):
+def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse argv (default: sys.argv[1:]) for the tool named appname; args.app names it.
 
     Usage errors and --help raise SystemExit, as argparse does; a --dirs entry that is

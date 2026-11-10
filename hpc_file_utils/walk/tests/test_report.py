@@ -1,12 +1,12 @@
 """The summary and userlist text, from a hand-built WalkStats (no MPI)."""
 
 import os
-from argparse import Namespace
 from datetime import datetime
 
 from hpc_file_utils.walk.common.stats import DirEntry, FileEntry, GIDCounts, UIDCounts, WalkStats
 from hpc_file_utils.walk.stat.report import (LIST_LENGTH, summary_text, userlist_text,
                                              write_reports)
+from hpc_file_utils.walk.tests.helpers import make_options
 
 MiB = 1024 * 1024
 NOW = datetime(2026, 11, 6, 12, 0)
@@ -17,7 +17,7 @@ def options(**kw):
     base = dict(dirs=["/data/proj"], threshold_count=10, threshold_size=MiB,
                 summary_prefix="test", spreadsheet=None, heap_size=500)
     base.update(kw)
-    return Namespace(**base)
+    return make_options("walkstat", **base)
 
 
 def counts(cls, i, name, nbytes, nitems):
