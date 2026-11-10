@@ -687,9 +687,17 @@ GPFS directory, walktar's scanning rank, which stats every file, sets the pace.
   `in_flight()`, so the order, the counting and the tars are unchanged; `--read-ahead 0` is
   the serial path. walkstat on campaign GPFS pays the same ~6–9 ms per serial lstat, so
   the same trick (a thread pool for its stat batches, a new option) is the obvious next
-  walkstat speed-up; not done here, it is a feature. Re-measured: job 8129867 (mainB
-  against `hfu-bench/newB2`, VIT, two rounds) and 8129868 (its profile): the rows are in
-  the walk README's Part B.
+  walkstat speed-up; not done here, it is a feature.
+  - **Re-measured (jobs 8129867, 8129868, 8131570; the walk README's Part B):** under PALS's
+    default binding B2 is where B was (400.8, 402.4 s against mainB's 375.5, 387.2: the
+    same 4–7%), its profile shows `lstat` down from 97 to 24 s per rank but the rank waiting
+    on the shared reader pool (210 s in `lstats`) with the files' open/read/write/close
+    calls dominating (~5 ms per open, ~7 per close on loaded GPFS) and only 110 s of CPU in
+    399; **with `--cpu-bind depth --depth 4` it is 268.7 s, 4.81 GiB/s, the best VIT run**
+    (B's first commit 287.6 under the same binding, mainB 361–387 under the default). The
+    binding is the ceiling on the loaded campaign node; once it is lifted, B2's overlap pays.
+    Why the per-rank stats cost 4–7% under the one-CPU binding is left open (the stats' CPU
+    on the busy ranks is the hypothesis).
 
 ---
 

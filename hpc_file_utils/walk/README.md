@@ -11,6 +11,11 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 | `tar/` | walktar: `tool.py`, `worker.py` (TarWorker) |
 | `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
 
+What these tools measured about GLADE itself (read latency and parallelism, stat costs, the
+directory create ceiling, CPU binding, how to measure) is collected in
+[docs/GLADE_PERFORMANCE.md](../../docs/GLADE_PERFORMANCE.md); the phase notes below are the
+sources.
+
 Only `manager.py`, `worker.py`, `mpiclass.py` and `cli.py` touch MPI, and they import mpi4py when
 called rather than when imported, so the rest unit-tests without it. A fourth tool is one
 `<tool>/tool.py` and one `<tool>/worker.py`, added to `TOOLS`.
@@ -560,5 +565,23 @@ rerun with nothing changed copies nothing: it costs only the walk.
     that the 16 reader threads shared, not the scan and not the storage path: phase 5.5's
     question 2, answered on both filesystems. Worker CPU 58 s per rank (the ranks spend
     their time in I/O, not spinning).
-  - VIT re-measured with the threaded lstats (`main` 3ba9582 against this, two rounds, and
-    its profile): rows to follow.
+  - **VIT re-measured with the threaded lstats** (job 8129867, `main` 3ba9582 against this,
+    two rounds, PALS's default binding, the production scans running): **`main` 375.5,
+    387.2 s; this 400.8, 402.4 s.** The threaded lstats bought nothing: the same 4–7% gap
+    as the first commit, and the same even load (every rank 38.6–43.1 GiB against `main`'s
+    3.9–46.8). So the serial stat batch was not the cost either. What is left is the
+    stats' CPU: under PALS's one CPU per rank, each rank's CPU is the bottleneck (the
+    `--cpu-bind depth` row above), and Part B moved ~333k lstats, with their Python, from
+    `main`'s scanning rank, whose CPU was otherwise idle, onto the 31 busy ones. The
+    profile of this run (job 8129868, 31 worker profiles, 398.7 s) does not settle it:
+    `lstat` fell from 97 to 24 s per rank, yet the generator that waits on the threaded
+    lstats (`TarWorker.lstats`) shows 210 s cumulative, so the rank waited on the shared
+    reader pool, not on the stat calls; its CPU is 110 s of 399, so it is not saturated
+    either; and the files' own calls dominate (per rank, summed over threads: `read` 94 s,
+    `write` 92, `close` 80, `open` 56: ~7 ms per close and ~5 per open on loaded GPFS). An
+    open point for the multi-node work.
+  - **VIT with `--cpu-bind depth --depth 4`, this code** (job 8131570): **268.7 s, 4.81
+    GiB/s**, the fastest VIT run so far: against 287.6 s for Part B's first commit under the
+    same binding (the threaded lstats pay 7% once the CPU is not the limit) and 361–387 s
+    for `main` under PALS's default. So Part B plus the binding is 1.34× over `main` on the
+    tree it was for, and the binding, not the walk, is what to fix in the launcher.
