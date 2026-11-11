@@ -31,12 +31,9 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import NamedTuple
 
-from hpc_file_utils.walk.common.index import IndexWriter
+from hpc_file_utils.walk.common.index import IndexWriter, rank_index_name
 from hpc_file_utils.walk.common.stats import DirTotals
 from hpc_file_utils.walk.common.worker import BaseWorker
-
-INDEX_FILE = 'index-r{:03d}.tsv'
-PREFIXED_INDEX_FILE = 'index-{}-r{:03d}.tsv'
 
 
 class StatBatch(NamedTuple):
@@ -58,16 +55,15 @@ class StatWorker(BaseWorker):
 
     def open_index(self):
         """--index: this rank's index file, index-r{rank}.tsv (index-<prefix>-r{rank}.tsv
-        with --summary-prefix) in the working directory, opened at its first record and
-        closed by run(); None without. Every entry count() counts goes in it, next to the
-        count: the scan's subdirectories here, the stat batches' entries in process_file().
+        with --summary-prefix; .tsv.gz with --index=gz) in the working directory, opened at
+        its first record and closed by run(); None without. Every entry count() counts goes
+        in it, next to the count: the scan's subdirectories here, the stat batches' entries
+        in process_file().
         (walktar's indexes are its tars', tar/worker.py.)"""
         o = self.options
         if not o.index:
             return None
-        name = (PREFIXED_INDEX_FILE.format(o.summary_prefix, self.rank) if o.summary_prefix
-                else INDEX_FILE.format(self.rank))
-        index = IndexWriter(name, 'walkstat', o.dirs)
+        index = IndexWriter(rank_index_name(o.summary_prefix, self.rank), 'walkstat', o.dirs, how=o.index)
         self.files.append(index)
         return index
 

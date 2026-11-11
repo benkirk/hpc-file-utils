@@ -35,7 +35,8 @@ Outputs (in the working directory, written by rank 0):
   each worker's walk), for `python -m pstats`.
 - `--index`: walkstat's `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with
   `--summary-prefix`), one per worker; walktar's `<tar>.idx` beside each tar (see
-  [Indexes](#indexes-the-sweeps-part-c)).
+  [Indexes](#indexes-the-sweeps-part-c)); walksync's `index-r{rank}.tsv`, a record of what
+  the rank copied. `--index=gz` writes the same through gzip, with `.gz` on each name.
 
 ## Filtering (phase 4)
 
@@ -107,6 +108,35 @@ directories are, so one huge directory no longer ties up one rank for hours.
   - The termination argument covers batches (see `manager.py`): a stat batch creates file
     batches only on the rank processing it, which processes them before its next `ready`.
 - **walkstat's batches are the stat batches alone** (below).
+- **Sizing the batches.** The defaults stay fixed; choose `--batch-size` per run when the
+  tree is small for its rank count.
+  - **The tail is one batch.** The walk ends one batch-time after the last rank takes its
+    last batch, so what matters is batches per worker, about total bytes ÷ batch bytes ÷
+    workers. Which cap closes a batch depends on the file sizes: VIT's 4 MiB files close
+    at 1,000 files (~4 GiB), `manyfiles`' 1 MiB files at 1 GiB, `bigdir`'s 1 GiB files at
+    16 GiB (16 files).
+  - **Aim for at least ~5 batches per worker**: batch bytes ≈ total bytes ÷ (5 × workers),
+    kept within ~1–16 GiB. Below ~3 the tail shows:
+
+    | run | batches per worker | effect |
+    |---|---|---|
+    | VIT, 1 node | ~11 | tail ~15 s of 280 s |
+    | `manyfiles`, 1 node | ~6.5 | ranks within 10% of each other |
+    | `bigdir`, 1 node | ~2 | the busiest rank archived 48 GiB, the mean 33 |
+    | VIT, 8 nodes, default | ~1.3 | tail ~40% of the walk |
+    | VIT, 8 nodes, `--batch-size 2GiB` | ~2.7 | ~20% faster, 29–30 GiB/s |
+    | VIT, 16 nodes, `--batch-size` 1 or 2 GiB | 2.7, 1.3 | tail 30–45% of a 26 s walk either way |
+
+  - **The production one-node scans need nothing**: their trees are large next to 31
+    workers. A multi-node run on a tree of a few TiB, or a tree of big files, wants a
+    smaller `--batch-size`. Keep the 1,000-file cap for small-file trees, where it binds
+    first.
+  - **Smaller batches mean more tars**: VIT made 1,334 at 1 GiB against 334 by default. If
+    the tars go somewhere that prefers multi-GiB files, that sets the floor.
+  - The walk does not know the tree's size when it starts, so this is a choice made per run,
+    not a computed default. The alternatives were a size hint, or splitting the last batch
+    when ranks idle; the second is written up, not built, in `docs/walk-load-balancing.md`
+    section 8.
 - **Outputs**, in the working directory:
   - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
     selected files.
@@ -250,6 +280,10 @@ rerun with nothing changed copies nothing: it costs only the walk.
 - **`--dry-run`:** copies nothing. Each rank lists `N path` (new), `C path` (changed) and
   `X path` (only in the destination) in its own `walksync-dryrun-r{rank}.txt`. Lines from
   several ranks on one stdout got spliced together mid-line under mpiexec.
+- **`--index`** (`--index=gz`): each rank's record of what it copied, `index-r{rank}.tsv`, in
+  walkstat's index format ([Indexes](#indexes-the-sweeps-part-c)): one `E` per entry an
+  rsync copied, from the source lstat the compare took. Unchanged entries are not listed.
+  With `--dry-run` it lists what the run would copy.
 - **Exit status:** 1 on any error: a failed stat or scan, or an rsync failure. rsync's exit
   24 (source files vanished) is counted and reported, but it is not an error.
 - **Tested** (`tests/test_walksync.py`, as root and non-root):
@@ -290,9 +324,16 @@ more the default 16 is already past the point where more threads pay.
 
 ## Indexes (the sweep's Part C)
 
-`--index` makes walkstat and walktar also write one line of metadata per entry, TSV,
-every rank in parallel with no coordination (`common/index.py`). Off by default; walksync
-has none.
+`--index` makes walkstat, walktar and walksync also write one line of metadata per entry,
+TSV, every rank in parallel with no coordination (`common/index.py`). Off by default.
+
+- **`--index=gz`** writes the same records through gzip, `.gz` on each name
+  (`index-r001.tsv.gz`, `output-r001-b00003.tar.idx.gz`). Each file is one gzip stream
+  at level 6, gzip's own default. Python's `gzip.open()` defaults to 9, which costs ~4×
+  the CPU for ~4% less. The index is 7–12× smaller and the walk no slower (indexes-2,
+  step A, below). `zcat` reads it, and `cat` of `.gz` files is still one valid gzip file.
+  A rank killed mid-file leaves a stream without its end, which a reader refuses, where
+  a plain file ends in a partial line.
 
 - **walkstat:** `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with `--summary-prefix`)
   in the working directory, every entry the rank counted: a parallel metadata dump at walk
@@ -301,7 +342,23 @@ has none.
 - **walktar:** `<tar>.idx` beside each tar (`output-r001-b00003.tar.idx`,
   `output-r001-dirs.tar.idx`), every member with its offsets, so one member can be found or
   extracted without reading the whole tar. Made with the tar, even if it stays empty.
-- **What is listed:** what the tool counted or archived. An `--exclude`d entry never
+- **walksync:** `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv`), every entry the
+  rank's rsyncs copied. The header has `tool=walksync`, `root=` the source and `dest=` the
+  destination. The rules:
+  - **`E` is "copied here"**, recorded from the source lstat the compare took, by the rank
+    that ran the rsync, after it returned. A new directory's stat is one `lstat` at the
+    scan, taken only with `--index`. The copy batch carries the stats, so a shared batch
+    records on the rank that copies it.
+  - **A failed part records nothing.** A part whose rsync exited 24 (source files
+    vanished) records only the entries still in the source.
+  - **An entry compared and found unchanged is not recorded**, neither as `E` nor as `P`
+    unless it is an ancestor of a copied entry. The index is what this run copied, not a
+    listing of the tree: walkstat `--index` is that. A rerun that copies nothing writes
+    no index. Entries only in the destination are never listed: they have no source stat.
+  - **`--dry-run` writes the index the run would write**, recorded at the compare, and its
+    header says `dry-run=yes`. Its records are the real run's, which the dry-run list
+    (paths only) lacks: the sizes, owners and times of the pending copy.
+- **What is listed:** what the tool counted, archived or copied. An `--exclude`d entry never
   appears; with a selecting filter only the selected entries appear, the same rule as the
   reports and the tars.
 
@@ -352,20 +409,46 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   atimes as it found them; `--read-ahead 0` reads through `tar.add()`, which does not.
   `tarfile` records a member's offsets only when it reads a tar, so the writer derives
   them from the tar's position around each add.
-- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` checks each
-  file for closure, the `E` paths for repeats across the files, and with `--find` the `E`
-  set against `find` of the header's roots (walkstat: below the roots, as Total Count;
-  walktar: the roots too, as the tars). The tests run the same checks on the golden tree
-  and on a big directory whose batches move between ranks, unfiltered and filtered, with
-  the cache cap at 1, and compare each `.idx` with its tar's `getmembers()` (offsets
-  included, the bytes at `offset_data`) and every file's atime with the one the fixture set.
-- **Importing** (hpc-usage-queries `fs_scans/parsers`, a parser to write there):
-  `can_parse()` keys on the `# hfu-index v1` header or the names `index-*-r*.tsv` and
-  `*.tar.idx`; `parse_line()` maps `path`, `size`, `allocated = alloc`, `uid`, `gid`,
-  `is_dir = (type == 'd')`, `atime` and `inode = ino` onto `ParsedEntry`, skips the
-  header, and must keep `P` records out of the totals (pass 1 collects directories by path,
-  so repeats are harmless there; pass 2a counts every directory record into its parent, so
-  a `P` must not reach it as an entry).
+- **Checking:** `python -m hpc_file_utils.walk.common.index [--find] FILES` reads plain or
+  gzip files, told apart by their first two bytes. It checks each file for closure and the
+  `E` paths for repeats across the files. With `--find` it compares the `E` set against
+  `find` of the header's roots: below the roots for walkstat, as Total Count, and for
+  walksync, which matches only a copy into an empty destination; the roots too for
+  walktar, as the tars. The tests run the same checks on the golden tree and on a big
+  directory whose batches move between ranks, unfiltered and filtered, with the cache cap
+  at 1. They compare each `.idx` with its tar's `getmembers()` (offsets included, the
+  bytes at `offset_data`), every file's atime with the one the fixture set, and
+  walksync's `E` set with rsync's own itemized list of what it would copy.
+- **Importing** (hpc-usage-queries `fs_scans/parsers`, a parser to write there). The
+  contract:
+  - **Opening.** A file is plain text or gzip (`--index=gz`). Tell them apart by the first
+    two bytes, `1f 8b` for gzip, or by a `.gz` suffix. Read as UTF-8: the paths are
+    escaped, so a strict decode never fails.
+  - **Detection.** `can_parse()` keys on the first line starting `# hfu-index v1`, after
+    any gunzip. Failing that, the names are `index-r*.tsv`, `index-*-r*.tsv` (with
+    `--summary-prefix`) and `*.tar.idx`, each with an optional `.gz`. The earlier
+    `index-*-r*.tsv` alone missed the unprefixed name.
+  - **The header** is tab-separated `key=value` fields after `# hfu-index v1`: `tool=`
+    (`walkstat`, `walktar` or `walksync`), `columns=` (the column names, in order), one
+    `root=` per `--dirs` entry, and for walksync `dest=` and, for a dry run,
+    `dry-run=yes`. Map columns by name, and ignore fields you do not know. Any line
+    starting with `#` is a header: `cat` of several files has one per file, and each
+    starts a new file's records.
+  - **The column set is fixed at v1** (`docs/HANDOFF-sweep.md` 4.8): every column above,
+    for every tool, plus walktar's two offsets. A different set would be a new version, so
+    refuse a header that is not v1.
+  - **Records.** `parse_line()` maps `path` (through `decode_path()`), `size`,
+    `allocated = alloc`, `uid`, `gid`, `is_dir = (type == 'd')`, `atime` and
+    `inode = ino` onto `ParsedEntry`. A `-` field is unknown: only a vanished directory's
+    `P` has them.
+  - **`P` records stay out of the totals.** Pass 1 collects directories by path, so
+    repeats are harmless there. Pass 2a counts every directory record into its parent, so
+    a `P` must not reach it as an entry.
+  - **What a set of files means.** walkstat's `E` records are the tree's usage below its
+    roots. walktar's are what its tars hold, the roots included. walksync's are only what
+    one run copied, a subset of the tree, and a dry run's what it would copy: the stats
+    are the source's real ones, but the totals are not the tree's usage. An importer of a
+    usage database wants walkstat's indexes.
 
 ## Behaviour changes since the csg-utils import
 
@@ -794,6 +877,29 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   storage-state control for the `manyfiles` run after it: trust a small-file pair only
   when its `bigdir`s agree. Under the load the ranking held (`depth 2` 75.6 s, `depth 8`
   77.1, `depth 4` 79.4–82.9), which is as much as that round says.
+- **The quiet-day repeat of scratch's second round** (indexes-2; job 8142408,
+  `benchbind.pbs` with `ROUND_OFFSET=1` and `TOOL=mainD`, `main` at ff27254). The order
+  was `depth 2`, `depth 4`, `depth 8`, `none`, default. Times are the Manager's walk: this
+  job's wall times came from a 10 s poll in the bench and run up to 10 s long (fixed
+  since). Round 1's walls predate that poll and sit ~3 s above their walks, so its walks
+  are used too. The `bigdir` controls agree, so the storage was comparable:
+
+  | binding | `bigdir` walk, round 1 → 2 | `manyfiles` walk, round 1 → 2 | `manyfiles` CPU, round 2 |
+  |---|---|---|---|
+  | PALS's default (1) | 410.2 → 409.5 s | 59.4 → 54.2 s | 42.8 s |
+  | `depth 2` (2) | 400.0 → 407.6 s | 36.9 → **49.1** s | 32.8 s |
+  | `depth 4` (4) | 400.7 → 423.4 s | 40.7 → 37.8 s | 40.3 s |
+  | `depth 8` (8) | 409.5 → 415.8 s | 37.8 → 40.6 s | 38.5 s |
+  | `none` (256) | 401.2 → 418.3 s | 41.8 → 39.9 s | 44.5 s |
+
+  - **The default's one-CPU ceiling reproduced**, and 4 CPUs or more lifted it again by
+    1.35–1.45×, as in round 1.
+  - **`depth 2` gained only 1.1× this time** (49.1 s against 36.9 in round 1), its workers
+    busy 54% of the wall, so waiting rather than short of CPU. It ran first in the job.
+    Two rounds cannot say which `depth 2` result is the outlier.
+  - The recommendation stands on the campaign rows, where `depth 2` was best or equal in
+    both rounds. On scratch's small files the evidence is now split between 2 and 4 CPUs
+    per rank; a third round with `depth 2` not first would settle it.
 
 ### perf-1, step C (walkstat `--stat-threads`)
 
@@ -903,5 +1009,168 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
     rank runs dry (the Manager's "first idle worker waited 21 s for the end", 14–16 s at
     1–2 nodes, 22–23 s of a 55 s walk at 8). A smaller `--batch-size` (1–2 GiB) would trim
     it where the tail matters: at 8 nodes it is the difference between 24 and ~30 GiB/s.
+  - **Measured since** (indexes-2; job 8144846, 8 × 32, `--depth 2`, `--read-ahead` 16,
+    `TOOL=mainD`, `main` at ff27254; `benchbind.pbs` with its new `BATCH_SIZES`, rotated
+    per round; the csgteam array's 8 subjobs ran throughout). "Walk" is the Manager's
+    loop, "tail" is how long the first idle worker waited for the end, and the rate is
+    the last progress line's average. A batch of VIT closes at `--batch-files` 1,000
+    (~4 GiB) long before the default 16 GiB, so the default row is 1,000-file batches.
+
+    | `--batch-size` | walk | rate | tail | tars |
+    |---|---|---|---|---|
+    | 16 GiB, the default (1,000 files) | 51.4, 56.0 s | 25.1, 23.1 GiB/s | 14.6, 23.7 s | 334 |
+    | 2 GiB (~500 files) | **43.6, 44.5 s** | **29.6, 29.0 GiB/s** | 14.1, 15.3 s | 668 |
+    | 1 GiB (~250 files) | 54.6, 43.5 s | 23.7, 29.7 GiB/s | 10.4, 6.0 s | 1,334 |
+
+    - **2 GiB gives the predicted ~30 GiB/s, in both rounds**: the walk ~20% shorter than
+      the default's, 29–30 GiB/s against 23–25.
+    - **1 GiB shrinks the tail most** (6–10 s), but its first round was as slow as the
+      default. Both rounds ran beside the production scans, and two rounds cannot say
+      whether that was campaign noise or the 4× tar count.
+    - **Smaller batches mean fewer share requests** (24,000–31,000 at 1 GiB against
+      69,000–82,000 at the default): the busy ranks have batches to give, so idle ones
+      ask less often.
+    - Not a default change: this is one tree at one node count, and a smaller batch
+      doubles or quadruples the tars, which a one-node run does not need. For a
+      VIT-shaped tree at 8 nodes, `--batch-size 2GiB` is the measured choice.
+    - The last 1 GiB run's walk finished (its summary was written), but the job's
+      walltime killed it while its tars were being deleted; they were deleted by hand,
+      and csg holds nothing. At 8 nodes a run's cycle is ~6 minutes, the walk ~1 of
+      them: the per-run stats and deleting 1.3 TiB of tars on csg are the rest.
+  - **12 and 16 nodes** (indexes-2; jobs 8145461 and 8145462, chained, the same settings,
+    `--progress 10`, 1 GiB and 2 GiB batches, two rounds each). "Peak" is the highest
+    10-second write rate on the progress lines.
+
+    | nodes | `--batch-size` | walk | rate | peak | tail |
+    |---|---|---|---|---|---|
+    | 8 | 2 GiB | 43.6, 44.5 s | 29.6, 29.0 GiB/s | – | 14.1, 15.3 s |
+    | 12 | 1 GiB | 42.5, 32.9 s | 30.3, 39.2 GiB/s | 46, 56 GiB/s | 12.4, 4.7 s |
+    | 12 | 2 GiB | 43.3, 31.8 s | 29.8, 40.5 GiB/s | 79, 77 GiB/s | 26.8, 15.3 s |
+    | 16 | 1 GiB | 26.0, 26.8 s | 49.7, 48.2 GiB/s | 66, 67 GiB/s | 8.4, 9.6 s |
+    | 16 | 2 GiB | 27.2, 26.2 s | 47.3, 49.2 GiB/s | 107, 109 GiB/s | 12.1, 11.2 s |
+
+    - **The rate keeps climbing with nodes**: ~49 GiB/s on average at 16 nodes, 1.7× the
+      8-node rate, and 10-second peaks of 107–109 GiB/s. csg and GDEX had not flattened
+      by 16 nodes, with the production scans running beside them.
+    - **VIT is too small to say more.** At 16 nodes the walk is ~26 s, a third to two
+      fifths of it the tail, with 1.3–2.7 batches per worker; the average is set by
+      start-up and the tail, not by the filesystems. A sustained number at this scale
+      needs a tree several times VIT's size (a separate decision: each run would write
+      ~5 TiB to csg).
+    - **1 GiB against 2 GiB made no difference to the walk** at 12 or 16 nodes. 1 GiB had
+      the shorter tails and 2 GiB the higher peaks, and they cancelled. At 12 nodes the
+      round mattered more than the size (both ~43 s in round 1, ~32 s in round 2), the
+      campaign's load moving between the rounds.
+    - Per node: ~3.7 GiB/s at 8 nodes with 2 GiB batches, 2.5–3.4 at 12, ~3.0 at 16.
   - **Worker CPU per rank halves per doubling**, as the work per rank does; the Manager's
     CPU is its wall (it spins in the receive).
+
+### indexes-2, step A (`--index=gz`)
+
+- **`--index=gz`** on walkstat and walktar ([Indexes](#indexes-the-sweeps-part-c) above):
+  the same records through gzip, one stream per file, `.gz` on each name. `--index` alone
+  is the plain TSV, as before. `read_index()` and the checkers read either by the file's
+  first two bytes, whatever its name. Golden output unchanged.
+- **Measured on derecho** (job 8142389, `hfu-bench/benchD.pbs`): 1 node × 32 ranks,
+  `--cpu-bind depth --depth 2`, scratch trees. A warm-up run comes first, then two rounds
+  of no index, `--index` and `--index=gz`. The checkers ran on round 1's indexes: closure,
+  no `E` path twice, the `E` set against `find`, and each walktar index against its
+  tar's members, offsets and bytes. All passed, for both kinds. Sizes are apparent sizes
+  (`stat`), since `du` under-reports on Lustre right after a write. CPU is the workers'
+  mean user+sys per rank.
+
+  | walk | no index | `--index` | `--index=gz` | index: plain → gz |
+  |---|---|---|---|---|
+  | walkstat `million` (1,000,000 empty files, one directory) | 2.27, 2.22 s; CPU 2.09, 2.09 s | 2.31, 2.27 s; CPU 2.18, 2.11 s | 2.38, 2.36 s; CPU 2.23, 2.20 s | 137.3 → 13.4 MiB (10.2×), 31 files |
+  | walkstat `manyfiles` (200,000 × 1 MiB, one directory) | 0.75, 0.75 s; CPU 0.56, 0.56 s | 0.71, 0.76 s; CPU 0.58, 0.61 s | 0.74, 0.75 s; CPU 0.61, 0.63 s | 30.7 → 2.5 MiB (12.3×), 31 files |
+  | walktar `manyfiles` → scratch | 41.7, 41.9 s; CPU 35.7, 34.8 s | 43.0, 41.4 s; CPU 36.0, 35.3 s | 41.7, 41.7 s; CPU 34.7, 35.5 s | 34.6 → 4.6 MiB (7.5×), 201 files |
+  | walktar `million` → scratch (1,000 tars of headers) | 58.3, 64.3 s; CPU 17.6, 17.6 s | 57.1, 59.6 s; CPU 18.1, 18.4 s | 59.1, 65.9 s; CPU 18.2, 18.5 s | 151.5 → 19.9 MiB (7.6×), 1,001 files |
+
+  - **gzip costs ~3 µs of CPU per record and nothing in wall time.** On `million` each
+    rank writes ~32,000 records, and gzip adds ~0.1 s of CPU per rank over the plain
+    index, in walkstat and in walktar alike. That is under the round-to-round noise of
+    every wall time above. walktar `million`, all metadata and no data, is the index's
+    worst case: the plain index adds 0.5–0.8 s of CPU per rank to 17.6 s, and the walls
+    spread 57–66 s with or without it.
+  - **The index shrinks 7–12×.** A walkstat record is ~144 bytes of text, mostly the path,
+    which repeats from line to line. walktar's records compress less (7.5×), since its two
+    offset columns change on every line.
+  - **The checkers read gzip at about the same speed**: 16.4 s plain and 17.4 s gzip for
+    walkstat's million records, 19.1 and 22.2 s for walktar's, 3.4 and 3.7 s for
+    `manyfiles`.
+  - The bench's tar check reads a few sampled files per tar without `O_NOATIME`, so those
+    files' atimes move between runs. The tools' own reads do not.
+  - Nothing stayed on scratch. A first submission (job 8142303) was stopped after its
+    walkstat rows, because the bench passed the checkers unexpanded globs; its tars were
+    deleted.
+
+### indexes-2, step B (walksync `--index`)
+
+- **`walksync --index`** (`--index=gz`): each rank's record of what it copied, in the
+  index format ([Indexes](#indexes-the-sweeps-part-c) above), `tool=walksync` with `root=`
+  and `dest=` in the header. `E` is an entry an rsync copied, recorded from the compare's
+  source lstat after the rsync returned. Unchanged entries are not recorded, and a
+  `--dry-run` writes the index the run would write, marked `dry-run=yes`. Without
+  `--index` nothing changed: the copy batches are `FileBatch`es as before, and the golden
+  output is the same.
+- **What it costs:** one `lstat` per new directory (the scan stats no directory
+  otherwise), and the copy batch carries an `IndexStat` per entry, ten integers, so a
+  shared batch's message grows by ~100 bytes per entry. Next to an rsync per batch that
+  is nothing, so no bench was run.
+- **The oracle:** rsync's own dry run (`-nax[A][X] --chmod=Du+w --out-format='%i %n'`, no
+  `--delete`), taken before each run. On a fresh destination, and after changes in one
+  (a size, an mtime, a symlink's target, one name of a hard link, a removed subtree, a
+  name with a newline, an extraneous file), the `E` set of the run's indexes, and of a
+  dry run's, is exactly the set rsync says it would copy. Every record's fields equal the
+  source's lstat.
+
+### indexes-2, step C (the import contract, 4.8 closed)
+
+- **The column set stays fixed at v1** for every tool (`docs/HANDOFF-sweep.md` 4.8 has
+  why). gzip answers the size question that trimming would have, every column comes from
+  the `lstat` already taken, and one format means one parser. A different set would be
+  `# hfu-index v2`.
+- **The import contract** ([Indexes](#indexes-the-sweeps-part-c), "Importing") now says
+  what steps A and B add for a parser:
+  - gzip files, told apart by their first two bytes;
+  - the per-rank names, whose old pattern `index-*-r*.tsv` missed the unprefixed
+    `index-r001.tsv`, each with an optional `.gz`;
+  - `tool=walksync`, the header's other fields to ignore (`dest=`, `dry-run=`), and a
+    `#` line starting each file's records in a `cat` of several;
+  - and that walksync's `E` records are one run's copies, not a tree's usage.
+- No code changed beyond `common/index.py`'s docstring.
+
+### walksync at 4–16 nodes (indexes-2, measured)
+
+- **The question:** does walksync scale with nodes the way walktar does? It was measured on
+  GDEX `exchange/.Radiosonde` copied onto scratch: 584,851 files of ~80 KB in 292
+  directories, 43.9 GiB. Jobs 8148321–8148324, one per node count, chained. Settings:
+  32 ranks per node, `--cpu-bind depth --depth 4`, `--rsyncs 8`, `--batch-files 250`
+  (~5 batches per worker even at 16 nodes), `main` at ff27254. Each of two rounds copied
+  into a fresh destination, deleted after it; the csgteam array's 8 subjobs ran
+  throughout. A single-directory tree such as VIT would measure only that directory's
+  create rate (~450–520 files/s, the sweep's "K rsyncs"), whatever the node count.
+
+  | nodes | walk | files/s | data rate | time per copy batch | tail | worker CPU (with rsyncs) |
+  |---|---|---|---|---|---|---|
+  | 1 (the sweep, 1,000-file batches) | 285 s | 2,050 | – | – | – | – |
+  | 4 | 65.2, 65.5 s | 8,970, 8,930 | 0.67 GiB/s | 2.5 s | 3.4, 2.2 s | 14.9, 14.7 s |
+  | 8 | 46.1, 43.4 s | 12,680, 13,490 | 0.95–1.01 GiB/s | 3.6 s | 4.0, 3.4 s | 12.9, 10.2 s |
+  | 12 | 33.2, 33.4 s | 17,620, 17,510 | 1.31 GiB/s | 3.9 s | 2.6, 2.9 s | 8.7, 8.4 s |
+  | 16 | 31.6, 32.9 s | 18,490, 17,780 | 1.33–1.39 GiB/s | 5.3 s | 3.4, 4.4 s | 7.6, 8.1 s |
+
+  - **walksync scales to ~12 nodes and then flattens at ~18,000 files/s.** 8 nodes give
+    1.45× 4 nodes, 12 give 1.35× 8, and 16 give 1.03× 12. Every run copied all 584,851
+    entries with no failed batch and no error.
+  - **It is a shared ceiling, not the walk.** The tails stay at 2–4 s (the 250-file batches
+    did their job), and worker CPU falls with nodes. But each copy batch takes longer as
+    nodes are added, 2.5 s at 4 nodes and 5.3 s at 16: the same files cost more when more
+    run at once. The bytes are trivial (1.4 GiB/s); the per-file metadata is not. Each
+    file is a create, a write, a rename, and the times, mode and xattrs set on scratch,
+    plus an open and a read of a small file on campaign. Scratch has 4 metadata servers
+    (MDTs), and the destination's directories spread over them. These runs do not say
+    which side sets the ceiling. A copy from scratch to scratch, or walktar reading the
+    same tree to csg, would separate them.
+  - **Deleting a copy is the slow part of a bench**: 470–590 s per copy, ~1,000–1,250
+    unlinks/s with 32 `rm` in parallel on one node, against the 18,000 creates/s that
+    made it. A parallel remover on the walk's machinery would cut that, if it matters.

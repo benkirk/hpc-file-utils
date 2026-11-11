@@ -5,6 +5,8 @@ metadata per entry, TSV, written by every rank in parallel with no coordination.
              entry the rank counted, at walk speed, like a policy-engine list or find -ls
   walktar    <tar>.idx beside each tar: every member with its offsets, so one member can
              be found or extracted without reading the whole tar
+  walksync   index-r{rank}.tsv: every entry the rank's rsyncs copied (sync/worker.py),
+             with dest= (and dry-run=yes for a dry run) in the header
 
 The rule: parents before children, in every file. Before any record, every ancestor
 directory up to its --dirs root has a record earlier in the *same* file, so a reader never
@@ -29,8 +31,9 @@ catches nearly every repeat; without the cap walkstat's one file per rank would 
 directory the rank ever touched. HFU_INDEX_CACHE_MAX in the environment sets the cap (the
 tests set it to 1, so every record's parents are re-derived and the P repeats happen).
 
-Format: a versioned header, then one record per line:
-  # hfu-index v1<TAB>tool=walkstat<TAB>columns=rec,type,...,path<TAB>root=<root>[<TAB>root=...]
+Format: a versioned header, then one record per line (the column set is fixed at v1, for
+every tool: docs/HANDOFF-sweep.md 4.8):
+  # hfu-index v1<TAB>tool=walkstat<TAB>columns=rec,type,...,path<TAB>root=<root>[<TAB>root=...][<TAB>key=value...]
   rec type size alloc mode uid gid nlink ino atime mtime ctime [offset offset_data] path
 type is one of f d l p s b c ('?' otherwise), alloc st_blocks*512, mode the permission
 bits in octal, the times integer epochs; nlink and ino let an importer find the hard
@@ -42,8 +45,17 @@ newline, tab and return as '\\n' '\\t' '\\r', other control characters and undec
 as '\\xNN'. decode_path() reverses it. read_index() parses a file, and the checks below
 (closure, exactly once, completeness against find) run as
   python -m hpc_file_utils.walk.common.index [--find] index-*.tsv
+
+--index=gz writes the same records through gzip, '.gz' on the name (index-r001.tsv.gz,
+output-r001-b00003.tar.idx.gz): one gzip stream per file, at level 6 (gzip's own default;
+Python's gzip.open() defaults to 9, ~4x the CPU for ~4% less). The readers below take
+either, by the file's first two bytes, whatever its name; so does zcat, and cat of .gz
+files is still one valid gzip file, closed under ancestry as before. A rank killed mid-file
+leaves a gzip stream without its end, which a reader refuses (EOFError) where a plain file
+would end in a partial line.
 """
 
+import gzip
 import os
 import re
 import stat
@@ -59,6 +71,12 @@ HEADER = f'# hfu-index v{VERSION}'
 STAT_COLUMNS = ('type', 'size', 'alloc', 'mode', 'uid', 'gid', 'nlink', 'ino', 'atime', 'mtime', 'ctime')
 OFFSET_COLUMNS = ('offset', 'offset_data')
 WRITTEN_CACHE_MAX = int(os.environ.get('HFU_INDEX_CACHE_MAX', 100_000))
+FORMATS = ('tsv', 'gz')          # --index's values: --index alone is tsv
+GZIP_SUFFIX = '.gz'
+GZIP_LEVEL = 6
+GZIP_MAGIC = b'\x1f\x8b'
+RANK_INDEX = 'index-r{:03d}.tsv'              # walkstat's and walksync's per-rank index
+PREFIXED_RANK_INDEX = 'index-{}-r{:03d}.tsv'  # ... with --summary-prefix
 
 TYPE_LETTERS = {stat.S_IFREG: 'f', stat.S_IFDIR: 'd', stat.S_IFLNK: 'l', stat.S_IFIFO: 'p',
                 stat.S_IFSOCK: 's', stat.S_IFBLK: 'b', stat.S_IFCHR: 'c'}
@@ -74,6 +92,40 @@ _UNESCAPES = {b'\\': b'\\', b'n': b'\n', b't': b'\t', b'r': b'\r'}
 def _escape(m):
     c = m.group()
     return _ESCAPES.get(c) or ''.join(f'\\x{b:02x}' for b in c.encode('utf-8', 'surrogateescape'))
+
+
+def add_index_argument(parser, help):
+    """The --index option of a tool: --index (plain TSV) or --index=gz (the same through
+    gzip); options.index is None without it, else 'tsv' or 'gz'."""
+    parser.add_argument('--index', nargs='?', const='tsv', default=None, choices=FORMATS, metavar='gz',
+                        help=help + '. --index=gz writes the same through gzip, ".gz" on each name')
+
+
+def rank_index_name(prefix, rank):
+    """A per-rank index's name (walkstat, walksync), before any '.gz': index-r{rank}.tsv,
+    or index-<prefix>-r{rank}.tsv with --summary-prefix."""
+    return PREFIXED_RANK_INDEX.format(prefix, rank) if prefix else RANK_INDEX.format(rank)
+
+
+class IndexStat(NamedTuple):
+    """What a record needs of an lstat, named as os.stat_result's fields: small to carry in
+    a batch that a share may pickle to another rank (walksync's copy batches)."""
+    st_mode     : int
+    st_size     : int
+    st_blocks   : int
+    st_uid      : int
+    st_gid      : int
+    st_nlink    : int
+    st_ino      : int
+    st_atime_ns : int
+    st_mtime_ns : int
+    st_ctime_ns : int
+
+
+def index_stat(s):
+    """An lstat result as an IndexStat."""
+    return IndexStat(s.st_mode, s.st_size, s.st_blocks, s.st_uid, s.st_gid, s.st_nlink, s.st_ino,
+                     s.st_atime_ns, s.st_mtime_ns, s.st_ctime_ns)
 
 
 def encode_path(path):
@@ -97,10 +149,14 @@ class IndexWriter(RankFile):
     """One index file (the module docstring): add() writes an entry's E record after the P
     records of the ancestors the file lacks. Opened at its first record, as a RankFile, or
     by open() for a file that must exist even empty (walktar's, beside its tar); close()
-    forgets the written cache."""
+    forgets the written cache. how is --index's value: 'gz' writes name + '.gz' through
+    gzip, anything else name as plain text. fields are more (key, value) pairs for the
+    header, after the roots (walksync's dest= and dry-run=)."""
 
-    def __init__(self, name, tool, roots, offsets=False, cache_max=None):
-        super().__init__(name)
+    def __init__(self, name, tool, roots, offsets=False, cache_max=None, how='tsv', fields=()):
+        self.gz = how == 'gz'
+        super().__init__(name + GZIP_SUFFIX if self.gz else name)
+        self.fields = tuple(fields)
         self.tool = tool
         # as the walk names them: os.path.join() gives root/name even for a root given as 'root/'
         self.roots = frozenset(r.rstrip('/') or '/' for r in roots)
@@ -113,9 +169,11 @@ class IndexWriter(RankFile):
         """Open the file and write its header, unless done already (write() does it at the
         first record)."""
         if self.file is None:
-            self.file = open(self.name, 'w', encoding='utf-8')
+            self.file = (gzip.open(self.name, 'wt', encoding='utf-8', compresslevel=GZIP_LEVEL) if self.gz
+                         else open(self.name, 'w', encoding='utf-8'))
             roots = ''.join(f'\troot={encode_path(r)}' for r in sorted(self.roots))
-            self.file.write(f'{HEADER}\ttool={self.tool}\tcolumns={",".join(self.columns)}{roots}\n')
+            fields = ''.join(f'\t{k}={v}' for k, v in self.fields)
+            self.file.write(f'{HEADER}\ttool={self.tool}\tcolumns={",".join(self.columns)}{roots}{fields}\n')
 
     def write(self, text):
         self.open()
@@ -128,7 +186,8 @@ class IndexWriter(RankFile):
     def add(self, path, statinfo, offsets=None):
         """Record one entry, counted or archived here: its E line, after the P lines of any
         ancestor this file lacks. statinfo is its lstat, the found one (before any read);
-        offsets is walktar's (offset, offset_data) of its member."""
+        offsets is walktar's (offset, offset_data) of its member. Any object with
+        os.stat_result's field names will do (an IndexStat)."""
         if path not in self.roots:
             parent = os.path.dirname(path)
             if parent in self.written:
@@ -211,6 +270,7 @@ class Header(NamedTuple):
     tool    : str
     columns : tuple
     roots   : frozenset
+    fields  : dict = {}   # the header's other key=value fields, as written (walksync: dest, dry-run)
 
 
 def _int(s):
@@ -233,12 +293,21 @@ def read_header(line):
     tool = next(v for k, v in fields if k == 'tool')
     columns = tuple(next(v for k, v in fields if k == 'columns').split(','))
     roots = frozenset(decode_path(v) for k, v in fields if k == 'root')
-    return Header(tool, columns, roots)
+    others = {k: v for k, v in fields if k not in ('tool', 'columns', 'root')}
+    return Header(tool, columns, roots, others)
+
+
+def open_index(name):
+    """An index file opened for reading as text: through gzip if it starts with gzip's
+    magic (--index=gz), plain otherwise, whatever its name."""
+    with open(name, 'rb') as f:
+        gz = f.read(2) == GZIP_MAGIC
+    return gzip.open(name, 'rt', encoding='utf-8') if gz else open(name, encoding='utf-8')
 
 
 def read_index(name):
-    """(header, records) of one index file: the Header and a generator of its Records."""
-    f = open(name, encoding='utf-8')
+    """(header, records) of one index file, plain or gzip: the Header and a generator of its Records."""
+    f = open_index(name)
     header = read_header(f.readline())
     parsers = [_PARSERS.get(c, _int) for c in header.columns]
 

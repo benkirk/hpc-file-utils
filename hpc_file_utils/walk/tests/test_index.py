@@ -2,18 +2,27 @@
 process, then walkstat --index and walktar --index under MPI, checked for closure (every
 record's parent earlier in the same file), exactly once (no E path twice across the files),
 completeness (walkstat's E records are find's listing; walktar's are its tars' members, with
-their offsets), the found atime, and the written cache's eviction (HFU_INDEX_CACHE_MAX=1)."""
+their offsets), the found atime, and the written cache's eviction (HFU_INDEX_CACHE_MAX=1);
+and --index=gz, the same records through gzip."""
 
 import errno
+import gzip
 import os
+import pickle
+import zlib
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from hpc_file_utils.walk.common import index as index_mod
 from hpc_file_utils.walk.common.index import (IndexWriter, closure_errors, decode_path, encode_path,
-                                              entries, read_index)
+                                              entries, index_stat, read_index)
+from hpc_file_utils.walk.common.stats import WalkStats
+from hpc_file_utils.walk.common.worker import FileBatch
+from hpc_file_utils.walk.sync.compare import NEW
+from hpc_file_utils.walk.sync.worker import CopyBatch, SyncWorker
 from hpc_file_utils.walk.tar import worker as tar_worker
 from hpc_file_utils.walk.tests.test_filtering import find
 
@@ -150,6 +159,159 @@ def test_the_checkers_see_a_broken_file(tmp_path):
         read_index(tmp_path / "not-an-index")
 
 
+def _write_tree_index(root, out, **kw):
+    w = IndexWriter(str(out), "walkstat", [str(root)], **kw)
+    for rel in ("a/b/c/leaf.dat", "a/b/other.dat", "a/top.dat", "a", "gone/sub/lost.dat"):
+        p = str(root / rel)
+        w.add(p, _st(p))
+    w.close()
+    return w.name
+
+
+def test_gz_writes_the_same_records_as_one_gzip_stream(tmp_path):
+    root = tmp_path / "tree"
+    _tree(root)
+    plain = _write_tree_index(root, tmp_path / "index-r001.tsv")
+    gz = _write_tree_index(root, tmp_path / "index-r002.tsv", how="gz")
+    assert plain == str(tmp_path / "index-r001.tsv") and gz == str(tmp_path / "index-r002.tsv.gz")
+    assert not (tmp_path / "index-r002.tsv").exists()
+    raw = Path(gz).read_bytes()
+    assert raw[:2] == index_mod.GZIP_MAGIC
+    d = zlib.decompressobj(wbits=31)                              # one gzip stream: nothing after its end
+    text = d.decompress(raw)
+    assert d.eof and d.unused_data == b""
+    assert text == Path(plain).read_bytes()
+    # the readers and checkers take either, by the first bytes, whatever the name
+    (tmp_path / "renamed").write_bytes(raw)
+    assert _records(gz) == _records(plain) == _records(tmp_path / "renamed")
+    assert closure_errors(gz) == [] and entries([gz]) == entries([plain])
+    assert index_mod.main([gz]) == 0
+
+
+def test_gz_files_concatenate_into_one_readable_index(tmp_path):
+    """cat of .gz files is one gzip file: zcat (gzip.open) reads every member."""
+    root = tmp_path / "tree"
+    _tree(root)
+    a = _write_tree_index(root, tmp_path / "index-r001.tsv", how="gz")
+    b = _write_tree_index(root, tmp_path / "index-r002.tsv", how="gz", cache_max=1)
+    both = tmp_path / "both.tsv.gz"
+    both.write_bytes(Path(a).read_bytes() + Path(b).read_bytes())
+    with gzip.open(both, "rt", encoding="utf-8") as f:
+        text = f.read()
+    with gzip.open(a, "rt", encoding="utf-8") as fa, gzip.open(b, "rt", encoding="utf-8") as fb:
+        assert text == fa.read() + fb.read()
+
+
+class _FakeRsync:
+    """An rsync that has already exited with rc."""
+
+    def __init__(self, rc):
+        self.rc = rc
+
+    def wait(self, tick):
+        return self.rc
+
+    def tail(self):
+        return "fake rsync output"
+
+    def close(self):
+        pass
+
+
+def _sync_worker(tmp_path, root, index=True, dry_run=False):
+    w = object.__new__(SyncWorker)   # skip MPIClass.__init__: no MPI here
+    w.rank, w.src, w.dest, w.src_prefix = 1, str(root), str(tmp_path / "dest"), len(str(root)) + 1
+    w.rsyncs, w.dry_run = 3, dry_run
+    w.stats = WalkStats(heap_size=10)
+    w.check_share = w.report_progress = lambda *a, **k: None
+    w.copied_bytes = w.copied_files = w.nrsync = 0
+    w.local_batches, w.batch, w.batch_bytes = [], [], 0
+    w.options = SimpleNamespace(batch_files=2, batch_size=1 << 40)
+    w.index = IndexWriter(str(tmp_path / "index-r001.tsv"), "walksync", [str(root)]) if index else None
+    w.batch_stats = [] if index else None
+    return w
+
+
+def test_walksync_records_what_each_rsync_copied(tmp_path, monkeypatch):
+    """A part whose rsync exited 0 is recorded whole, one that exited 24 (vanished) only
+    for the entries still in the source, one that failed not at all; an entry without a
+    stat (vanished before its compare's) never."""
+    root = tmp_path / "src"
+    (root / "sub").mkdir(parents=True)
+    for n in ("sub/a", "c", "d", "e", "f"):
+        (root / n).write_bytes(b"x")
+    w = _sync_worker(tmp_path, root)
+    paths = ["sub", "sub/a", "c", "d", "e", "f"]
+    stats = [index_stat(os.lstat(root / p)) for p in paths]
+    stats[1] = None
+    os.unlink(root / "d")                                         # vanished after its compare
+    rcs = iter([0, 24, 23])
+    monkeypatch.setattr(w, "start_rsync", lambda part: _FakeRsync(next(rcs)))
+    w.copy_batch(paths, 6, stats)
+    w.index.close()
+    _, recs = _records(w.index.name)
+    assert [(r.rec, os.path.relpath(r.path, root)) for r in recs] == [("P", "."), ("E", "sub"), ("E", "c")]
+    assert w.stats.num_errors == 1 and w.stats.counters["rsync_failures"] == 1
+    assert w.stats.counters["copied_files"] == 0                 # the batch failed, as a unit
+
+
+@pytest.mark.parametrize("index", [True, False], ids=["index", "no-index"])
+def test_walksync_copy_batches_carry_their_stats(tmp_path, index):
+    root = tmp_path / "src"
+    root.mkdir()
+    for n in ("a", "b", "c"):
+        (root / n).write_bytes(b"x" * 10)
+    w = _sync_worker(tmp_path, root, index=index)
+    for n in ("a", "b", "c"):
+        w.want_copy(n, 10, NEW, [], os.lstat(root / n))
+    w.close_batch()
+    first, second = w.local_batches
+    if not index:
+        assert type(first) is FileBatch and first == FileBatch(["a", "b"], 20)
+        return
+    assert type(first) is CopyBatch and first.paths == ["a", "b"] and first.nbytes == 20
+    assert first.stats == [index_stat(os.lstat(root / n)) for n in ("a", "b")]
+    assert second.stats == [index_stat(os.lstat(root / "c"))] and w.batch_stats == []
+    assert pickle.loads(pickle.dumps(first)) == first            # a share hands it over whole
+    assert len(pickle.dumps(first.stats[0])) < 200
+
+
+def test_walksync_dry_run_records_at_the_compare(tmp_path):
+    root = tmp_path / "src"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub/a").write_bytes(b"x")
+    w = _sync_worker(tmp_path, root, dry_run=True)
+    lines = []
+    w.want_copy("sub", 0, NEW, lines, os.lstat(root / "sub"))
+    w.want_copy("sub/a", 1, NEW, lines, os.lstat(root / "sub/a"))
+    w.want_copy("gone", 0, NEW, lines, None)                      # vanished before its stat: listed, not recorded
+    assert lines == ["N sub\n", "N sub/a\n", "N gone\n"] and not w.local_batches and not w.batch
+    w.index.close()
+    _, recs = _records(w.index.name)
+    assert [(r.rec, os.path.relpath(r.path, root)) for r in recs] == [("P", "."), ("E", "sub"), ("E", "sub/a")]
+
+
+def test_header_fields_round_trip(tmp_path):
+    out = tmp_path / "idx"
+    w = IndexWriter(str(out), "walksync", ["/src"], fields=[("dest", encode_path("/d\test")), ("dry-run", "yes")])
+    w.open()
+    w.close()
+    header, _ = read_index(out)
+    assert header.roots == {"/src"} and header.fields == {"dest": "/d\\test", "dry-run": "yes"}
+    assert decode_path(header.fields["dest"]) == "/d\test"
+    assert out.read_text().startswith("# hfu-index v1\ttool=walksync\tcolumns=")
+    assert out.read_text().rstrip("\n").endswith("\troot=/src\tdest=/d\\test\tdry-run=yes")
+
+
+def test_a_truncated_gz_index_is_refused(tmp_path):
+    root = tmp_path / "tree"
+    _tree(root)
+    gz = Path(_write_tree_index(root, tmp_path / "index-r001.tsv", how="gz"))
+    gz.write_bytes(gz.read_bytes()[:-8])                          # no end of stream: a killed rank's
+    with pytest.raises(EOFError):
+        closure_errors(gz)
+
+
 def test_member_offsets_are_what_a_reader_sees(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
@@ -276,14 +438,14 @@ def _members(tar_path):
         return {m.name: (m.type, m.size, m.offset, m.offset_data) for m in tf.getmembers()}
 
 
-def _check_tar_indexes(cwd):
-    """Each .idx beside its tar lists exactly the members, with the reader's offsets, and
-    size bytes at offset_data are the file; the E paths across every index."""
+def _check_tar_indexes(cwd, suffix=".idx"):
+    """Each <tar>.idx (suffix) beside its tar lists exactly the members, with the reader's
+    offsets, and size bytes at offset_data are the file; the E paths across every index."""
     tars = sorted(Path(cwd).glob("output-r*.tar"))
-    assert tars and [t.with_suffix(".tar.idx") for t in tars] == _index_files(cwd, "output-r*.tar.idx")
+    assert tars and [Path(f"{t}{suffix}") for t in tars] == _index_files(cwd, "output-r*.tar.idx*")
     for t in tars:
         members = _members(t)
-        header, recs = _records(t.with_suffix(".tar.idx"))
+        header, recs = _records(f"{t}{suffix}")
         assert header.tool == "walktar"
         es = [r for r in recs if r.rec == "E"]
         assert {r.path.lstrip("/") for r in es} == set(members), t
@@ -296,7 +458,7 @@ def _check_tar_indexes(cwd):
                     assert r.type == "f" and r.size == msize, (t, r)
                     raw.seek(r.offset_data)
                     assert raw.read(r.size) == Path(r.path).read_bytes(), (t, r)
-    return _checked(_index_files(cwd, "*.idx"))
+    return _checked(_index_files(cwd, "*.idx*"))
 
 
 @pytest.mark.mpi
@@ -364,3 +526,42 @@ def test_walktar_index_records_a_fifo_and_links_from_their_lstat(walk, private_g
     a, b = by_name["special/hard-a.dat"], by_name["special/hard-b.dat"]
     assert a.ino == b.ino and a.nlink == b.nlink == 2 and a.size == b.size == 3 * 1024 * 1024
     assert all(x.mode == os.lstat(x.path).st_mode & 0o7777 for x in recs)
+
+
+# ---------------------------------------------------------------------------
+# --index=gz under MPI
+# ---------------------------------------------------------------------------
+
+@pytest.mark.mpi
+@CAPS
+@pytest.mark.parametrize("tree_name", ["golden", "bigdir"])
+def test_walkstat_gz_index_is_closed_once_and_complete(walk, golden_tree, big_dir_tree, tmp_path, cap, monkeypatch,
+                                                       tree_name):
+    root = golden_tree.root if tree_name == "golden" else big_dir_tree
+    if cap:
+        monkeypatch.setenv("HFU_INDEX_CACHE_MAX", cap)
+    args = ["--index=gz"] + (["--batch-files", "10"] if tree_name == "bigdir" else [])
+    r = walk.run("walkstat", [root], cwd=tmp_path, args=args)
+    assert r.ok, r.report()
+    files = _index_files(tmp_path, "index-r*")
+    assert files and all(f.name.endswith(".tsv.gz") and f.read_bytes()[:2] == index_mod.GZIP_MAGIC for f in files)
+    paths = _checked(files)
+    assert paths == set(find(root)) and len(paths) == r.total_count()
+    assert index_mod.main([str(f) for f in files] + ["--find"]) == 0
+
+
+@pytest.mark.mpi
+@CAPS
+@pytest.mark.parametrize("tree_name", ["golden", "bigdir"])
+def test_walktar_gz_indexes_match_their_tars(walk, private_golden_tree, big_dir_tree, tmp_path, monkeypatch, cap,
+                                             tree_name):
+    root = private_golden_tree.root if tree_name == "golden" else big_dir_tree
+    if cap:
+        monkeypatch.setenv("HFU_INDEX_CACHE_MAX", cap)
+    args = ["--index=gz"] + (["--batch-files", "10"] if tree_name == "bigdir" else [])
+    r = walk.run("walktar", [root], cwd=tmp_path, args=args)
+    assert r.ok, r.report()
+    assert not _index_files(tmp_path, "*.idx")
+    paths = _check_tar_indexes(tmp_path, ".idx.gz")
+    assert paths == set(find(root, mindepth=0))
+    assert index_mod.main([str(f) for f in _index_files(tmp_path, "*.idx.gz")] + ["--find"]) == 0
