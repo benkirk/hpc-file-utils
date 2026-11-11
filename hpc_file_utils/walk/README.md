@@ -125,6 +125,7 @@ directories are, so one huge directory no longer ties up one rank for hours.
     | `bigdir`, 1 node | ~2 | the busiest rank archived 48 GiB, the mean 33 |
     | VIT, 8 nodes, default | ~1.3 | tail ~40% of the walk |
     | VIT, 8 nodes, `--batch-size 2GiB` | ~2.7 | ~20% faster, 29–30 GiB/s |
+    | VIT, 16 nodes, `--batch-size` 1 or 2 GiB | 2.7, 1.3 | tail 30–45% of a 26 s walk either way |
 
   - **The production one-node scans need nothing**: their trees are large next to 31
     workers. A multi-node run on a tree of a few TiB, or a tree of big files, wants a
@@ -878,26 +879,27 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
   77.1, `depth 4` 79.4–82.9), which is as much as that round says.
 - **The quiet-day repeat of scratch's second round** (indexes-2; job 8142408,
   `benchbind.pbs` with `ROUND_OFFSET=1` and `TOOL=mainD`, `main` at ff27254). The order
-  was `depth 2`, `depth 4`, `depth 8`, `none`, default. The `bigdir` controls agree with
-  round 1, so the storage was comparable:
+  was `depth 2`, `depth 4`, `depth 8`, `none`, default. Times are the Manager's walk: this
+  job's wall times came from a 10 s poll in the bench and run up to 10 s long (fixed
+  since). Round 1's walls predate that poll and sit ~3 s above their walks, so its walks
+  are used too. The `bigdir` controls agree, so the storage was comparable:
 
-  | binding | `bigdir`, round 1 → 2 | `manyfiles`, round 1 → 2 | `manyfiles` CPU, round 2 |
+  | binding | `bigdir` walk, round 1 → 2 | `manyfiles` walk, round 1 → 2 | `manyfiles` CPU, round 2 |
   |---|---|---|---|
-  | PALS's default (1) | 412.6 → 421.7 s | 62.3 → 60.5 s | 42.8 s |
-  | `depth 2` (2) | 403.8 → 412.4 s | 39.7 → **60.5** s | 32.8 s |
-  | `depth 4` (4) | 404.3 → 432.0 s | 43.5 → 50.4 s | 40.3 s |
-  | `depth 8` (8) | 412.7 → 422.3 s | 40.5 → 50.4 s | 38.5 s |
-  | `none` (256) | 405.0 → 432.4 s | 44.6 → 50.4 s | 44.5 s |
+  | PALS's default (1) | 410.2 → 409.5 s | 59.4 → 54.2 s | 42.8 s |
+  | `depth 2` (2) | 400.0 → 407.6 s | 36.9 → **49.1** s | 32.8 s |
+  | `depth 4` (4) | 400.7 → 423.4 s | 40.7 → 37.8 s | 40.3 s |
+  | `depth 8` (8) | 409.5 → 415.8 s | 37.8 → 40.6 s | 38.5 s |
+  | `none` (256) | 401.2 → 418.3 s | 41.8 → 39.9 s | 44.5 s |
 
-  - **The default's one-CPU ceiling reproduced**, and 4 CPUs or more lifted it again, by
-    1.2× this time instead of 1.4×.
-  - **`depth 2` did not.** It matched the default at 60.5 s, with its workers busy only
-    54% of the wall, so they were waiting rather than short of CPU. It ran first in the
-    job, where round 1's first run was the default's. Two rounds cannot say which `depth 2`
-    result is the outlier.
+  - **The default's one-CPU ceiling reproduced**, and 4 CPUs or more lifted it again by
+    1.35–1.45×, as in round 1.
+  - **`depth 2` gained only 1.1× this time** (49.1 s against 36.9 in round 1), its workers
+    busy 54% of the wall, so waiting rather than short of CPU. It ran first in the job.
+    Two rounds cannot say which `depth 2` result is the outlier.
   - The recommendation stands on the campaign rows, where `depth 2` was best or equal in
-    both rounds, but on scratch's small files the evidence is now split. A third round
-    with `depth 2` not first would settle it.
+    both rounds. On scratch's small files the evidence is now split between 2 and 4 CPUs
+    per rank; a third round with `depth 2` not first would settle it.
 
 ### perf-1, step C (walkstat `--stat-threads`)
 
@@ -1035,6 +1037,31 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
       walltime killed it while its tars were being deleted; they were deleted by hand,
       and csg holds nothing. At 8 nodes a run's cycle is ~6 minutes, the walk ~1 of
       them: the per-run stats and deleting 1.3 TiB of tars on csg are the rest.
+  - **12 and 16 nodes** (indexes-2; jobs 8145461 and 8145462, chained, the same settings,
+    `--progress 10`, 1 GiB and 2 GiB batches, two rounds each). "Peak" is the highest
+    10-second write rate on the progress lines.
+
+    | nodes | `--batch-size` | walk | rate | peak | tail |
+    |---|---|---|---|---|---|
+    | 8 | 2 GiB | 43.6, 44.5 s | 29.6, 29.0 GiB/s | – | 14.1, 15.3 s |
+    | 12 | 1 GiB | 42.5, 32.9 s | 30.3, 39.2 GiB/s | 46, 56 GiB/s | 12.4, 4.7 s |
+    | 12 | 2 GiB | 43.3, 31.8 s | 29.8, 40.5 GiB/s | 79, 77 GiB/s | 26.8, 15.3 s |
+    | 16 | 1 GiB | 26.0, 26.8 s | 49.7, 48.2 GiB/s | 66, 67 GiB/s | 8.4, 9.6 s |
+    | 16 | 2 GiB | 27.2, 26.2 s | 47.3, 49.2 GiB/s | 107, 109 GiB/s | 12.1, 11.2 s |
+
+    - **The rate keeps climbing with nodes**: ~49 GiB/s on average at 16 nodes, 1.7× the
+      8-node rate, and 10-second peaks of 107–109 GiB/s. csg and GDEX had not flattened
+      by 16 nodes, with the production scans running beside them.
+    - **VIT is too small to say more.** At 16 nodes the walk is ~26 s, a third to two
+      fifths of it the tail, with 1.3–2.7 batches per worker; the average is set by
+      start-up and the tail, not by the filesystems. A sustained number at this scale
+      needs a tree several times VIT's size (a separate decision: each run would write
+      ~5 TiB to csg).
+    - **1 GiB against 2 GiB made no difference to the walk** at 12 or 16 nodes. 1 GiB had
+      the shorter tails and 2 GiB the higher peaks, and they cancelled. At 12 nodes the
+      round mattered more than the size (both ~43 s in round 1, ~32 s in round 2), the
+      campaign's load moving between the rounds.
+    - Per node: ~3.7 GiB/s at 8 nodes with 2 GiB batches, 2.5–3.4 at 12, ~3.0 at 16.
   - **Worker CPU per rank halves per doubling**, as the work per rank does; the Manager's
     CPU is its wall (it spins in the receive).
 

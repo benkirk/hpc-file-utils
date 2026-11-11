@@ -104,13 +104,20 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
 ## Loose ends
 
 - **The quiet-day repeat of perf-1 step A's scratch round, done** (job 8142408,
-  `benchbind.pbs`, `ROUND_OFFSET=1`, `TOOL=mainD`, 51 min, nothing left on scratch). The
-  `bigdir` controls agree with round 1 (412–432 s against 404–413), the default's
-  `manyfiles` reproduced (60.5 s against 62.3), and `depth 4`, `depth 8` and `none` beat
-  it again at 50.4 s. `depth 2` did not: 60.5 s against round 1's 39.7, its workers 54%
-  busy. It ran first in the job. The walk README's perf-1 step A entry has the table. The
-  `--depth 2` recommendation rests on the campaign rows; on scratch's small files a third
-  round with `depth 2` not first would settle it.
+  `benchbind.pbs`, `ROUND_OFFSET=1`, `TOOL=mainD`, 51 min, nothing left on scratch). By the
+  Manager's walk times, the `bigdir` controls agree with round 1 (408–423 s against
+  400–410). The default's `manyfiles` reproduced (54.2 s against 59.4), and `depth 4`,
+  `depth 8` and `none` beat it again at 37.8–40.6 s. `depth 2` gained only 1.1× (49.1 s
+  against round 1's 36.9), its workers 54% busy; it ran first in the job. The walk
+  README's perf-1 step A entry has the table. The `--depth 2` recommendation rests on the
+  campaign rows; on scratch's small files a third round with `depth 2` not first would
+  settle it.
+  - **A bench artifact, found later:** `benchbind.pbs` slept 10 s per poll of a run (the
+    STALL watchdog, added in perf-1 step B), so every wall time since was rounded up to
+    the next 10 s tick. The first write-up of this repeat used those walls (60.5 s for
+    `depth 2` and the default, 50.4 for the rest) and said `depth 2` gained nothing; the
+    walk times above correct it. The poll is 1 s now. perf-1 step B's multi-node walls
+    (90.3, 60.2 s) carry the same rounding; its rates and conclusions used the walks.
 - **`--batch-size` 1–2 GiB at 8 nodes on VIT, done after the go-ahead** (job 8144846,
   `benchbind.pbs` with a new `BATCH_SIZES` list rotated per round; the original is kept as
   `benchbind.pbs.pre-bs`). 2 GiB walked 43.6 and 44.5 s at 29.6 and 29.0 GiB/s, against the
@@ -122,6 +129,14 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
     walltime killed the sixth run after its walk finished, while its tars were being
     deleted; they were deleted by hand and csg holds nothing. Give such a job ~7 minutes
     per run.
+
+- **12 and 16 nodes, chained, done** (jobs 8145461 and 8145462, 21 and 18 min, csg empty
+  after). 16 nodes averaged ~49 GiB/s with 10-second peaks of 107–109, 1.7× the 8-node
+  rate: csg and GDEX had not flattened. VIT is too small to say more at that scale (a
+  ~26 s walk, a third or more of it the tail), and 1 GiB against 2 GiB made no
+  difference to the walk at 12 or 16 nodes. A sustained number needs a tree several times
+  VIT's size, which would write ~5 TiB to csg per run: a separate decision. The README's
+  perf-1 step B entry has the table.
 
 ## Open
 

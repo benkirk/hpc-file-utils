@@ -509,8 +509,10 @@ A single file larger than everything else still ends the walk: a member cannot b
 
 **When to reopen it.** If multi-node walktar on campaign becomes routine, or trees of big
 files (where 16 GiB is a few files) are common, and choosing `--batch-size` per run proves
-error-prone. The 12- and 16-node VIT runs (indexes-2, jobs 8145461 and 8145462) measure
-how bad the tail gets with ~1.3–3.6 batches per worker.
+error-prone. The 12- and 16-node VIT runs (indexes-2, jobs 8145461 and 8145462) put a
+number on it: at 16 nodes, with 1.3–2.7 batches per worker, the first idle rank waited
+8–12 s of a ~26 s walk, whichever batch size, and the walk averaged ~49 GiB/s against
+10-second peaks of 107–109. That tail is what this section would remove.
 
 ## References
 
