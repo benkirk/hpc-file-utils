@@ -979,6 +979,34 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
     rank runs dry (the Manager's "first idle worker waited 21 s for the end", 14–16 s at
     1–2 nodes, 22–23 s of a 55 s walk at 8). A smaller `--batch-size` (1–2 GiB) would trim
     it where the tail matters: at 8 nodes it is the difference between 24 and ~30 GiB/s.
+  - **Measured since** (indexes-2; job 8144846, 8 × 32, `--depth 2`, `--read-ahead` 16,
+    `TOOL=mainD`, `main` at ff27254; `benchbind.pbs` with its new `BATCH_SIZES`, rotated
+    per round; the csgteam array's 8 subjobs ran throughout). "Walk" is the Manager's
+    loop, "tail" is how long the first idle worker waited for the end, and the rate is
+    the last progress line's average. A batch of VIT closes at `--batch-files` 1,000
+    (~4 GiB) long before the default 16 GiB, so the default row is 1,000-file batches.
+
+    | `--batch-size` | walk | rate | tail | tars |
+    |---|---|---|---|---|
+    | 16 GiB, the default (1,000 files) | 51.4, 56.0 s | 25.1, 23.1 GiB/s | 14.6, 23.7 s | 334 |
+    | 2 GiB (~500 files) | **43.6, 44.5 s** | **29.6, 29.0 GiB/s** | 14.1, 15.3 s | 668 |
+    | 1 GiB (~250 files) | 54.6, 43.5 s | 23.7, 29.7 GiB/s | 10.4, 6.0 s | 1,334 |
+
+    - **2 GiB gives the predicted ~30 GiB/s, in both rounds**: the walk ~20% shorter than
+      the default's, 29–30 GiB/s against 23–25.
+    - **1 GiB shrinks the tail most** (6–10 s), but its first round was as slow as the
+      default. Both rounds ran beside the production scans, and two rounds cannot say
+      whether that was campaign noise or the 4× tar count.
+    - **Smaller batches mean fewer share requests** (24,000–31,000 at 1 GiB against
+      69,000–82,000 at the default): the busy ranks have batches to give, so idle ones
+      ask less often.
+    - Not a default change: this is one tree at one node count, and a smaller batch
+      doubles or quadruples the tars, which a one-node run does not need. For a
+      VIT-shaped tree at 8 nodes, `--batch-size 2GiB` is the measured choice.
+    - The last 1 GiB run's walk finished (its summary was written), but the job's
+      walltime killed it while its tars were being deleted; they were deleted by hand,
+      and csg holds nothing. At 8 nodes a run's cycle is ~6 minutes, the walk ~1 of
+      them: the per-run stats and deleting 1.3 TiB of tars on csg are the rest.
   - **Worker CPU per rank halves per doubling**, as the work per rank does; the Manager's
     CPU is its wall (it spins in the receive).
 

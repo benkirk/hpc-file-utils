@@ -111,14 +111,17 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
   busy. It ran first in the job. The walk README's perf-1 step A entry has the table. The
   `--depth 2` recommendation rests on the campaign rows; on scratch's small files a third
   round with `depth 2` not first would settle it.
-- **`--batch-size` 1–2 GiB at 8 nodes on VIT: not run; it needs your go-ahead.** It is
-  beyond 4 nodes. The estimate: one 8 × 32 job on GDEX VIT → csg, `--read-ahead` 16,
-  `--cpu-bind depth --depth 2`, `--batch-size` 1 GiB and 2 GiB, two rounds each, plus one
-  default 16 GiB run as the control. That is 5 runs of ~60 s walk and ~75 s wall each,
-  about 15 minutes of 8 nodes with the job's start-up, under a 30-minute walltime. Each run
-  reads ~1.3 TiB from GDEX and writes it as tars to csg, deleted after each run. Expected:
-  the one-batch tail (22–23 s of a 55 s walk) shrinks toward ~6–12 s, ~24 → ~28–30 GiB/s.
-  It must not overlap another campaign bench (`-W depend=afterany`).
+- **`--batch-size` 1–2 GiB at 8 nodes on VIT, done after the go-ahead** (job 8144846,
+  `benchbind.pbs` with a new `BATCH_SIZES` list rotated per round; the original is kept as
+  `benchbind.pbs.pre-bs`). 2 GiB walked 43.6 and 44.5 s at 29.6 and 29.0 GiB/s, against the
+  default's 51.4 and 56.0 s at 25.1 and 23.1. 1 GiB cut the tail to 6–10 s, but its two
+  rounds split, 54.6 and 43.5 s. The walk README's perf-1 step B entry has the table. No
+  default changed: one tree, one node count, and smaller batches mean 2–4× the tars.
+  - **The estimate was wrong on time**: a run's cycle at 8 nodes is ~6 minutes, not 75 s,
+    because the per-run stats and deleting 1.3 TiB of tars on csg dominate. The 30-minute
+    walltime killed the sixth run after its walk finished, while its tars were being
+    deleted; they were deleted by hand and csg holds nothing. Give such a job ~7 minutes
+    per run.
 
 ## Open
 
