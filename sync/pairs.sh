@@ -81,7 +81,7 @@ copier_load()
 {
     copier="$(setting copier dsync)"
     pair_chmod="$(pair_get "${pair}" chmod)"
-    walksync_opts="" walksync_bind="" hfu_root=""
+    walksync_opts="" walksync_bind="" hfu_root="" walksync_inplace=""
     case "${copier}" in
         dsync) return 0 ;;
         walksync) ;;
@@ -112,10 +112,50 @@ copier_load()
         case "${v}" in
             --dirs|--dirs=*|--dest|--dest=*|-n|--dry-run|--summary-prefix|--summary-prefix=*)
                 echo "ERROR: [${pair}] walksync_opts: ${v} is set by the job (src, dest, pair name, dryrun=yes)" >&2; return 1 ;;
+            # one word, so walksync_args can add --inplace to it
+            --rsync-opts)
+                echo "ERROR: [${pair}] walksync_opts: give --rsync-opts=<option> as one word" >&2; return 1 ;;
         esac
     done
     [[ ${hfu_root} =~ ^/[-A-Za-z0-9_./]+$ ]] \
         || { echo "ERROR: [${pair}] hfu_root: '${hfu_root}' must be an absolute path" >&2; return 1; }
+
+    # walksync_inplace: auto|yes|no [auto]: rsync --inplace for walksync's copies (no temp
+    # file and rename per file); auto = only when dest is empty at job start, so every file
+    # is new and nothing is overwritten in place
+    walksync_inplace="$(setting walksync_inplace auto)"
+    case "${walksync_inplace}" in
+        auto|yes|no) ;;
+        *) echo "ERROR: [${pair}] invalid walksync_inplace: '${walksync_inplace}' (auto|yes|no)" >&2; return 1 ;;
+    esac
+}
+
+
+#--------------------------------------------------------------
+# walksync_inplace_resolve <dest is empty: yes|no> : prints yes|no; call after pair_load
+walksync_inplace_resolve()
+{
+    case "${walksync_inplace}" in
+        yes|no) echo "${walksync_inplace}" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+
+#--------------------------------------------------------------
+# walksync_args <inplace: yes|no> : walksync_opts as one argument per line, with --inplace
+# added to its --rsync-opts= (or as --rsync-opts=--inplace) when asked; call after pair_load
+walksync_args()
+{
+    local v merged=no
+    for v in ${walksync_opts}; do
+        if [[ $1 == yes && ${v} == --rsync-opts=* ]]; then
+            v="${v} --inplace"; merged=yes
+        fi
+        printf '%s\n' "${v}"
+    done
+    [[ $1 == yes && ${merged} == no ]] && printf '%s\n' "--rsync-opts=--inplace"
+    return 0
 }
 
 

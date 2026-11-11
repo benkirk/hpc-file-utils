@@ -184,6 +184,22 @@ export NCAR_HOST=casper
 expect_eq "copier: derecho.copier does not apply on casper" "$(copier_of W-plain)" "dsync||||no"
 unset NCAR_HOST
 
+# walksync_inplace: auto|yes|no, and --inplace merged into walksync's --rsync-opts
+check_bad "an invalid walksync_inplace" "invalid walksync_inplace: 'maybe'" "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_inplace: maybe"
+check_bad "--rsync-opts as two words" "give --rsync-opts=<option> as one word" "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --rsync-opts --bwlimit=1000"
+inplace_of() # <conf> <pair> <dest empty> : resolved inplace, then walksync_args, one line
+{
+    pairs_conf="$1" bash -c '. ./pairs.sh || exit 1; pair_load "$0" || exit 1; i="$(walksync_inplace_resolve "$1")"
+                             echo "${i}: $(walksync_args "${i}" | paste -sd "|")"' "$2" "$3" 2>&1
+}
+expect_eq "inplace auto, dest empty" "$(NCAR_HOST=derecho inplace_of copier.conf W-plain yes)" "yes: --rsyncs|8|--rsync-opts=--inplace"
+expect_eq "inplace auto, dest not empty" "$(NCAR_HOST=derecho inplace_of copier.conf W-plain no)" "no: --rsyncs|8"
+printf '%s\n' "copier: walksync" \
+    "[Y]" "src: ${root}/src/y" "dest: ${root}/dest/y" "walksync_inplace: yes" "walksync_opts: --rsync-opts=--bwlimit=1000 --rsyncs 4" \
+    "[N]" "src: ${root}/src/n" "dest: ${root}/dest/n" "walksync_inplace: no" | write_conf inplace.conf
+expect_eq "inplace yes: merged into --rsync-opts=" "$(inplace_of inplace.conf Y no)" "yes: --rsync-opts=--bwlimit=1000 --inplace|--rsyncs|4"
+expect_eq "inplace no, dest empty" "$(inplace_of inplace.conf N yes)" "no: --rsyncs|8"
+
 # msrsync auto after dsync: hsm and chmod pairs only (A-first is hsm, B-second chmod)
 expect_eq "msrsync auto: hsm dsync pair" "$(in_pairs pairs.conf 'pair_load A-first && msrsync_resolve')" "yes"
 expect_eq "msrsync auto: chmod dsync pair" "$(in_pairs pairs.conf 'pair_load B-second && msrsync_resolve')" "yes"

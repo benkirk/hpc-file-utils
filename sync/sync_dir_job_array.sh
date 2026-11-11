@@ -152,6 +152,14 @@ fi
 [[ -d ${destdir} ]] || { echo "${destdir}: no such directory!"; exit 1; }
 [[ -w ${destdir} ]] || { echo "${destdir}: not writeable by ${USER}!"; exit 1; }
 
+# walksync_inplace: auto = rsync --inplace only into a dest that is empty now, where every file
+# is new (no temp file and rename per file, ~1/3 fewer directory operations in a big directory)
+if [[ ${copier} == walksync ]]; then
+    [[ -z $(find "${destdir}" -mindepth 1 -maxdepth 1 -print -quit) ]] && dest_empty=yes || dest_empty=no
+    walksync_use_inplace="$(walksync_inplace_resolve "${dest_empty}")"
+    echo "   walksync --inplace: ${walksync_use_inplace} (walksync_inplace: ${walksync_inplace}, dest empty at start: ${dest_empty})"
+fi
+
 # walksync's walk does not check st_dev (the final rsync's -x does, dsync does not either):
 # refuse a source with another filesystem mounted inside it. (GPFS filesets are not mounts
 # and share one st_dev, so -x would cross them too.)
@@ -203,7 +211,7 @@ run_walksync() # [--dry-run]
 {
     local ws_bind ws_opts
     read -r -a ws_bind <<< "${walksync_bind}"
-    read -r -a ws_opts <<< "${walksync_opts}"
+    mapfile -t ws_opts < <(walksync_args "${walksync_use_inplace:-no}")
     mkdir -p "walksync.${suffix}" || return 1
     (
         cd "walksync.${suffix}" || exit 1
@@ -324,7 +332,7 @@ fi
 # the bulk copy, on all nodes: walksync (copier: walksync), else mpifileutils' dsync - which
 # cannot exclude or chmod, so not for hsm/chmod pairs.
 if [[ ${copier} == walksync ]]; then
-    echo -n "...running walksync (${walksync_bind}; ${walksync_opts}) ${srcdir} -> ${destdir} at $(date)... "
+    echo -n "...running walksync (${walksync_bind}; $(walksync_args "${walksync_use_inplace}" | paste -sd ' ')) ${srcdir} -> ${destdir} at $(date)... "
     sstart=$(date +%s)
     run_walksync
     rc=$?
@@ -503,7 +511,7 @@ if [[ ${rc} -eq 0 && ${#unclean[@]} -eq 0 ]]; then
         echo "jobid: ${PBS_JOBID:-interactive}"
         echo "cluster: ${cluster}"
         echo "copier: ${copier}"
-        [[ ${copier} == walksync ]] && echo "walksync: ${walksync_copied}"
+        [[ ${copier} == walksync ]] && echo "walksync: ${walksync_copied}; --inplace: ${walksync_use_inplace}"
         echo "rsync: $(grep -E '^Number of (created|deleted|regular files transferred)' rsync.out.${suffix} | sed 's/^Number of //' | paste -s -d ',')"
         echo "verified: ${nsample:-0} sampled files identical"
     } > "$(stamp_file "${pair}").tmp" && mv -f "$(stamp_file "${pair}").tmp" "$(stamp_file "${pair}")"
