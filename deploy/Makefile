@@ -55,10 +55,15 @@ SHELL         := /bin/bash
 ROOT    ?= $(CURDIR)
 REPO    ?= https://github.com/benkirk/hpc-file-utils.git
 REF     ?= main
-HOST    ?= $(NCAR_HOST)
 HOSTS   ?= derecho casper
 HFU_MPI ?= auto
 TOOLS   ?= walkstat walktar walksync
+
+# The host: HOST= on the command line, else NCAR_HOST.  Never HOST from the environment:
+# derecho's login shells export HOST=derecho5 (the node), which a ?= would take.
+ifneq ($(origin HOST),command line)
+  HOST := $(NCAR_HOST)
+endif
 
 # A literal `make`, deliberately not $(MAKE): see the rules above.
 BUILD  := make
@@ -134,8 +139,9 @@ status:
 	  for l in current-* previous-*; do
 	    [ -L "$$l" ] && [ "$$(readlink "$$l")" = "$$d" ] && roles="$$roles $$l"
 	  done
+	  if [ -n "$$roles" ]; then roles="named by$$roles"; else roles="prune removes it"; fi
 	  when=$$(git -C "$$d" log -1 --format=%cs 2>/dev/null || echo "?")
-	  echo "  $$d  committed $$when  built for:$${hosts:- (none)}$$state  ($${roles:+named by$$roles}$${roles:-prune removes it})"
+	  echo "  $$d  committed $$when  built for:$${hosts:- (none)}$$state  ($$roles)"
 	done
 	[ "$$found" = 1 ] || echo "  (none)"
 	cur=$$(readlink "current-$(HOST)" 2>/dev/null || true)

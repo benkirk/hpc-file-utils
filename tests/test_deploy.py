@@ -282,7 +282,8 @@ def test_status_reports_each_host_and_makefile_drift(site):
     out = make("derecho", "status").stdout
     assert "derecho   current %s, previous (none)" % sha1 in out
     assert "casper    current (none)" in out
-    assert "%s  committed" % sha1 in out and "built for: derecho" in out and "named by current-derecho" in out
+    assert "%s  committed" % sha1 in out and "built for: derecho" in out
+    assert "(named by current-derecho)" in out                   # once
     assert "differs" not in out
 
     (root / "Makefile").write_text((root / "Makefile").read_text() + "\n# local edit\n")
@@ -297,6 +298,20 @@ def test_refuses_to_run_inside_a_checkout(site):
     proc = site["make"]("derecho", "update", check=False)
     assert proc.returncode != 0 and "is a checkout, not the deploy directory" in proc.stderr
     assert not (site["root"] / "repo.git").exists()
+
+
+@needs_gmake
+def test_the_host_comes_from_ncar_host_never_from_an_environment_host(site):
+    """derecho's login shells export HOST=derecho5 (the node): taken by a ?=, it built a
+    'derecho5' env with conda-forge MPI (found in the first real deploy, 2026-11-11)."""
+    root, make, sha1 = site["root"], site["make"], site["sha1"]
+    out = make("derecho", "update", HOST="derecho5").stdout
+    assert "built %s for derecho" % sha1 in out and "derecho5" not in out
+    assert _links(root, "derecho") == (sha1, None) and not (root / "current-derecho5").exists()
+    out = make("derecho", "status", HOST="derecho5").stdout
+    assert "derecho   current %s" % sha1 in out
+    make("derecho", "update", "HOST=casper")                     # the command line still chooses
+    assert _links(root, "casper") == (sha1, None)
 
 
 @needs_gmake

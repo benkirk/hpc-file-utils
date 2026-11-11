@@ -53,6 +53,14 @@ derecho outside PBS) and `site`. The walkstat golden output lives in
 The glade tools' own `test.sh` scripts write to campaign storage and only run with
 `HFU_SITE_WRITE_TESTS=1`.
 
+## The shared install on glade
+
+[deploy/Makefile](deploy/Makefile) manages a shared install: one checkout per commit, each
+with a conda env per host, and `current-derecho` / `current-casper` links that jobs and users
+name. Use it with `HFU_ROOT=<install>/current-${NCAR_HOST}` and `source
+${HFU_ROOT}/etc/config_env.sh`; the scan scripts already honour `HFU_ROOT`.
+[deploy/README.md](deploy/README.md) is the runbook.
+
 ## Running the walkers
 
 `pip install -e .` (done by `etc/config_env.sh`) installs the console scripts `walkstat` and
