@@ -63,6 +63,7 @@ Tunables, per pair or global:
 | `walksync_opts` | `--rsyncs 8` | more walksync options, split on blanks (no quotes or globs) |
 | `walksync_bind` | `--cpu-bind depth --depth 4` | walksync's `mpiexec` CPU binding |
 | `hfu_root` | `/glade/u/apps/opt/hpc-file-utils/current-derecho` | the install walksync runs from |
+| `walksync_inplace` | `auto` | rsync `--inplace` for walksync's copies: `auto` = only into a dest empty at job start, `yes`, `no` |
 
 Safety checks on every pair: src and dest absolute and normalized, different, not nested
 (also after resolving symlinks), under `allowed_roots` (global, default `/glade/campaign/`),
@@ -215,6 +216,13 @@ the shared install `hfu_root`. It runs on all nodes before the node release:
 - **`dryrun=yes`:** `walksync --dry-run`, per-rank `N`/`C`/`X` lists in the walksync directory.
   Unlike dsync's dry run it works on read-only sources and sees source-only files. It is still
   a queued job on all the nodes, not a preview.
+- **`--inplace` into an empty dest** (`walksync_inplace: auto`): every file is new, so each is
+  written under its own name, with no temporary `.name.XXXXXX` file and rename: one create per
+  file instead of a lookup, a create and a rename. That matters in a huge directory, where ranks
+  on several nodes creating in one GPFS directory wait on its token (4D's `cpl/hist`, 741K
+  files: lookups there took 2.5–7 s). An interrupted file has the wrong size and mtime, so the
+  next run recopies it. A rerun into a partial dest copies the usual way. `--whole-file` needs
+  no setting: rsync uses it whenever both paths are local, as here.
 - **Batch sizing:** the defaults (`--batch-size 16GiB`) give ~30 batches per worker on a
   60 TiB tree at 4 nodes, well past the walk README's ~5; add `--batch-size` to
   `walksync_opts` only for a tree of a few TiB.
