@@ -108,6 +108,33 @@ directories are, so one huge directory no longer ties up one rank for hours.
   - The termination argument covers batches (see `manager.py`): a stat batch creates file
     batches only on the rank processing it, which processes them before its next `ready`.
 - **walkstat's batches are the stat batches alone** (below).
+- **Sizing the batches.** The defaults stay fixed; choose `--batch-size` per run when the
+  tree is small for its rank count.
+  - **The tail is one batch.** The walk ends one batch-time after the last rank takes its
+    last batch, so what matters is batches per worker, about total bytes ÷ batch bytes ÷
+    workers. Which cap closes a batch depends on the file sizes: VIT's 4 MiB files close
+    at 1,000 files (~4 GiB), `manyfiles`' 1 MiB files at 1 GiB, `bigdir`'s 1 GiB files at
+    16 GiB (16 files).
+  - **Aim for at least ~5 batches per worker**: batch bytes ≈ total bytes ÷ (5 × workers),
+    kept within ~1–16 GiB. Below ~3 the tail shows:
+
+    | run | batches per worker | effect |
+    |---|---|---|
+    | VIT, 1 node | ~11 | tail ~15 s of 280 s |
+    | `manyfiles`, 1 node | ~6.5 | ranks within 10% of each other |
+    | `bigdir`, 1 node | ~2 | the busiest rank archived 48 GiB, the mean 33 |
+    | VIT, 8 nodes, default | ~1.3 | tail ~40% of the walk |
+    | VIT, 8 nodes, `--batch-size 2GiB` | ~2.7 | ~20% faster, 29–30 GiB/s |
+
+  - **The production one-node scans need nothing**: their trees are large next to 31
+    workers. A multi-node run on a tree of a few TiB, or a tree of big files, wants a
+    smaller `--batch-size`. Keep the 1,000-file cap for small-file trees, where it binds
+    first.
+  - **Smaller batches mean more tars**: VIT made 1,334 at 1 GiB against 334 by default. If
+    the tars go somewhere that prefers multi-GiB files, that sets the floor.
+  - The walk does not know the tree's size when it starts, so this is a choice made per run,
+    not a computed default (indexes-2: a size hint, or splitting the last batch when ranks
+    idle, were the alternatives, left for later).
 - **Outputs**, in the working directory:
   - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
     selected files.
