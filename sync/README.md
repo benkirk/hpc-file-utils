@@ -8,15 +8,16 @@ modeled on `../p_migration`. Each pair in `pairs.conf` is synchronized by one PB
    Aborts if any are found and the pair is not `hsm: yes`: HSM stubs are never read, so no tape recalls.
    Also aborts if the source is empty (an `rsync --delete` would empty dest).
 2. **dsync** (mpifileutils 0.12) bulk copy across all nodes. **Skipped for `hsm: yes` pairs** -
-   dsync has no `--exclude`.
+   dsync has no `--exclude`. Or, with `copier: walksync`, **walksync** across all nodes, for any
+   pair (see *walksync as the copier*).
 3. Release all but one node, then **msrsync** (multi-stream rsync, one rsync per usable CPU,
    `COLD_STORAGE*` pruned) - by default only for `hsm: yes` pairs, where dsync was skipped.
 4. Serial **`rsync --delete --max-delete=N`**, `--exclude='COLD_STORAGE*'` (which also protects
    the dest symlinks).
 5. Index every non-directory in dest → `flist-destdir.out.<suffix>.xz`, and compare a random
    sample of copied files byte-for-byte with the source.
-6. **Done stamp** `stamps/<pair>.done` - only if rsync exited 0, dsync logged no errors and the
-   sample matched.
+6. **Done stamp** `stamps/<pair>.done` - only if rsync exited 0, dsync logged no errors (or
+   walksync exited 0) and the sample matched.
 
 A job for a pair with a valid done stamp exits immediately. Every stage is idempotent, so
 repeated submissions ratchet each pair to completion (see *Done stamps & resubmission*).
@@ -58,6 +59,10 @@ Tunables, per pair or global:
 | `msrsync_procs` | `nproc` | on the node left after the release |
 | `max_delete` | `1%` | rsync `--max-delete`: N, or N% of the source items (at least 1000) |
 | `verify_sample` | 200 | files compared with the source before stamping (0 = off) |
+| `copier` | `dsync` | `dsync` or `walksync` (derecho only): the bulk copy, see *walksync as the copier* |
+| `walksync_opts` | `--rsyncs 8` | more walksync options, split on blanks (no quotes or globs) |
+| `walksync_bind` | `--cpu-bind depth --depth 4` | walksync's `mpiexec` CPU binding |
+| `hfu_root` | `/glade/u/apps/opt/hpc-file-utils/current-derecho` | the install walksync runs from |
 
 Safety checks on every pair: src and dest absolute and normalized, different, not nested
 (also after resolving symlinks), under `allowed_roots` (global, default `/glade/campaign/`),
@@ -79,7 +84,8 @@ make run PAIRS="<pair> <pair>" rounds=2    # job array over named pairs, submitt
 ./submit_sync_array.sh <pair> ...          # the same: array over named pairs (plain job for one)
 after=<jobid> ./submit_sync_array.sh ...   # start after another job (or array 'NNN[]') ends
 fresh_after=now ./submit_sync_array.sh ... # ignore existing done stamps (re-sync everything once)
-dryrun=yes ./submit_sync_array.sh <pair>   # preflight + 'dsync --dryrun' only (see caveats)
+dryrun=yes ./submit_sync_array.sh <pair>   # preflight + 'dsync --dryrun' (or 'walksync --dry-run') only:
+                                           #   still a real, queued job (see caveats)
 make link                                  # COLD_STORAGE symlinks for hsm pairs
 make compress PAIRS=<pair>                 # request GPFS compression of the copies
 make compress_status                       # fileset usage; ./compress_dest.sh --status --exact <pair>
@@ -91,14 +97,16 @@ make archive_logs                          # move logs into logs/<timestamp>/ (r
 
 Logs: the job log (`cgd_migration.o<jobid>.<index>` for an array member, `cgd_<pair>.o<jobid>`
 otherwise) has per-stage timings and exit status; each stage writes
-`{dfind,dsync,msrsync,rsync}.{out,err}.<pair>.<jobid>.<timestamp>`.
+`{dfind,dsync,walksync,msrsync,rsync}.{out,err}.<pair>.<jobid>.<timestamp>`. walksync also writes
+a directory `walksync.<pair>.<jobid>.<timestamp>/`: its summary and userlists, and each rank's
+gzipped index of what it copied (`make clean` keeps it, `make archive_logs` moves it).
 
 ## Done stamps & resubmission
 
 A pair is **done** when its final serial `rsync --delete` exits 0, dsync logged no errors and
 the sampled files match: the job then writes `stamps/<pair>.done` (in the run directory) with
 src, dest, the pass's start/finish time, the job id and rsync's created/deleted/transferred
-counts. rsync exit 23, 24 (source files vanished) or 25 (`max_delete` reached) is logged but not
+counts, and with walksync its `--> Copied` line. rsync exit 23, 24 (source files vanished) or 25 (`max_delete` reached) is logged but not
 stamped - another pass, or a look at the logs, is needed. Submissions leave out pairs that
 already have a valid stamp.
 
@@ -166,6 +174,50 @@ behind - remove it by hand.
 
 The patched `msrsync` is `../p_migration/msrsync.BSK` (skip vs. fail on non-UTF-8 names) plus
 `MSRSYNC_PRUNE` pruning (directories and files) in `crawl()`.
+
+## walksync as the copier
+
+`copier: walksync` (per pair or global, e.g. `derecho.copier: walksync`) replaces dsync, and
+msrsync's `auto`, with walksync (`../hpc_file_utils/walk/README.md`, "walksync (phase 6)") from
+the shared install `hfu_root`. It runs on all nodes before the node release:
+
+```
+( cd walksync.<suffix> && source ${hfu_root}/etc/config_env.sh &&
+  mpiexec --no-transfer ${walksync_bind} walksync --rsync /usr/bin/rsync --exclude 'COLD_STORAGE*' \
+      --verbose --progress 60 ${walksync_opts} --summary-prefix <pair> --index=gz \
+      --dirs <src> --dest <dest> )  > walksync.out.<suffix> 2> walksync.err.<suffix>
+```
+
+- **Why:** dsync cannot copy a read-only source as non-root (it creates each directory with the
+  source's r-x mode, then cannot fill it), nor exclude `COLD_STORAGE*`; msrsync, the fallback
+  for both, is one node. walksync copies with `--chmod=Du+w` and `--exclude` on every node, and
+  never touches an unchanged file, so a rerun costs only the walk.
+- **The rest of the pipeline is unchanged:** the dfind preflight, the serial
+  `rsync -axAHX --delete`, the index, the sample `cmp` and the stamp. The serial pass deletes,
+  re-links hard links (walksync copies each name separately), and sets each directory's real
+  mode and times, except on chmod pairs, which keep `Du+w` as before.
+- **Environment:** the job's `module --force purge` and mpifileutils stay (dfind needs them);
+  `config_env.sh` loads the install's `etc/modules-derecho` and activates its env in a
+  subshell. `/usr/bin/rsync` has the ACLs and xattrs the env's conda-forge rsync lacks.
+- **Exit status:** a non-zero walksync exit (a failed stat, scan or rsync batch) keeps the pass
+  from being stamped, but the job goes on: the serial rsync fills in what walksync missed, and
+  the next run stamps the pair. No `--> Copied` summary at all (walksync never started, or a
+  rank was lost) aborts the job, as a dsync without `Completed sync` does: on a fresh
+  destination the serial rsync would be a single-stream copy of the whole tree. A missing
+  `hfu_root/etc/config_env.sh` aborts before the preflight.
+- **Refused:** on casper (its Open MPI launcher segfaults now and then; at submission and in
+  the job), with a `chmod:` other than `Du+w`, with `walksync_opts` that set `--dirs`, `--dest`,
+  `--summary-prefix` or `--dry-run` (the job does), and when another filesystem is mounted
+  inside the source (`/proc/mounts`): walksync's walk does not check `st_dev`, unlike the
+  final pass's `-x`. GPFS filesets are not mounts and share one `st_dev`, so neither stops at
+  a fileset junction.
+- **hsm pairs:** walksync's `--exclude` replaces msrsync's prune; `make link` as before.
+- **`dryrun=yes`:** `walksync --dry-run`, per-rank `N`/`C`/`X` lists in the walksync directory.
+  Unlike dsync's dry run it works on read-only sources and sees source-only files. It is still
+  a queued job on all the nodes, not a preview.
+- **Batch sizing:** the defaults (`--batch-size 16GiB`) give ~30 batches per worker on a
+  60 TiB tree at 4 nodes, well past the walk README's ~5; add `--batch-size` to
+  `walksync_opts` only for a tree of a few TiB.
 
 ## HSM / COLD_STORAGE (3A)
 

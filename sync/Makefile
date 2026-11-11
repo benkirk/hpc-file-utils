@@ -41,7 +41,8 @@ compress:
 compress_status:
 	./compress_dest.sh --status $(PAIRS)
 
-# keeps the flist-destdir.*.xz indexes
+# keeps the flist-destdir.*.xz indexes and the walksync.<pair>.<job>.<time>/ directories
+# (walksync's summary and its per-rank indexes of what it copied)
 clean:
 	$(NO_JOBS)
 	find . -maxdepth 1 -type f \( -name '*~' -o -name '*.out.*' -o -name '*.err.*' -o -name 'cgd_*.o*' \
@@ -51,7 +52,8 @@ archive_logs:
 	$(NO_JOBS)
 	timestamp=$$(date +%F@%H:%M) ; \
 	mkdir -p logs/$${timestamp} ; \
-	mv -f cgd_*.o* *.out.* *.err.* mpibind.*.log verify_* logs/$${timestamp}
+	mv -f cgd_*.o* *.out.* *.err.* mpibind.*.log verify_* logs/$${timestamp} ; \
+	for d in walksync.*/ ; do if [ -d "$$d" ]; then mv -f "$$d" logs/$${timestamp}/ ; fi ; done
 
 # this cluster's cgd_ jobs (derecho or casper)
 qdelall:

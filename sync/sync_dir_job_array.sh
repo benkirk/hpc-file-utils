@@ -12,7 +12,7 @@
 #
 #   pair=<name>          : select the pair by name, else
 #   pair_list=<a>:<b>:.. : the ${PBS_ARRAY_INDEX}-th of these, else of pairs.conf
-#   dryrun=yes           : HSM preflight + 'dsync --dryrun' only, then exit
+#   dryrun=yes           : HSM preflight + 'dsync --dryrun' (or 'walksync --dry-run') only, then exit
 #   fresh_after_epoch=N  : a done stamp only counts if its pass started at or after N
 #                          (submit_sync_array.sh resolves fresh_after to this)
 #
@@ -23,8 +23,9 @@
 # stages:
 #   1. HSM preflight: dfind COLD_STORAGE* -> cold_storage.<pair>.list
 #                     (abort if found and pair is not 'hsm: yes')
-#   2. dsync          (skipped for hsm pairs - dsync cannot exclude)
-#   3. msrsync        (multi-stream rsync, COLD_STORAGE* pruned; hsm pairs by default)
+#   2. dsync          (skipped for hsm pairs - dsync cannot exclude), or
+#      walksync       (copier: walksync - any pair, COLD_STORAGE* excluded), on all nodes
+#   3. msrsync        (multi-stream rsync, COLD_STORAGE* pruned; hsm pairs by default, after dsync)
 #   4. rsync --delete (serial cleanup pass, COLD_STORAGE* excluded, --max-delete capped)
 #   5. index dest, cmp a random sample of files against src
 #   -> done stamp, only if rsync exited 0 and nothing above looked wrong
@@ -62,8 +63,9 @@ if [[ -z ${pair} ]]; then
     fi
 fi
 pair_load "${pair}" || exit 1
+copier_host_check "${cluster}" || exit 1
 
-echo "Synchronizing [${pair}] ${srcdir} -> ${destdir} (hsm=${hsm})"
+echo "Synchronizing [${pair}] ${srcdir} -> ${destdir} (hsm=${hsm}, copier=${copier})"
 
 # finished for good, e.g. a job queued before 'done: yes' was set
 if [[ ${pair_done} == yes ]]; then
@@ -83,14 +85,7 @@ case "$(stamp_check "${pair}" "${fresh_after_epoch}")" in
         echo "[${pair}] done stamp is for a different src/dest, syncing" ;;
 esac
 
-# tunables: per-pair value, else global (host-specific first), else default
-setting()
-{
-    local v
-    v="$(pair_get "${pair}" "$1")"
-    [[ -n ${v} ]] || v="$(conf_get "$1")"
-    echo "${v:-$2}"
-}
+# tunables (pairs.sh 'setting'): per-pair value, else global (host-specific first), else default.
 # dsync sets file metadata per batch, so a batch is the unit of work lost on
 # a restart - size it so one batch takes well under the walltime.
 batch_files="$(setting batch_files 250000)"
@@ -157,6 +152,18 @@ fi
 [[ -d ${destdir} ]] || { echo "${destdir}: no such directory!"; exit 1; }
 [[ -w ${destdir} ]] || { echo "${destdir}: not writeable by ${USER}!"; exit 1; }
 
+# walksync's walk does not check st_dev (the final rsync's -x does, dsync does not either):
+# refuse a source with another filesystem mounted inside it. (GPFS filesets are not mounts
+# and share one st_dev, so -x would cross them too.)
+if [[ ${copier} == walksync ]]; then
+    mounts_inside="$(awk -v r="${src_real}/" 'index($2, r) == 1 { print $2 }' /proc/mounts)"
+    if [[ -n ${mounts_inside} ]]; then
+        echo "ERROR: [${pair}] another filesystem is mounted inside ${srcdir}, which walksync would cross:"
+        echo "${mounts_inside}" | head -n 5 | sed 's/^/       /'
+        exit 1
+    fi
+fi
+
 # anything that should keep this pass from being stamped done, even if rsync exits 0
 unclean=()
 
@@ -164,6 +171,10 @@ msrsync=$(pwd)/msrsync
 
 [[ -f ${msrsync} ]] || { echo "${msrsync}: no such file!";   exit 1; }
 [[ -x ${msrsync} ]] || { echo "${msrsync}: not executable?"; exit 1; }
+
+if [[ ${copier} == walksync ]]; then
+    [[ -f ${hfu_root}/etc/config_env.sh ]] || { echo "ERROR: hfu_root ${hfu_root}: no etc/config_env.sh"; exit 1; }
+fi
 
 which dfind >/dev/null 2>&1 || { echo "Cannot locate dfind!!"; exit 1; }
 which dsync >/dev/null 2>&1 || { echo "Cannot locate dsync!!"; exit 1; }
@@ -183,13 +194,49 @@ ppn=$((nranks / nnodes))
 which mpibind >/dev/null 2>&1 || { echo "Cannot locate mpibind!!"; exit 1; }
 echo "${cluster}: ${nnodes} nodes, ${nranks} MPI ranks (${ppn}/node)"
 
+# copier: walksync - from the shared install (hfu_root), on every node of the job (the select
+# line's mpiprocs ranks per node), in its own directory walksync.<suffix>/ (summary, userlists,
+# per-rank indexes of what it copied, or the dry-run lists). In a subshell, config_env.sh loads
+# the install's modules (etc/modules-derecho) and activates its env; dfind and dsync keep the
+# job's mpifileutils. /usr/bin/rsync: the env's conda-forge rsync has no ACLs.
+run_walksync() # [--dry-run]
+{
+    local ws_bind ws_opts
+    read -r -a ws_bind <<< "${walksync_bind}"
+    read -r -a ws_opts <<< "${walksync_opts}"
+    mkdir -p "walksync.${suffix}" || return 1
+    (
+        cd "walksync.${suffix}" || exit 1
+        export NCAR_HOST="${NCAR_HOST:-${cluster}}"
+        # shellcheck source=/dev/null
+        source "${hfu_root}/etc/config_env.sh" || { echo "ERROR: cannot activate ${hfu_root}"; exit 1; }
+        echo "walksync: $(command -v walksync), mpiexec: $(command -v mpiexec)"
+        mpiexec --no-transfer "${ws_bind[@]}" \
+            walksync \
+            --rsync /usr/bin/rsync \
+            --exclude "${hsm_pattern}" \
+            --verbose --progress 60 \
+            "${ws_opts[@]}" \
+            --summary-prefix "${pair}" \
+            --index=gz \
+            "$@" \
+            --dirs "${srcdir}" --dest "${destdir}"
+    ) 1> "walksync.out.${suffix}" 2> "walksync.err.${suffix}"
+}
+
+# walksync's summary lines, for the job log
+walksync_summary()
+{
+    LC_ALL=C grep -aE '^--> (Sync|Not compared|Dry run|Copied)' "walksync.out.${suffix}" | sed 's/^/   /'
+}
+
 #--------------------------------------------------------------
 rsync_opts=(-axAHX "--exclude=${hsm_pattern}")
 
 # chmod: rsync --chmod for every rsync pass, e.g. 'Du+w' for a read-only source. dsync copies
 # modes as they are, so it would create read-only directories it then can't fill - pairs with
 # chmod skip dsync, and msrsync (auto) does the bulk copy instead.
-rsync_chmod="$(pair_get "${pair}" chmod)"
+rsync_chmod="${pair_chmod}"
 if [[ -n ${rsync_chmod} ]]; then
     # no blanks: msrsync gets the rsync options as one string
     [[ ${rsync_chmod} =~ ^[-+=,ugoaDFrwxXst0-7]+$ ]] || { echo "ERROR: invalid chmod '${rsync_chmod}'"; exit 1; }
@@ -243,7 +290,19 @@ fi
 
 
 
-# dryrun: what would dsync change? then quit.
+# dryrun: what would dsync (or walksync) change? then quit.
+if [[ ${dryrun} == "yes" && ${copier} == walksync ]]; then
+    # unlike dsync's, walksync's dry run works on read-only sources, hsm pairs, and source-only files
+    echo -n "...running walksync --dry-run ${srcdir} -> ${destdir} at $(date)... "
+    sstart=$(date +%s)
+    run_walksync --dry-run
+    rc=$?
+    report_elapsed ${sstart}
+    report_status walksync ${rc}
+    walksync_summary
+    echo "   lists (N new, C changed, X only in the destination): walksync.${suffix}/walksync-dryrun-r*.txt"
+    exit 0
+fi
 if [[ ${dryrun} == "yes" ]]; then
     [[ ${hsm} == "yes" || -n ${rsync_chmod} ]] && { echo "dsync --dryrun is not applicable to hsm/chmod pairs, exiting."; exit 0; }
     echo -n "...running dsync --dryrun ${srcdir} -> ${destdir} at $(date)... "
@@ -262,8 +321,30 @@ fi
 
 
 
-# mpifileutils / dsync for initial transfer - cannot exclude or chmod, so not for hsm/chmod pairs.
-if [[ ${hsm} == "yes" ]]; then
+# the bulk copy, on all nodes: walksync (copier: walksync), else mpifileutils' dsync - which
+# cannot exclude or chmod, so not for hsm/chmod pairs.
+if [[ ${copier} == walksync ]]; then
+    echo -n "...running walksync (${walksync_bind}; ${walksync_opts}) ${srcdir} -> ${destdir} at $(date)... "
+    sstart=$(date +%s)
+    run_walksync
+    rc=$?
+    report_elapsed ${sstart}
+    report_status walksync ${rc} "non-zero: a failed stat, scan or rsync batch"
+    walksync_summary
+    walksync_copied="$(LC_ALL=C grep -a '^--> Copied ' "walksync.out.${suffix}" | tail -n 1 | sed 's/^--> //')"
+    if [[ ${rc} -ne 0 || -z ${walksync_copied} ]]; then
+        echo "   WARNING: walksync did not finish cleanly, see walksync.{out,err}.${suffix}"
+        { LC_ALL=C grep -a 'ERROR' "walksync.out.${suffix}"; LC_ALL=C grep -av '^\[' "walksync.err.${suffix}"; } \
+            | tail -n 5 | sed 's/^/      /'
+    fi
+    # no summary: it never ran, or a rank was lost (the launcher can exit 0 even then). like
+    # dsync, don't fall through to the serial rsync - on a fresh dest that is a single-stream
+    # copy of the whole tree on one node.
+    [[ -n ${walksync_copied} ]] || { echo "ERROR: walksync did not complete (no summary)"; exit 1; }
+    # a failed batch: no stamp for this pass, but go on - the serial rsync below fills in
+    # whatever is missing, and a rerun stamps the pair
+    [[ ${rc} -eq 0 ]] || unclean+=("walksync exit status ${rc}")
+elif [[ ${hsm} == "yes" ]]; then
     echo "...skipping dsync for hsm pair [${pair}]"
 elif [[ -n ${rsync_chmod} ]]; then
     echo "...skipping dsync for [${pair}] (chmod: ${rsync_chmod})"
@@ -323,16 +404,12 @@ fi
 # a multi-stream rsync for secondary transfer, one rsync per usable CPU on this node.
 # needed for hsm pairs (dsync skipped); after a completed dsync it only re-crawls the tree.
 # hard links are restored by the serial rsync -H pass below either way (dsync and
-# msrsync both break them), so msrsync: auto = hsm and chmod pairs only; yes/no to force.
-use_msrsync="$(setting msrsync auto)"
-case "${use_msrsync}" in
-    auto) [[ ${hsm} == "yes" || -n ${rsync_chmod} ]] && use_msrsync=yes || use_msrsync=no ;;
-    yes|no) ;;
-    *) echo "ERROR: invalid msrsync setting '${use_msrsync}' (auto|yes|no)"; exit 1 ;;
-esac
+# msrsync both break them), so msrsync: auto = hsm and chmod pairs only, and never after
+# walksync (pairs.sh msrsync_resolve); yes/no to force.
+use_msrsync="$(msrsync_resolve)" || exit 1
 
 if [[ ${use_msrsync} == "no" ]]; then
-    echo "...skipping msrsync for [${pair}] (msrsync: $(setting msrsync auto))"
+    echo "...skipping msrsync for [${pair}] (msrsync: $(setting msrsync auto), copier: ${copier})"
 else
     # (nproc honors the job cpuset, but also OMP_NUM_THREADS, which PBS sets to 1)
     msrsync_procs="$(setting msrsync_procs "$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)")"
@@ -425,6 +502,8 @@ if [[ ${rc} -eq 0 && ${#unclean[@]} -eq 0 ]]; then
         echo "finished: $(date +%s)"
         echo "jobid: ${PBS_JOBID:-interactive}"
         echo "cluster: ${cluster}"
+        echo "copier: ${copier}"
+        [[ ${copier} == walksync ]] && echo "walksync: ${walksync_copied}"
         echo "rsync: $(grep -E '^Number of (created|deleted|regular files transferred)' rsync.out.${suffix} | sed 's/^Number of //' | paste -s -d ',')"
         echo "verified: ${nsample:-0} sampled files identical"
     } > "$(stamp_file "${pair}").tmp" && mv -f "$(stamp_file "${pair}").tmp" "$(stamp_file "${pair}")"
