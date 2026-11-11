@@ -138,6 +138,15 @@ the data rules in `GLADE_PERFORMANCE.md` section 5).
   VIT's size, which would write ~5 TiB to csg per run: a separate decision. The README's
   perf-1 step B entry has the table.
 
+- **walksync at 4, 8, 12 and 16 nodes, chained, done** (jobs 8148321–8148324, `benchsync.pbs`
+  in the bench kit, 18–21 min each, scratch clean after). GDEX `.Radiosonde` (584,851 ×
+  ~80 KB in 292 directories) onto scratch with `--depth 4`, `--rsyncs 8` and
+  `--batch-files 250`. The walks were 65, 45, 33 and 32 s: walksync scales to ~12 nodes and
+  flattens at ~18,000 files/s. The tails stay at 2–4 s, but each copy batch slows from 2.5
+  to 5.3 s as nodes are added, so a shared metadata ceiling is the limit, scratch's or
+  campaign's; these runs do not separate the two. Deleting each copy took 8–10 minutes.
+  The README's "walksync at 4–16 nodes" entry has the table.
+
 ## Open
 
 - **`test_walkstat_stats_a_big_directory_on_every_rank` failed in every full local run on

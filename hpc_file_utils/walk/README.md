@@ -1139,3 +1139,38 @@ E	f	1048576	1048576	0644	1001	100	1	5678	1699990000	1600000000	1600000000	/glade
     `#` line starting each file's records in a `cat` of several;
   - and that walksync's `E` records are one run's copies, not a tree's usage.
 - No code changed beyond `common/index.py`'s docstring.
+
+### walksync at 4–16 nodes (indexes-2, measured)
+
+- **The question:** does walksync scale with nodes the way walktar does? It was measured on
+  GDEX `exchange/.Radiosonde` copied onto scratch: 584,851 files of ~80 KB in 292
+  directories, 43.9 GiB. Jobs 8148321–8148324, one per node count, chained. Settings:
+  32 ranks per node, `--cpu-bind depth --depth 4`, `--rsyncs 8`, `--batch-files 250`
+  (~5 batches per worker even at 16 nodes), `main` at ff27254. Each of two rounds copied
+  into a fresh destination, deleted after it; the csgteam array's 8 subjobs ran
+  throughout. A single-directory tree such as VIT would measure only that directory's
+  create rate (~450–520 files/s, the sweep's "K rsyncs"), whatever the node count.
+
+  | nodes | walk | files/s | data rate | time per copy batch | tail | worker CPU (with rsyncs) |
+  |---|---|---|---|---|---|---|
+  | 1 (the sweep, 1,000-file batches) | 285 s | 2,050 | – | – | – | – |
+  | 4 | 65.2, 65.5 s | 8,970, 8,930 | 0.67 GiB/s | 2.5 s | 3.4, 2.2 s | 14.9, 14.7 s |
+  | 8 | 46.1, 43.4 s | 12,680, 13,490 | 0.95–1.01 GiB/s | 3.6 s | 4.0, 3.4 s | 12.9, 10.2 s |
+  | 12 | 33.2, 33.4 s | 17,620, 17,510 | 1.31 GiB/s | 3.9 s | 2.6, 2.9 s | 8.7, 8.4 s |
+  | 16 | 31.6, 32.9 s | 18,490, 17,780 | 1.33–1.39 GiB/s | 5.3 s | 3.4, 4.4 s | 7.6, 8.1 s |
+
+  - **walksync scales to ~12 nodes and then flattens at ~18,000 files/s.** 8 nodes give
+    1.45× 4 nodes, 12 give 1.35× 8, and 16 give 1.03× 12. Every run copied all 584,851
+    entries with no failed batch and no error.
+  - **It is a shared ceiling, not the walk.** The tails stay at 2–4 s (the 250-file batches
+    did their job), and worker CPU falls with nodes. But each copy batch takes longer as
+    nodes are added, 2.5 s at 4 nodes and 5.3 s at 16: the same files cost more when more
+    run at once. The bytes are trivial (1.4 GiB/s); the per-file metadata is not. Each
+    file is a create, a write, a rename, and the times, mode and xattrs set on scratch,
+    plus an open and a read of a small file on campaign. Scratch has 4 metadata servers
+    (MDTs), and the destination's directories spread over them. These runs do not say
+    which side sets the ceiling. A copy from scratch to scratch, or walktar reading the
+    same tree to csg, would separate them.
+  - **Deleting a copy is the slow part of a bench**: 470–590 s per copy, ~1,000–1,250
+    unlinks/s with 32 `rm` in parallel on one node, against the 18,000 creates/s that
+    made it. A parallel remover on the walk's machinery would cut that, if it matters.
