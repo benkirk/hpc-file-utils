@@ -59,6 +59,18 @@ HOSTS   ?= derecho casper
 HFU_MPI ?= auto
 TOOLS   ?= walkstat walktar walksync
 
+# The lock that keeps updates and prunes one at a time, whichever host runs them: a file
+# on derecho's Lustre scratch, not in ROOT.  ROOT is on GPFS (/glade/u), and casper mounts
+# glade from a separate GPFS cluster whose flock() is not coherent with derecho's: on
+# 2026-11-11 both hosts' updates took a lock in ROOT at once and raced in one checkout
+# (casper's chmod -R met a file derecho's build removed).  derecho scratch is Lustre,
+# mounted with -o flock on both hosts, and a lock held on one is refused on the other
+# (tested the same day).  $SCRATCH is /glade/derecho/scratch/<user> on both, so one
+# user's updates on the two hosts share the file.  Without SCRATCH, ROOT's own file,
+# which serializes one host's updates only.  A second update waits up to LOCK_WAIT s.
+LOCKFILE  ?= $(if $(SCRATCH),$(SCRATCH)/.hfu-deploy.lock,$(ROOT)/.update.lock)
+LOCK_WAIT ?= 3600
+
 # The host: HOST= on the command line, else NCAR_HOST.  Never HOST from the environment:
 # derecho's login shells export HOST=derecho5 (the node), which a ?= would take.
 ifneq ($(origin HOST),command line)
@@ -92,13 +104,21 @@ if ! [[ "$(HOST)" =~ ^[a-z0-9][a-z0-9_-]*$$ ]]; then
 fi
 endef
 
-# One update or prune at a time in ROOT, whichever host runs it.
-define LOCK
+# One update or prune at a time (LOCKFILE, above: why it is on scratch).  flock releases
+# by itself when the holder exits or dies, so there is no stale lock to clear.
+define TAKE_LOCK
 if command -v flock >/dev/null; then
-  exec 9>.update.lock
-  flock -n 9 || { echo "$@: another update or prune holds $(ROOT)/.update.lock" >&2; exit 1; }
+  exec 9>"$(LOCKFILE)"
+  if ! flock -n 9; then
+    echo "$@: another update or prune holds $(LOCKFILE); waiting up to $(LOCK_WAIT) s"
+    flock -w "$(LOCK_WAIT)" 9 || { echo "$@: $(LOCKFILE) still held after $(LOCK_WAIT) s" >&2; exit 1; }
+  fi
 fi
 endef
+
+# Reading the checkouts as anyone but their owner: git refuses another user's repo
+# ("dubious ownership") unless told it is safe.  Read-only uses only.
+GIT_RO := git -c safe.directory=*
 
 .PHONY: help status update rollback prune self-update usage
 
@@ -114,6 +134,7 @@ help:
 	echo
 	echo "  REPO=$(REPO)"
 	echo "  REF=$(REF)  HOST=$(or $(HOST),(unset))  HFU_MPI=$(HFU_MPI)"
+	echo "  LOCKFILE=$(LOCKFILE)  LOCK_WAIT=$(LOCK_WAIT)"
 	echo
 	echo "  Run update on each host's login node, with conda on PATH (module load conda)."
 	echo "  make -n <target> prints what it would run and changes nothing."
@@ -140,15 +161,15 @@ status:
 	    [ -L "$$l" ] && [ "$$(readlink "$$l")" = "$$d" ] && roles="$$roles $$l"
 	  done
 	  if [ -n "$$roles" ]; then roles="named by$$roles"; else roles="prune removes it"; fi
-	  when=$$(git -C "$$d" log -1 --format=%cs 2>/dev/null || echo "?")
+	  when=$$($(GIT_RO) -C "$$d" log -1 --format=%cs 2>/dev/null || echo "?")
 	  echo "  $$d  committed $$when  built for:$${hosts:- (none)}$$state  ($$roles)"
 	done
 	[ "$$found" = 1 ] || echo "  (none)"
 	cur=$$(readlink "current-$(HOST)" 2>/dev/null || true)
 	if [ -d repo.git ] && [ -n "$$cur" ]; then
-	  tip=$$(git -C repo.git rev-parse --short=12 "$(REF)^{commit}" 2>/dev/null || echo "")
+	  tip=$$($(GIT_RO) -C repo.git rev-parse --short=12 "$(REF)^{commit}" 2>/dev/null || echo "")
 	  if [ -n "$$tip" ]; then
-	    ahead=$$(git -C repo.git rev-list --count "$$cur..$$tip" 2>/dev/null || echo "?")
+	    ahead=$$($(GIT_RO) -C repo.git rev-list --count "$$cur..$$tip" 2>/dev/null || echo "?")
 	    echo "$(REF) as last fetched: $$tip; it has $$ahead commit(s) current-$(HOST) lacks"
 	  fi
 	fi
@@ -162,7 +183,7 @@ update:
 	command -v git >/dev/null || { echo "update: git is not on PATH" >&2; exit 1; }
 	command -v conda >/dev/null || { echo "update: conda is not on PATH; run 'module load conda' first" >&2; exit 1; }
 	chmod 755 .
-	$(LOCK)
+	$(TAKE_LOCK)
 	if [ -d repo.git ]; then
 	  git -C repo.git remote set-url origin "$(REPO)"
 	  git -C repo.git fetch --quiet --prune origin
@@ -198,7 +219,10 @@ update:
 	  ( cd "$$sha" && env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL NCAR_HOST="$(HOST)" HFU_MPI="$(HFU_MPI)" $(BUILD) conda-env )
 	  "$$sha/conda-env-$(HOST)/bin/python" -m compileall -q "$$sha/hpc_file_utils" "$$sha/sync" "$$sha/tools"
 	  for t in $(TOOLS); do "$$sha/conda-env-$(HOST)/bin/$$t" --help >/dev/null; done
-	  chmod -R a+rX "$$sha"
+	  # open only what this update made: this host's env.  Not chmod -R of the checkout:
+	  # another host may be building its env there (the 2026-11-11 race), and the
+	  # checkout itself was made under umask 022.
+	  chmod -R a+rX "$$sha/$$(readlink "$$sha/conda-env-$(HOST)")"
 	  touch "$$sha/.deployed-$(HOST)"
 	  echo "update: built $$sha for $(HOST)"
 	fi
@@ -229,7 +253,7 @@ rollback:
 
 prune:
 	@$(PRELUDE)
-	$(LOCK)
+	$(TAKE_LOCK)
 	keep=" "
 	for l in current-* previous-*; do
 	  if [ -L "$$l" ]; then keep="$$keep$$(readlink "$$l") "; fi

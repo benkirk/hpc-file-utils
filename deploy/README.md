@@ -50,10 +50,19 @@ make self-update             # when status says ./Makefile has drifted
 
 Then the same `make update` on a login node of the other host. An update takes several
 minutes, almost all of it the conda env (derecho's also builds mpi4py from source). A
-second update of the same commit on the same host does nothing. One update or prune
-runs at a time in the directory (`.update.lock`), from either host. `make update`
-refuses to run inside a checkout, so `make -f deploy/Makefile update` in a repo cannot
-turn that repo into a deploy directory.
+second update of the same commit on the same host does nothing. `make update` refuses
+to run inside a checkout, so `make -f deploy/Makefile update` in a repo cannot turn that
+repo into a deploy directory.
+
+**One update or prune at a time, from either host.** They take an `flock` on
+`$SCRATCH/.hfu-deploy.lock` (`LOCKFILE=`), and a second one waits for the first, up to an
+hour (`LOCK_WAIT=` seconds), then carries on. Running the two hosts' updates at once is
+therefore safe: the second waits, finds the checkout, and builds only its own env. The
+lock is on derecho's Lustre scratch, not in the install directory, because `flock` on
+GPFS is not coherent between derecho and casper (casper mounts glade from its own GPFS
+cluster). On 2026-11-11 the first deploy's two updates both took a lock in the install
+directory and raced in one checkout. Scratch is mounted with `flock` on both hosts, and
+a lock held on one is refused on the other.
 
 ## Using the install
 

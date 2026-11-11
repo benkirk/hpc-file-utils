@@ -9,6 +9,7 @@ tests look for `make` or `gmake` and skip when neither qualifies.  CI's Ubuntu m
 them.
 """
 
+import fcntl
 import os
 import re
 import shutil
@@ -117,8 +118,10 @@ def site(tmp_path):
     (bindir / "conda").chmod(0o755)
 
     base = {k: v for k, v in os.environ.items()
-            if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "NCAR_HOST", "HFU_MPI", "HFU_STUB_FAIL")}
+            if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "NCAR_HOST", "HFU_MPI", "HFU_STUB_FAIL",
+                         "SCRATCH", "LOCKFILE", "LOCK_WAIT")}
     base["PATH"] = "%s%s%s" % (bindir, os.pathsep, base.get("PATH", ""))
+    base["LOCKFILE"] = str(tmp_path / "deploy.lock")      # never a real $SCRATCH
 
     def make(host, *args, check=True, **env):
         e = dict(base, **env)
@@ -137,7 +140,8 @@ def site(tmp_path):
         return _git(src, "rev-parse", "--short=12", "HEAD")
 
     sha1 = _git(src, "rev-parse", "--short=12", "HEAD")
-    return {"src": src, "root": root, "make": make, "commit": commit, "sha1": sha1}
+    return {"src": src, "root": root, "make": make, "commit": commit, "sha1": sha1,
+            "lockfile": Path(base["LOCKFILE"])}
 
 
 def _link(root, name):
@@ -312,6 +316,23 @@ def test_the_host_comes_from_ncar_host_never_from_an_environment_host(site):
     assert "derecho   current %s" % sha1 in out
     make("derecho", "update", "HOST=casper")                     # the command line still chooses
     assert _links(root, "casper") == (sha1, None)
+
+
+@needs_gmake
+@pytest.mark.skipif(shutil.which("flock") is None, reason="no flock(1) here (macOS); CI's Ubuntu has it")
+def test_an_update_waits_for_the_lock_then_gives_up_untouched(site):
+    """The lock is LOCKFILE (on $SCRATCH in production: flock on GPFS does not reach
+    from derecho to casper).  Held by someone else, an update waits LOCK_WAIT seconds
+    and then stops before changing anything."""
+    root, make = site["root"], site["make"]
+    with open(site["lockfile"], "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        proc = make("derecho", "update", "LOCK_WAIT=1", check=False)
+    assert proc.returncode != 0
+    assert "waiting up to 1 s" in proc.stdout and "still held after 1 s" in proc.stderr
+    assert not (root / "repo.git").exists() and not _builds(root)
+    make("derecho", "update")                                    # released: it goes ahead
+    assert _links(root, "derecho") == (site["sha1"], None)
 
 
 @needs_gmake
