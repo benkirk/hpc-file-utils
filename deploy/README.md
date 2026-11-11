@@ -82,8 +82,7 @@ write the install.
 - **Read access to GitHub.** The repo is public, so the default `REPO` (https) needs no
   key. `REPO=/path/to/a/readable/checkout` deploys from a clone on glade instead.
 - **GNU Make 3.82 or later** for this Makefile, and 4.x for the repo's own (the env
-  build). derecho has 4.2.1. casper's login nodes need the same check: run `make
-  --version` there before the first update.
+  build). derecho's and casper's login nodes both have 4.2.1.
 - **conda on PATH** (`module load conda`).
 
 ## First deploy
