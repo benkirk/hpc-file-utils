@@ -454,6 +454,64 @@ code, the poll hook in `process_directory`, and the `isend` bookkeeping are alre
    queue is non-empty and that it is always delivered eventually. That test is the reason this
    option costs more than its line count suggests.
 
+## 8. Splitting the last batch (documented 2026-11-10, not implemented)
+
+> Kept for later, by decision (indexes-2). Until then the walk README's "Sizing the
+> batches" is the answer: fixed defaults, and a smaller `--batch-size` chosen per run when
+> a tree is small for its rank count.
+
+**The problem.** A file batch is the unit of work, and the walk ends one batch-time after
+the last rank takes its last batch. With few batches per worker that tail dominates:
+GDEX VIT at 8 nodes spent 22–23 s of a 55 s walk with ranks idle (~1.3 batches per
+worker), and `bigdir` at one node had its busiest rank archive 48 GiB against a mean of
+33 (~2 batches per worker, 16 × 1 GiB files each). A smaller `--batch-size` fixes it per
+run, but only if whoever launches the walk knows the tree's size.
+
+**The idea.** When the Manager has idle ranks and nothing queued, a rank in the middle of a
+batch gives away the unstarted rest of it.
+
+- **It fits phase 3.5's protocol as it stands.** A worker already answers `share` between
+  tar members (`tar_batch()` ticks after every file, `check_share()`), and a share reply
+  already carries batches. Today it carries only closed, unstarted batches: if there are
+  none, the reply is empty. The change is one more thing to give, the tail of the batch
+  being written. No new message, no new state on the Manager, and the Manager stays the
+  broker, so this is not section 3's stealing.
+- **Termination holds as it does for any shared batch.** The split batch is created on a
+  rank that has not sent `ready` (it is mid-batch) and leaves in a share reply, exactly as
+  a closed batch does today (`manager.py`, point 1).
+- **What is given:** the paths of the current batch not yet handed to the readers, the
+  back half of them, as a `FileBatch`. The `--read-ahead` window (up to 16 files already
+  opened or being read) stays, or is given up through `discard_member()`; keeping it is
+  simpler and loses at most 16 files of balance. The current tar ends early, its `.idx`
+  with it (Part C's rule holds per tar), and the next batch number continues.
+- **When:** only on a `share` that would otherwise be answered empty, and only when what
+  is left is worth a tar of its own (a floor of, say, 1 GiB or a few files' worth of
+  time). Shares come only when ranks are idle and nothing is queued, so splits happen in
+  the tail and nowhere else, and the extra tars are few.
+
+**What it would buy.** The tail shrinks from one batch-time to about one file-time plus
+one share round trip, with no sizing knowledge, and with the defaults kept: VIT's 8-node
+tail would go from ~20 s toward a few seconds, and `bigdir`'s busiest rank toward the mean.
+A single file larger than everything else still ends the walk: a member cannot be split.
+
+**What it would cost.**
+- A tar count that depends on timing, at the end of the walk only.
+- `tar_batch()` iterating a list that `check_share()` may shorten under it. Same thread,
+  between members, so no locking, but the read-ahead generator (`in_flight()`) must stop
+  at the new end.
+- Tests: the big-directory tree with batches of a few large files, every file in exactly
+  one tar and one index, more ranks archiving than without the split; the race test
+  (`test_termination_race.py`) with splitting forced on every share.
+- **walksync gains less.** A copy batch's `--rsyncs` parts all start at once, so a started
+  batch cannot be split. It would need its parts started in stages, and an rsync batch's
+  cost is dominated by the destination's create rate rather than by the tail. walkstat's
+  stat batches are cheap enough not to need it.
+
+**When to reopen it.** If multi-node walktar on campaign becomes routine, or trees of big
+files (where 16 GiB is a few files) are common, and choosing `--batch-size` per run proves
+error-prone. The 12- and 16-node VIT runs (indexes-2, jobs 8145461 and 8145462) measure
+how bad the tail gets with ~1.3–3.6 batches per worker.
+
 ## References
 
 - libcircle source, read 2026-11-07: `libcircle/token.c` (`CIRCLE_workreq_check`,

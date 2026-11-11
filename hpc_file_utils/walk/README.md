@@ -133,8 +133,9 @@ directories are, so one huge directory no longer ties up one rank for hours.
   - **Smaller batches mean more tars**: VIT made 1,334 at 1 GiB against 334 by default. If
     the tars go somewhere that prefers multi-GiB files, that sets the floor.
   - The walk does not know the tree's size when it starts, so this is a choice made per run,
-    not a computed default (indexes-2: a size hint, or splitting the last batch when ranks
-    idle, were the alternatives, left for later).
+    not a computed default. The alternatives were a size hint, or splitting the last batch
+    when ranks idle; the second is written up, not built, in `docs/walk-load-balancing.md`
+    section 8.
 - **Outputs**, in the working directory:
   - `output-r{rank}-b{n}.tar`: one batch, archived by `rank` (its `n`-th). It holds only
     selected files.
