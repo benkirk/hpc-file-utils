@@ -61,7 +61,95 @@ conf_get()
 
 
 #--------------------------------------------------------------
-# pair_load <name> : sets pair, srcdir, destdir, hsm, owner, pair_done (validated)
+# setting <key> [default] : the tunable for ${pair}: its per-pair value, else the
+# global one (host-specific first), else the default
+setting()
+{
+    local v
+    v="$(pair_get "${pair}" "$1")"
+    [[ -n ${v} ]] || v="$(conf_get "$1")"
+    echo "${v:-$2}"
+}
+
+
+#--------------------------------------------------------------
+# copier_load : sets copier, pair_chmod and, for walksync, walksync_opts, walksync_bind,
+# hfu_root (validated). called by pair_load, with ${pair}, ${hsm} set.
+#   copier: dsync|walksync [dsync]   walksync replaces dsync and msrsync (auto) as the
+#                                    bulk copy; the final serial rsync --delete stays
+copier_load()
+{
+    copier="$(setting copier dsync)"
+    pair_chmod="$(pair_get "${pair}" chmod)"
+    walksync_opts="" walksync_bind="" hfu_root=""
+    case "${copier}" in
+        dsync) return 0 ;;
+        walksync) ;;
+        *) echo "ERROR: [${pair}] invalid copier: '${copier}' (dsync|walksync)" >&2; return 1 ;;
+    esac
+
+    # walksync always copies with --chmod=Du+w (read-only sources, parents several ranks
+    # create); a pair may ask for nothing else
+    [[ -z ${pair_chmod} || ${pair_chmod} == "Du+w" ]] \
+        || { echo "ERROR: [${pair}] copier: walksync copies with --chmod=Du+w, which chmod: '${pair_chmod}' contradicts" >&2; return 1; }
+
+    # (for the job script; walksync_bind is also read below, through ${!k})
+    # shellcheck disable=SC2034
+    walksync_opts="$(setting walksync_opts "--rsyncs 8")"
+    # shellcheck disable=SC2034
+    walksync_bind="$(setting walksync_bind "--cpu-bind depth --depth 4")"
+    hfu_root="$(setting hfu_root /glade/u/apps/opt/hpc-file-utils/current-derecho)"
+
+    # both are split on blanks into words, never through a shell: no quotes, no globs
+    local k v
+    for k in walksync_opts walksync_bind; do
+        v="${!k}"
+        [[ ${v} =~ ^[-A-Za-z0-9_.,=:/@+%[:space:]]*$ ]] \
+            || { echo "ERROR: [${pair}] ${k}: '${v}': only letters, digits, blanks and -_.,=:/@+% (split on blanks, no quoting)" >&2; return 1; }
+    done
+    # the stage sets these itself
+    for v in ${walksync_opts}; do
+        case "${v}" in
+            --dirs|--dirs=*|--dest|--dest=*|-n|--dry-run|--summary-prefix|--summary-prefix=*)
+                echo "ERROR: [${pair}] walksync_opts: ${v} is set by the job (src, dest, pair name, dryrun=yes)" >&2; return 1 ;;
+        esac
+    done
+    [[ ${hfu_root} =~ ^/[-A-Za-z0-9_./]+$ ]] \
+        || { echo "ERROR: [${pair}] hfu_root: '${hfu_root}' must be an absolute path" >&2; return 1; }
+}
+
+
+#--------------------------------------------------------------
+# copier_host_check <host> : copier: walksync runs on derecho only - casper's Open MPI
+# launcher (PRRTE) segfaults now and then. call after pair_load.
+copier_host_check()
+{
+    if [[ ${copier} == walksync && $1 == casper ]]; then
+        echo "ERROR: [${pair}] copier: walksync is not supported on casper (its MPI launcher segfaults now and then): run it from derecho" >&2
+        return 1
+    fi
+}
+
+
+#--------------------------------------------------------------
+# msrsync_resolve : prints yes|no, from the 'msrsync' tunable [auto]; call after pair_load.
+#   auto = hsm and chmod pairs, which dsync can't copy - but never after walksync, which
+#   copies those itself
+msrsync_resolve()
+{
+    local m
+    m="$(setting msrsync auto)"
+    case "${m}" in
+        auto) [[ ${copier} != walksync && ( ${hsm} == "yes" || -n ${pair_chmod} ) ]] && echo yes || echo no ;;
+        yes|no) echo "${m}" ;;
+        *) echo "ERROR: [${pair}] invalid msrsync setting '${m}' (auto|yes|no)" >&2; return 1 ;;
+    esac
+}
+
+
+#--------------------------------------------------------------
+# pair_load <name> : sets pair, srcdir, destdir, hsm, owner, pair_done and copier_load's
+# copier, pair_chmod, walksync_opts, walksync_bind, hfu_root (validated)
 pair_load()
 {
     pair="$1"
@@ -121,6 +209,8 @@ pair_load()
         ""|no|false|0) pair_done="no" ;;
         *) echo "ERROR: [${pair}] invalid done: '${pair_done}'" >&2; return 1 ;;
     esac
+
+    copier_load
 }
 
 
@@ -131,13 +221,14 @@ pairs_list()
     local idx=0 name key
     echo "# ${pairs_conf}: $(pair_count) pairs"
     echo "# settings for ${NCAR_HOST:-(unknown host)}:"
-    for key in queue walltime nodes chunk maxconcur batch_files msrsync msrsync_procs chmod; do
+    for key in queue walltime nodes chunk maxconcur copier batch_files msrsync msrsync_procs chmod \
+               walksync_opts walksync_bind hfu_root; do
         echo "#   ${key}: $(conf_get ${key})"
     done
     for name in $(pair_names); do
         pair_load "${name}" || return 1
-        printf "%2d  %-22s hsm=%-3s owner=%s%s\n      %s\n   -> %s\n" \
-               ${idx} "${pair}" "${hsm}" "${owner:-(none)}" "$( [[ ${pair_done} == yes ]] && echo " done")" \
+        printf "%2d  %-22s hsm=%-3s copier=%-8s owner=%s%s\n      %s\n   -> %s\n" \
+               ${idx} "${pair}" "${hsm}" "${copier}" "${owner:-(none)}" "$( [[ ${pair_done} == yes ]] && echo " done")" \
                "${srcdir}" "${destdir}"
         idx=$((idx + 1))
     done

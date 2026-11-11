@@ -50,6 +50,7 @@ for pair in "${requested[@]}"; do
     elif [[ $(stamp_check "${pair}" "${fresh_after_epoch}") == valid ]]; then
         echo "[${pair}] already done (stamps/${pair}.done), not submitting it"
     else
+        copier_host_check "${NCAR_HOST}" || exit 1
         pairs+=("${pair}")
     fi
 done

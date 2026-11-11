@@ -128,6 +128,78 @@ expect_has "rejects a bad section name" "$(in_pairs name.conf 'pair_load "bad!na
 expect_has "rejects an unknown pair" "$(in_pairs pairs.conf pair_load nope)" "no pair [nope]"
 
 #--------------------------------------------------------------
+# copier: dsync|walksync and its keys
+check_bad "an invalid copier"     "invalid copier: 'rclone'"             "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: rclone"
+check_bad "walksync with another chmod" "contradicts"                    "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "chmod: D755"
+check_bad "a quote in walksync_opts" "walksync_opts: "                   "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --exclude 'x*'"
+check_bad "a glob in walksync_bind" "walksync_bind: "                    "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_bind: --cpu-bind *"
+check_bad "--dest in walksync_opts" "--dest is set by the job"           "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --rsyncs 4 --dest /tmp"
+check_bad "--dry-run in walksync_opts" "--dry-run is set by the job"     "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --dry-run"
+check_bad "a relative hfu_root"   "must be an absolute path"             "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "hfu_root: current-derecho"
+# an invalid walksync key on a dsync pair is never read
+printf '%s\n' "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_root: relative" | write_conf ok.conf
+expect_eq "dsync pair: walksync keys ignored" "$(in_pairs ok.conf 'pair_load X && echo "${copier} [${hfu_root}]"')" "dsync []"
+
+write_conf copier.conf <<EOF
+derecho.copier: walksync     # host-specific global
+walksync_bind: --cpu-bind depth --depth 2
+
+[W-plain]
+src:   ${root}/src/w
+dest:  ${root}/dest/w
+
+[W-readonly]
+src:   ${root}/src/r
+dest:  ${root}/dest/r
+copier: walksync     # per pair: on every host
+chmod: Du+w
+walksync_opts: --rsyncs 4 --batch-size 4GiB
+hfu_root: /glade/u/apps/opt/hpc-file-utils/abc1234-derecho
+
+[W-hsm]
+src:   ${root}/src/h
+dest:  ${root}/dest/h
+hsm:   yes
+
+[D-dsync]
+src:   ${root}/src/d
+dest:  ${root}/dest/d
+copier: dsync       # per pair beats the global
+chmod: D755
+msrsync: yes
+EOF
+show='pair_load "$0" && echo "${copier}|${walksync_opts}|${walksync_bind}|${hfu_root}|$(msrsync_resolve)"'
+copier_of() { pairs_conf=copier.conf bash -c '. ./pairs.sh || exit 1; '"${show}" "$1" 2>&1; }
+expect_eq "copier: dsync by default" "$(copier_of W-plain)" "dsync||||no"
+export NCAR_HOST=derecho
+expect_eq "copier: host-specific global, defaults" "$(copier_of W-plain)" \
+          "walksync|--rsyncs 8|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
+expect_eq "copier: per-pair opts and hfu_root; chmod Du+w; no msrsync (auto)" "$(copier_of W-readonly)" \
+          "walksync|--rsyncs 4 --batch-size 4GiB|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/abc1234-derecho|no"
+expect_eq "copier: hsm pair, no msrsync (auto)" "$(copier_of W-hsm)" \
+          "walksync|--rsyncs 8|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
+expect_eq "copier: per-pair dsync beats the global" "$(copier_of D-dsync)" "dsync||||yes"
+expect_has "pairs_list shows the copier" "$(in_pairs copier.conf pairs_list)" "copier=walksync"
+export NCAR_HOST=casper
+expect_eq "copier: derecho.copier does not apply on casper" "$(copier_of W-plain)" "dsync||||no"
+unset NCAR_HOST
+
+# msrsync auto after dsync: hsm and chmod pairs only (A-first is hsm, B-second chmod)
+expect_eq "msrsync auto: hsm dsync pair" "$(in_pairs pairs.conf 'pair_load A-first && msrsync_resolve')" "yes"
+expect_eq "msrsync auto: chmod dsync pair" "$(in_pairs pairs.conf 'pair_load B-second && msrsync_resolve')" "yes"
+expect_eq "msrsync auto: plain dsync pair" "$(in_pairs pairs.conf 'pair_load C-finished && msrsync_resolve')" "no"
+printf '%s\n' "msrsync: sometimes" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf ms.conf
+expect_has "msrsync: an invalid setting" "$(in_pairs ms.conf 'pair_load X && msrsync_resolve')" "invalid msrsync setting 'sometimes'"
+
+# casper refuses walksync (in the job, and at submission below); dsync is fine there
+expect_has "copier_host_check: walksync on casper" \
+    "$(NCAR_HOST=derecho in_pairs copier.conf 'pair_load W-plain && copier_host_check casper')" "not supported on casper"
+expect_eq "copier_host_check: walksync on derecho" \
+    "$(NCAR_HOST=derecho in_pairs copier.conf 'pair_load W-plain && copier_host_check derecho && echo ok')" "ok"
+expect_eq "copier_host_check: dsync on casper" \
+    "$(in_pairs copier.conf 'pair_load D-dsync && copier_host_check casper && echo ok')" "ok"
+
+#--------------------------------------------------------------
 # done stamps
 now=$(date +%s)
 write_stamp() # <pair> <src> <dest> <started>
@@ -159,12 +231,12 @@ in_pairs pairs.conf 'fresh_after="not a date" fresh_after_resolve' >/dev/null \
 #--------------------------------------------------------------
 # submit_sync_array.sh with the stub qsub
 # (run with the PATH bash: its #!/bin/bash is 3.2 on macOS, which has no mapfile)
-submit() # [VAR=value ...] [pairs...] : runs submit_sync_array.sh, sets out, rc, qsubs
+submit() # [VAR=value ...] [pairs...] : runs submit_sync_array.sh (pairs_conf=pairs.conf unless given), sets out, rc, qsubs
 {
     local vars=()
     while [[ $# -gt 0 && $1 == *=* ]]; do vars+=("$1"); shift; done
     rm -f "${QSUB_LOG}"
-    out="$(env "${vars[@]}" pairs_conf=pairs.conf bash ./submit_sync_array.sh "$@" 2>&1)"; rc=$?
+    out="$(env pairs_conf=pairs.conf "${vars[@]}" bash ./submit_sync_array.sh "$@" 2>&1)"; rc=$?
     qsubs="$(cat "${QSUB_LOG}" 2>/dev/null)"
 }
 
@@ -205,6 +277,17 @@ submit NCAR_HOST=casper nodes=2 dryrun=yes B-second
 expect_has "casper: queue" "${qsubs}" "-q casper"
 expect_has "casper: chunk, nodes from the environment" "${qsubs}" "-l select=2:ncpus=16:mpiprocs=16:mem=160G"
 expect_has "dryrun passed on" "${qsubs}" "dryrun=yes"
+
+# copier: walksync - submitted from derecho, refused on casper
+submit NCAR_HOST=derecho pairs_conf=copier.conf W-readonly
+expect_eq "walksync on derecho: exit status" "${rc}" "0"
+expect_has "walksync on derecho: submitted" "${qsubs}" "-N cgd_W-readonly"
+submit NCAR_HOST=casper pairs_conf=copier.conf W-readonly
+expect_eq "walksync on casper: refused" "${rc}" "1"
+expect_has "walksync on casper: says why" "${out}" "not supported on casper"
+expect_eq "walksync on casper: no qsub" "${qsubs}" ""
+submit NCAR_HOST=casper pairs_conf=copier.conf D-dsync
+expect_has "dsync on casper: submitted" "${qsubs}" "-N cgd_D-dsync"
 
 # an invalid pair: error, nothing submitted
 submit nope
