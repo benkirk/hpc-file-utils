@@ -149,6 +149,15 @@ one node however the files are made; and campaign's numbers move with the day's 
   directories (584,851 × 80 KB) K pays: 892 → 405 → 342 s for K = 1, 4, 8, and 285 s
   (2,050 files/s) with `--cpu-bind depth`. The same from Casper (K = 8: 398 s on manyfiles,
   362 on `.Radiosonde`), so the ceiling is the storage's. Sweep "K rsyncs", Part A.
+- **Several nodes creating in one campaign directory stall each other.** 4D's walksync
+  re-copy (`sync/README.md`, "Measured: 4D"): ranks on 4 nodes creating files in one GPFS
+  directory (`cpl/hist`, 741K files) made name lookups there take 2.5–7.3 s (strace), while
+  lookups elsewhere took microseconds; ~214 rsyncs per node sat in `path_openat`, the nodes
+  97% idle, ~170 files/s for the whole job. Each create on another node takes the directory's
+  token away. Large files in many directories, same job: 9.4–11.8 GiB/s. Keep a huge
+  directory's creates on one node, and cut the directory operations per file (rsync
+  `--inplace`: no temporary name and rename). Lustre scratch has its own rules (it also adds a
+  default ACL when an access ACL is set on a directory): measure campaign on campaign.
 - **Writing is cheap next to reading.** Writing the tars to Lustre costs a little against
   GPFS (6.31 → 5.43 GiB/s reading campaign); the write side of a copy is ~8 ms per 1 MiB
   file on Lustre, ~3 per 80 KB file, and 0.5–1.4 ms over rsync's own floor on flash.
@@ -189,7 +198,8 @@ one node however the files are made; and campaign's numbers move with the day's 
    `--stat-threads 16`) give it back; a node that only stats is at its client's ceiling
    (~15–30k entries/s) and threads add nothing; don't add per-entry work on the hot path.
 4. Copies: the destination directory sets the create rate (~1,000–1,250/s per node); many
-   directories or many nodes beat any K; K = 8 is safe everywhere.
+   directories or many nodes beat any K; K = 8 is safe everywhere. But one directory written
+   from several nodes at once is far worse than from one (campaign: seconds per lookup).
 5. Measure in pairs, record the load and the binding, flush scratch, read CPU with the idle
    counts.
 

@@ -227,6 +227,36 @@ the shared install `hfu_root`. It runs on all nodes before the node release:
   60 TiB tree at 4 nodes, well past the walk README's ~5; add `--batch-size` to
   `walksync_opts` only for a tree of a few TiB.
 
+### Measured: 4D-CESM2-LE re-copied (job 8155870, 2026-11-11)
+
+The destination was deleted (drm, 1,014,423 items in 1,048 s) and copied again from scratch
+with `copier: walksync` at 4 nodes × 32 ranks (`--cpu-bind depth --depth 4`, `--rsyncs 8`),
+against dsync's first copy at 4 nodes (job 8085798[2]):
+
+| | dsync (11-05) | walksync (11-11) |
+|---|---|---|
+| bulk copy | 3.42 h | 4.97 h: 1,014,422 entries, 116.04 TiB, 6.64 GiB/s, 6,678 rsync batches, 0 failed |
+| serial `rsync --delete` | 17.3 min | 18.0 min, created / deleted / transferred 0 |
+| sample `cmp` | 200 identical | 200 identical |
+| job | 3.76 h | 5.31 h, stamped |
+
+- **Complete:** the serial pass found nothing to copy, and the index lists 1,011,051
+  non-directories, as on 11-06. Logical sizes: the source is 58.7 TiB in the usage scan, the
+  copy 116.04 TiB, so dsync's 3.42 h was ~9.6 GiB/s written, not the ~4.9 the scan size gives.
+- **Two phases.** 4D is one huge directory: `cpl/hist` holds 741,345 of the 1.01M files
+  (9.77 TiB), its `save` and `toss` 175K more. walksync spreads a big directory over every
+  rank, so 4 nodes created files in one GPFS directory at once: ~214 rsyncs per node blocked in
+  `path_openat`, name lookups there taking 2.5–7.3 s, the nodes 97% idle at 0.8 GiB/s each.
+  That phase took ~2.5 h at ~2.6 GiB/s. The ~103 TiB of large files elsewhere then ran at
+  9.4–11.8 GiB/s per 10 minutes (2.5 GiB/s written per node, the nodes still ~90% idle):
+  dsync's rate or better.
+- **Not the reads:** an uncached 1.8 GiB source file reads at 3.3–4.3 GiB/s from one stream,
+  at 256 KiB, 4 MiB or 16 MiB per read. Decompression did not show as node CPU.
+- **So:** walksync matches dsync on large files and loses on a huge directory, where rsync's
+  lookup + temporary create + rename per file meet the cross-node directory token. Next:
+  `walksync_inplace` (one create per new file), and keeping a huge directory's copy batches
+  on one node (a change to the walk).
+
 ## HSM / COLD_STORAGE (3A)
 
 `COLD_STORAGE*` trees stay on the source fileset. After the final sync,
