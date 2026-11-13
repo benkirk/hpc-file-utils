@@ -154,10 +154,21 @@ one node however the files are made; and campaign's numbers move with the day's 
   directory (`cpl/hist`, 741K files) made name lookups there take 2.5–7.3 s (strace), while
   lookups elsewhere took microseconds; ~214 rsyncs per node sat in `path_openat`, the nodes
   97% idle, ~170 files/s for the whole job. Each create on another node takes the directory's
-  token away. Large files in many directories, same job: 9.4–11.8 GiB/s. Keep a huge
-  directory's creates on one node, and cut the directory operations per file (rsync
-  `--inplace`: no temporary name and rename). Lustre scratch has its own rules (it also adds a
-  default ACL when an access ACL is set on a directory): measure campaign on campaign.
+  token away. Large files in many directories, same job: 9.4–11.8 GiB/s. Cutting the directory
+  operations per file helps most: rsync `--inplace` (no temporary name and rename) copied the
+  same directory ~5–6× faster by time and files (579 files/s, 8.5 GiB/s at 4 nodes), though
+  28–210 rsyncs per node still waited in `path_openat`. Lustre scratch has its own rules (it
+  also adds a default ACL when an access ACL is set on a directory): measure campaign on
+  campaign.
+- **Campaign writes scale with nodes to at least ~86 GiB/s.** walksync copies of large files
+  in many directories, campaign to campaign, into empty destinations with `--inplace`
+  (`sync/README.md`, "Measured: 4B, 4E and 4F"): 4 nodes 12.9 GiB/s (4B, ~195 MB files, ~3.2
+  GiB/s per node), 16 nodes **~86 GiB/s sustained for ~10 h** (4F, 3 PiB of ~23 GB files, ~5.4
+  GiB/s per node), the nodes 85–92% idle throughout. Grafana's csfs1 panel showed ~90–100 GiB/s
+  written plus as much read, about 3× the prior week's peak writes (~35 GiB/s); average write
+  requests 7.4 MiB (near-full 8 MiB blocks), HDD ~12K reads + ~12K writes/s, metadata (SSD)
+  ~20K io/s. The node side was never the limit; the next ceiling is csfs1 itself, and the
+  other users who share it. The DATA pool had 16.2 of 141 PiB free before 4F's 3 PiB.
 - **Writing is cheap next to reading.** Writing the tars to Lustre costs a little against
   GPFS (6.31 → 5.43 GiB/s reading campaign); the write side of a copy is ~8 ms per 1 MiB
   file on Lustre, ~3 per 80 KB file, and 0.5–1.4 ms over rsync's own floor on flash.
@@ -178,6 +189,12 @@ one node however the files are made; and campaign's numbers move with the day's 
   CPU time equals its wall time), so user+sys from GNU `time` reads "less idle" as "less
   work". `cpu-wrap.sh` records it per rank; compare it with the idle counts on the progress
   line.
+- **Check a big copy's rate outside the tool.** A counter that credits work when it finishes
+  lags when the units are large: walksync's progress line said 36.7 GiB/s for 4F while the
+  destination fileset's `df` grew 85.8 GiB/s (5,146 GiB in 60 s), Grafana's csfs1 writes read
+  ~88 and the job nodes' summed HSN `tx_bytes` 88.2. Take `df -B1G` of the destination fileset
+  a minute apart, or the GPFS dashboard (grafana.hpc.ucar.edu, "GPFS Filesystems / Storage
+  systems", row csfs1); its legend's "Last" is a partial interval, so read the curve.
 - **Check the copy with the oracle** (`rsync -naxAX --delete -i --chmod=Du+w SRC/ DEST/`):
   nothing but the destination root's own time, permission and ACL line should remain.
 - **Say what else was running** (`qstat -t -u csgteam`), and stay within the data rules:
@@ -199,7 +216,10 @@ one node however the files are made; and campaign's numbers move with the day's 
    (~15–30k entries/s) and threads add nothing; don't add per-entry work on the hot path.
 4. Copies: the destination directory sets the create rate (~1,000–1,250/s per node); many
    directories or many nodes beat any K; K = 8 is safe everywhere. But one directory written
-   from several nodes at once is far worse than from one (campaign: seconds per lookup).
+   from several nodes at once is far worse than from one (campaign: seconds per lookup);
+   into an empty destination, rsync `--inplace`. Large files: campaign-to-campaign copies
+   gave 3.2–5.4 GiB/s per node up to 16 nodes (~86 GiB/s); before a multi-PiB copy, check the pool's
+   free space and remember the other campaign users at that rate.
 5. Measure in pairs, record the load and the binding, flush scratch, read CPU with the idle
    counts.
 
@@ -208,7 +228,9 @@ one node however the files are made; and campaign's numbers move with the day's 
 - Where campaign's write side or GDEX's read side stops scaling with nodes: 8 nodes gave
   24 GiB/s with the one-batch tail taking 40% of the walk, so the per-node rate is not
   known to have fallen yet; a smaller `--batch-size` at 8 nodes, then 16 nodes, would
-  say (phase 5.5 question 5 is answered to 8 nodes).
+  say (phase 5.5 question 5 is answered to 8 nodes). For large-file copies campaign to
+  campaign it had not fallen at 16 nodes (~86 GiB/s, section 4); where csfs1 stops is
+  untested, a question for a maintenance window rather than production.
 - Why Part B's per-rank stats cost 4–7% on VIT under the one-CPU binding even threaded
   (the stats' CPU on the busy ranks is the hypothesis; with four CPUs per rank the threaded
   stats pay 7% instead). Also: a file's open and close cost ~5 and ~7 ms on a loaded

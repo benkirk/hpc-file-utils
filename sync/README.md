@@ -253,9 +253,57 @@ against dsync's first copy at 4 nodes (job 8085798[2]):
 - **Not the reads:** an uncached 1.8 GiB source file reads at 3.3–4.3 GiB/s from one stream,
   at 256 KiB, 4 MiB or 16 MiB per read. Decompression did not show as node CPU.
 - **So:** walksync matches dsync on large files and loses on a huge directory, where rsync's
-  lookup + temporary create + rename per file meet the cross-node directory token. Next:
-  `walksync_inplace` (one create per new file), and keeping a huge directory's copy batches
-  on one node (a change to the walk).
+  lookup + temporary create + rename per file meet the cross-node directory token.
+- **`--inplace` measured (job 8159473, 2026-11-12):** walksync of `CESM2-LE/cpl` alone into a
+  new, empty campaign directory with `--inplace`, 4 nodes: 916,660 entries, 13.13 TiB in
+  1,582 s (8.5 GiB/s, 579 files/s, ~680 at peak), 1,100 batches, 0 failed; checked with
+  `rsync -rlt -n` (no differences), 741,348 files in `hist` on both sides, 50 sampled files
+  identical. 4D spent ~2.5 h in `cpl` at ~2.6 GiB/s and ~100–170 files/s: **~5–6× by time and
+  files, ~3× by bytes** (4D also copied ~12 TiB elsewhere meanwhile), more than the third fewer
+  directory operations alone predicts. Contention eased but did not go: 28–210 rsyncs per node
+  still in `path_openat`. 4D with `walksync_inplace` would have taken ≈ 3.2 h against dsync's
+  3.76 h. Early readings mislead: ~2× at 7 min (the ramp), ~5× at 18 min, and an earlier
+  small A/B's 14× was its shape (84 batches for 124 workers).
+- **Kept as is:** routing a huge directory's batches to one node. Detecting one is free
+  (scandir's count), but copy batches stay on the rank that made them (the walk's
+  termination argument), and one node into one directory made ~450–520 files/s (rsync) to
+  ~1,250 creates/s (probe), no better than 4 contended nodes with `--inplace` (~580–680).
+  Measure a 1-node `--inplace` copy of the same directory before building it.
+
+### Measured: 4B, 4E and 4F (2026-11-12/13)
+
+All into empty destinations (4B's deleted with drm first: 1,615,528 items in 1,086 s), with
+`copier: walksync`, `--inplace: yes` (auto), `main` and the priority boost:
+
+| | 4B-cmip6-COVID | 4E-ARTMIP | 4F-km-scale |
+|---|---|---|---|
+| job | 8163852 | 8164982 | 8165386, re-pass 8173058 |
+| nodes × walltime | 4 × 12 h | 4 × 24 h | 16 × 24 h |
+| tree | 531,472 entries, 92.88 TiB, ~195 MB per file | 186,395, 18.83 TiB, ~111 MB | 146,342, 2.93 PiB (3,002 TiB), ~23 GB |
+| walksync | 2.05 h, **12.9 GiB/s**, 5,526 batches | 38.4 min, 8.4 GiB/s, 1,226 | 11.56 h, **73.8 GiB/s** (~86 sustained), 29,068 |
+| serial `rsync --delete` | 7.1 min, 0 / 0 / 0 | 93 s, 0 / 0 / 0 | 156 s, 0 / 0 / 0 |
+| sample `cmp` | 200 identical, 14 s | 200 identical, 49 s | 200 identical, **80 min** |
+| job | **2.20 h** (msrsync: 7.78 h) | 42 min | 12.97 h + 1.34 h re-pass, stamped |
+
+- **4B** is read-only (`chmod: Du+w`), which dsync cannot copy: msrsync's one node took 7.78 h,
+  walksync 2.20 h (3.5×). Steady 11–14.5 GiB/s per 10 minutes; nodes ~92% idle at ~3.6–4.3
+  GiB/s each; rsyncs waited in GPFS I/O (`cxiWaitEventWait`), not `path_openat`: no huge
+  directory.
+- **4F** scaled: 16 nodes wrote ~86 GiB/s for ~10 h (~5.4 GiB/s per node, ~85% idle), 6.6×
+  4B's rate from 4× the nodes. The dest fileset's `df` grew 85.8 GiB/s over minutes and
+  86.4 over hours, matching Grafana's csfs1 writes and the nodes' summed HSN transmit; see
+  `docs/GLADE_PERFORMANCE.md` section 4. **walksync's progress line read ~half that early on**
+  (36.7 GiB/s average after 53 min): it credits a batch's bytes when the batch ends, and a file
+  over `--batch-size` is a batch of its own (one node had 32 files open, up to 929 GiB, 8 of
+  20.8 TiB written).
+- **4F's tail:** the walk count sat at 138–143K items for hours and reached 146,342 only near
+  the end, so from ~21:00 to 22:40 most of the ~511 workers were idle. Walksync ended ~1.5 h
+  after the steady-rate estimate.
+- **4F's exit:** one batch failed (a 0-byte, mode-600 `core` file of another user's, deleted
+  during the run), so walksync exited 143 (the rank exited 1 and PALS sent its peers SIGTERM,
+  after the summary). The serial pass found nothing to copy, but a non-zero walksync withholds
+  the stamp; the re-pass (4 nodes) walked 3 PiB unchanged in 11 s and stamped. Its 80 minutes
+  were nearly all the 200-file `cmp` (~3.6 TB, serial).
 
 ## HSM / COLD_STORAGE (3A)
 
