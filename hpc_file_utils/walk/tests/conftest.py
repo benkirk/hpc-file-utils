@@ -388,9 +388,11 @@ def build_golden_tree(root):
 
 
 def _unlock(root):
-    """Make the golden tree's read-only subtree writable again, so pytest can clean it up."""
+    """Make the golden tree's read-only subtree writable again, so pytest can clean it up
+    (if it is still there: walkrm's tests remove it)."""
     for p in [root / "readonly", root / "readonly/sub"]:
-        p.chmod(0o755)
+        if p.exists():
+            p.chmod(0o755)
 
 
 @pytest.fixture(scope="session")

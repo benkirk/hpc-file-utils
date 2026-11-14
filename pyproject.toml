@@ -1,7 +1,7 @@
 [project]
 name = "hpc-file-utils"
 version = "0.1.0"
-description = "MPI tree walkers (walkstat, walktar, walksync, walkfind) and file tools for NCAR HPC storage"
+description = "MPI tree walkers (walkstat, walktar, walksync, walkfind, walkrm) and file tools for NCAR HPC storage"
 requires-python = ">=3.10"
 dependencies = [
     "humanfriendly",
@@ -27,6 +27,7 @@ walkstat = "hpc_file_utils.walk.cli:walkstat"
 walktar = "hpc_file_utils.walk.cli:walktar"
 walksync = "hpc_file_utils.walk.cli:walksync"
 walkfind = "hpc_file_utils.walk.cli:walkfind"
+walkrm = "hpc_file_utils.walk.cli:walkrm"
 
 [tool.setuptools.packages.find]
 include = ["hpc_file_utils*"]

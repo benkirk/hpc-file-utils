@@ -2,11 +2,11 @@
 
 File tools for NCAR HPC storage:
 
-- **`hpc_file_utils/walk/`**: walkstat, walktar, walksync and walkfind, MPI tree walkers (mpi4py)
+- **`hpc_file_utils/walk/`**: walkstat, walktar, walksync, walkfind and walkrm, MPI tree walkers (mpi4py)
   with a dynamically load-balanced manager/worker directory walk. walkstat aggregates usage
   statistics (summaries, per-user lists, spreadsheets); walktar archives a tree into per-rank tar
   files; walksync copies what is new or changed with batched rsync; walkfind lists what matches,
-  like find.
+  like find; walkrm removes trees, with guard rails.
   Origin: forked from [benkirk/mpi4py_task_runner](https://github.com/benkirk/mpi4py_task_runner).
 - **`sync/`**: a PBS job-array framework that copies directory pairs (walkfind HSM preflight → dsync or walksync →
   msrsync → serial `rsync --delete`). It has done stamps, ratcheting resubmission, HSM
@@ -66,7 +66,7 @@ ${HFU_ROOT}/etc/config_env.sh`; the scan scripts already honour `HFU_ROOT`.
 ## Running the walkers
 
 `pip install -e .` (done by `etc/config_env.sh`) installs the console scripts `walkstat`,
-`walktar`, `walksync` and `walkfind`; run them under MPI with at least 2 ranks (rank 0 is the Manager):
+`walktar`, `walksync`, `walkfind` and `walkrm`; run them under MPI with at least 2 ranks (rank 0 is the Manager):
 
 ```bash
 mpiexec -n 96 walkstat --summary-prefix PROJ --dirs /glade/campaign/proj/*/
