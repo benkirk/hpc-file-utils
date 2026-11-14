@@ -87,10 +87,12 @@ def test_walkfind_lists_what_find_prints(walk, golden_tree, tmp_path, case, batc
 
 
 def test_walkfind_on_a_wide_directory_shares_its_batches(walk, wide_tree, tmp_path):
-    r, listed = walkfind(walk, wide_tree.root, tmp_path, "--name", "file-0001*", "--name", "subdir-001*",
+    """Every one of the 20,000 files matches: 4,000 find batches from one directory, so idle
+    ranks take some (110 matches in ~20 batches were all done before any share on a CI runner)."""
+    r, listed = walkfind(walk, wide_tree.root, tmp_path, "--name", "file-*", "--name", "subdir-001*",
                          "--batch-files", "5", "--verbose")
     assert r.ok, r.report()
-    assert set(listed) == find(wide_tree.root, names=["file-0001*", "subdir-001*"])
+    assert set(listed) == find(wide_tree.root, names=["file-*", "subdir-001*"])
     assert r.ints(FIND_RE)[0] == wide_tree.nitems
     (shared,) = r.ints(r"--> Batches: ([\d,]+) received in share replies")
     assert shared > 0, r.report()

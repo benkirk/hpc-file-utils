@@ -100,14 +100,14 @@ def test_a_big_directory_is_unlinked_by_several_ranks(walk, tmp_path):
     root = tmp_path / "allowed"
     big = root / "victim" / "big"
     big.mkdir(parents=True)
-    for i in range(400):
+    for i in range(2000):                  # 400 unlink batches: idle ranks take some, even on a quick runner
         (big / f"f{i:04d}").write_bytes(b"x")
-    r = walkrm(walk, root / "victim", tmp_path / "run", "--batch-files", "10", "--verbose", root=root)
+    r = walkrm(walk, root / "victim", tmp_path / "run", "--batch-files", "5", "--verbose", root=root)
     assert r.ok, r.report()
     assert not (root / "victim").exists() and root.is_dir()
     (shared,) = r.ints(r"--> Batches: ([\d,]+) received in share replies")
     assert shared > 0, r.report()
-    assert r.ints(REMOVED_RE)[:2] == (400, 2)
+    assert r.ints(REMOVED_RE)[:2] == (2000, 2)
 
 
 def _refusals(tree, tmp_path):

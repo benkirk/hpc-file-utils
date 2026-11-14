@@ -419,7 +419,7 @@ destination (in place of the ad hoc `drm` jobs of cgd-walksync).
   - on a private golden tree, symlinks to a file and a directory outside it added: the tree is
     gone, the read-only subtree handled, the outside untouched, the counts find's;
   - `--keep-root`; `--dry-run`, whose list is find's and which changes nothing;
-  - a 400-file directory unlinked by several ranks;
+  - a 2,000-file directory unlinked by several ranks;
   - every refusal, which touches nothing;
   - in-process: a mount is not crossed, a read-only directory not ours is an error, an unlink
     batch is refused in a replaced directory, the rmdir pass.
