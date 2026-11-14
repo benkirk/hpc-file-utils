@@ -204,9 +204,12 @@ the source, the root not counted) must be at least 1, and is what `max_delete`'s
 of.
 
 On casper the job sets `HFU_MPI=conda` before `config_env.sh`, and launches with the env's
-conda-forge Open MPI (`mpiexec --hostfile $PBS_NODEFILE`): the host Open MPI launcher segfaults
-now and then (*Expectations*, below). That needs the install's casper env built with
-`HFU_MPI=conda` (`deploy/README.md`); until it is, a casper job aborts at `config_env.sh`.
+conda-forge Open MPI (`mpiexec -x PATH --hostfile $PBS_NODEFILE <tool's full path>`): the host
+Open MPI launcher segfaults now and then (*Expectations*, below). `-x PATH`: the env is active on
+the first node only, and without it the other nodes' daemons could not find the tool (exit 66).
+That needs the install's casper env built with `HFU_MPI=conda` (`deploy/README.md`); until it
+is, a casper job aborts at `config_env.sh`. Tested through `run_hfu` at 2 casper nodes × 16 from a
+conda-MPI test checkout: 6 of 6 launches ran on 32 ranks (exit 66 on every one before `-x PATH`).
 
 ## Deleting a dest
 

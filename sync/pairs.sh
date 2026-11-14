@@ -178,7 +178,8 @@ run_hfu()
     shift 3
     host="${cluster:-$(hfu_host)}"
     case "${host}" in
-        casper) launch=(mpiexec ${PBS_NODEFILE:+--hostfile "${PBS_NODEFILE}"}) ;;
+        # -x PATH: the env is active on this node only, and Open MPI does not forward PATH
+        casper) launch=(mpiexec -x PATH ${PBS_NODEFILE:+--hostfile "${PBS_NODEFILE}"}) ;;
         *)      launch=(mpiexec --no-transfer) ;;
     esac
     mkdir -p "${dir}" || return 1
@@ -188,7 +189,8 @@ run_hfu()
         [[ ${host} == casper ]] && export HFU_MPI=conda
         # shellcheck source=/dev/null
         source "${hfu_root}/etc/config_env.sh" || { echo "ERROR: cannot activate ${hfu_root}"; exit 1; }
-        echo "${tool}: $(command -v "${tool}"), mpiexec: $(command -v mpiexec)"
+        tool="$(command -v "${tool}")" || { echo "ERROR: no ${tool} in ${hfu_root}"; exit 1; }
+        echo "${tool##*/}: ${tool}, mpiexec: $(command -v mpiexec)"
         "${launch[@]}" "${bind[@]}" "${tool}" "$@"
     )
 }
