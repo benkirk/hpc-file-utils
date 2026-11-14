@@ -61,11 +61,9 @@ def _mpiexec_base():
 
 
 def exit_status_matches(returncode, wanted):
-    """Open MPI passes the ranks' exit status through; Cray PALS SIGTERMs the other
-    ranks once one exits non-zero and reports 143. So exact only under Open MPI."""
-    if wanted == 0 or "--oversubscribe" in _mpiexec_base():
-        return returncode == wanted
-    return returncode != 0
+    """Exact, under every launcher: only rank 0 exits with the status (cli.rank_exit_status()),
+    so Cray PALS no longer SIGTERMs the other ranks and reports 143."""
+    return returncode == wanted
 
 
 def mpiexec(nranks):

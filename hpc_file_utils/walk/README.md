@@ -9,7 +9,7 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 | `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker: the scan, the batch and in-flight scaffolding, `FileBatch`, `RankFile`), `tool.py` (`Tool`: what a tool adds — options, banner, report, exit status, worker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, `count()`, and how two ranks' combine), `report.py` (the balance and per-rank lines), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
 | `stat/` | walkstat: `tool.py`, `worker.py` (StatWorker, `StatBatch`), `report.py` (summary and userlists), `spreadsheet.py` |
 | `tar/` | walktar: `tool.py`, `worker.py` (TarWorker) |
-| `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
+| `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`, `CopyBatch`, the in-flight bytes), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
 
 What these tools measured about GLADE itself (read latency and parallelism, stat costs, the
 directory create ceiling, CPU binding, how to measure) is collected in
@@ -273,8 +273,18 @@ rerun with nothing changed copies nothing: it costs only the walk.
   filters choose which files are copied, a partial copy (the banner says so). Every directory
   is still walked and created. A file that later leaves the selection (it grew past
   `--max-size`, or was modified under `--mtime-older`) keeps its old copy in the destination.
-- **Progress:** `| copied S (R/s now, A/s avg)`. Bytes count when a batch's rsync returns, so
-  the rate is lumpy. **Summary:** new / changed / unchanged / only in the destination, the
+- **Progress:** `| copied S (R/s now, A/s avg)`. A batch's bytes count when its last rsync
+  returns, and meanwhile its big entries (at least 256 MiB) count as rsync writes them
+  (tools-find-rm, step 0): the destination file itself with `--inplace` (or `--append`),
+  otherwise rsync's temp file `.<name>.XXXXXX` beside it, found by one `scandir` of the
+  destination directory (looked for again after 1, 2, 4 ... s, at most every minute, until it
+  appears), each lstat'ed at most once a second and capped at the entry's size. A big entry
+  whose rsync returned counts in full; when the whole batch ends its bytes replace all of that
+  in one step, and a failed batch drops it, so nothing counts twice. "now" never goes below 0.
+  Before, a batch of one 900 GiB file showed nothing for an hour: on 4F (16 nodes, files up to
+  929 GiB) the line said 36.7 GiB/s while the destination's `df` grew at ~86 GiB/s.
+  `--rsync-opts` that put the temp file elsewhere (`-T`/`--temp-dir`, `--partial-dir`,
+  `--delay-updates`) turn this off; the banner says so. **Summary:** new / changed / unchanged / only in the destination, the
   excluded and unselected counts, and the files, bytes, rsync batches and rsync-seconds
   copied. `--verbose`'s per-rank `files` column is what each rank copied.
 - **`--dry-run`:** copies nothing. Each rank lists `N path` (new), `C path` (changed) and
@@ -285,7 +295,12 @@ rerun with nothing changed copies nothing: it costs only the walk.
   rsync copied, from the source lstat the compare took. Unchanged entries are not listed.
   With `--dry-run` it lists what the run would copy.
 - **Exit status:** 1 on any error: a failed stat or scan, or an rsync failure. rsync's exit
-  24 (source files vanished) is counted and reported, but it is not an error.
+  24 (source files vanished) is counted and reported, but it is not an error. Only rank 0
+  exits with it, and last: after a barrier every rank finalizes MPI, the workers exit 0 at
+  once, and rank 0 waits 2 s (`HFU_EXIT_GRACE`) before it exits with the status. When every
+  rank exited 1 at once, PALS SIGTERMed the ranks still finishing and the job showed 143
+  (cgd-walksync, 4F); with only the barrier, rank 0 still beat a worker's shutdown now and
+  then. This holds for every tool, and for an option error (2).
 - **Tested** (`tests/test_walksync.py`, as root and non-root):
   - the oracle `rsync -naxAX --delete -i --chmod=Du+w` lists only directory-time lines on the
     golden tree (read-only subtree with ACLs included), and a rerun copies nothing;

@@ -18,7 +18,7 @@ which a 'share' can hand to idle ranks (see manager.py):
            open copy batch, which carries over between directories, so changed files
            from many small directories make one rsync; it closes at --batch-files names
            or --batch-size bytes.
-  copy     a FileBatch(relpaths, nbytes): --rsyncs K of
+  copy     a CopyBatch(relpaths, nbytes, ...): --rsyncs K of
            rsync -aAX --numeric-ids --chmod=Du+w --files-from=- --from0 [--rsync-opts] SRC/ DEST/
            side by side, each over a K-th of the batch (rsync.py; -A / -X dropped, with a
            warning, if this rsync was built without them). With --files-from rsync does
@@ -41,6 +41,18 @@ is what this run copied, not a listing (walkstat --index is that). With --dry-ru
 index is the one the run would write, recorded at the compare, and the header says
 dry-run=yes.
 
+In-flight bytes (tools-find-rm, step 0): a copy batch's bytes are credited when every
+rsync of it has returned, so a batch of one 900 GiB file used to show nothing for an
+hour, and on 4F (16 nodes) the progress line said 36.7 GiB/s while df said ~86 GiB/s.
+A batch now carries its big entries (st_size >= INFLIGHT_MIN), and while it runs the
+progress line also counts what is already written of each: with --inplace the
+destination file itself, otherwise rsync's temp file .<name>.XXXXXX beside it (found by
+one scandir of the destination directory, then lstat'ed), each capped at its size. A big
+file whose part's rsync returned counts in full; the whole batch's bytes replace all of
+that in one step when the batch ends, and a failed batch drops it: nothing counts twice.
+rsync options that move the temp file elsewhere (-T/--temp-dir, --partial-dir,
+--delay-updates) turn the in-flight count off (rsync.inflight_mode()).
+
 What is left to a final serial rsync -aHAX --delete SRC/ DEST/: deletions, hard links
 (copied here as separate files) and the directories' real modes and times.
 """
@@ -61,6 +73,11 @@ log = logging.getLogger(__name__)
 
 DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'
 
+INFLIGHT_MIN = 256 * 1024 * 1024   # entries at least this big are followed while their rsync runs
+INFLIGHT_CACHE_SECONDS = 1.0       # the in-flight total is re-measured at most this often
+TEMP_LOOK_MAX_SECONDS = 60.0       # a temp file not found yet is looked for again after 1, 2, 4 ... s, up to this
+TEMP_SUFFIX_LEN = 6                # rsync's temp file: .<name>.XXXXXX
+
 
 class CompareBatch(NamedTuple):
     """One source directory's non-directory names still to compare with the destination's."""
@@ -69,11 +86,25 @@ class CompareBatch(NamedTuple):
 
 
 class CopyBatch(NamedTuple):
-    """A closed copy batch with --index: a FileBatch and each entry's source lstat (an
-    IndexStat, or None for one that vanished before its stat), for the records."""
+    """A closed copy batch: its paths and st_size total, as a FileBatch; with --index each
+    entry's source lstat (an IndexStat, or None for one that vanished before its stat), for
+    the records; and its big entries, for the in-flight bytes (the module docstring)."""
     paths  : list   # relative to the source root
     nbytes : int
-    stats  : list
+    stats  : list   # None without --index
+    big    : tuple  # ((index in paths, st_size), ...) of the entries >= INFLIGHT_MIN
+
+
+class InFlight:
+    """A big entry of the copy batch now running: where its bytes land, and what we know."""
+    __slots__ = ('part', 'destdir', 'name', 'size', 'temp', 'done', 'next_look', 'look_wait')
+
+    def __init__(self, part, destdir, name, size):
+        self.part, self.destdir, self.name, self.size = part, destdir, name, size
+        self.temp = None          # rsync's temp file's name, once found
+        self.done = False         # its part's rsync returned (or its temp file was renamed into place)
+        self.next_look = 0.0      # when to look for the temp file again (monotonic)
+        self.look_wait = 1.0
 
 
 class SyncWorker(BaseWorker):
@@ -93,6 +124,16 @@ class SyncWorker(BaseWorker):
         self.dryrun = self.rank_file(DRYRUN_FILE)   # --dry-run's list, a file at its first line
         self.index = self.open_index()
         self.batch_stats = [] if self.index is not None else None   # the open batch's stats (--index)
+        self.init_inflight(o.inflight)
+
+    def init_inflight(self, mode):
+        """The in-flight bytes' state. mode: 'inplace', 'temp' or None (not counted:
+        rsync.inflight_mode())."""
+        self.inflight_mode = mode
+        self.batch_big = []                   # the open batch's big entries: (index in batch, st_size)
+        self.inflight = []                    # InFlight, one per big entry of the batch being copied
+        self.inflight_time = float('-inf')    # when inflight_value was measured (monotonic)
+        self.inflight_value = 0
 
     def open_index(self):
         """--index: this rank's record of what it copied (the module docstring), opened at
@@ -141,15 +182,18 @@ class SyncWorker(BaseWorker):
         else:
             if self.batch_stats is not None:
                 self.batch_stats.append(None if statinfo is None else index_stat(statinfo))
+            if size >= INFLIGHT_MIN:
+                self.batch_big.append((len(self.batch), size))
             self.add_to_batch(rel, size)
 
     def close_batch(self):
-        """BaseWorker's, with --index a CopyBatch: the stats go with the paths."""
-        if self.batch_stats is None:
-            super().close_batch()
-        elif self.batch:
-            self.local_batches.append(CopyBatch(self.batch, self.batch_bytes, self.batch_stats))
-            self.batch, self.batch_bytes, self.batch_stats = [], 0, []
+        """BaseWorker's, as a CopyBatch: the stats (--index) and the big entries go with the paths."""
+        if self.batch:
+            self.local_batches.append(CopyBatch(self.batch, self.batch_bytes, self.batch_stats,
+                                                tuple(self.batch_big)))
+            self.batch, self.batch_bytes, self.batch_big = [], 0, []
+            if self.batch_stats is not None:
+                self.batch_stats = []
 
     def emit(self, lines):
         """--dry-run's lines, into this rank's own list."""
@@ -219,11 +263,11 @@ class SyncWorker(BaseWorker):
             return None
 
     def process_batch(self, batch):
-        """A CompareBatch, or a FileBatch (CopyBatch with --index) to copy, ours or shared."""
+        """A CompareBatch, or a CopyBatch to copy, ours or shared."""
         if isinstance(batch, CompareBatch):
             self.compare_batch(batch.reldir, batch.names)
         else:
-            self.copy_batch(batch.paths, batch.nbytes, getattr(batch, 'stats', None))
+            self.copy_batch(batch.paths, batch.nbytes, batch.stats, batch.big)
 
     def compare_batch(self, reldir, names):
         """lstat a batch of one directory's names on both sides, and queue the ones to copy."""
@@ -283,20 +327,30 @@ class SyncWorker(BaseWorker):
         """One rsync over a part of a copy batch, started (in_flight()'s start)."""
         return Rsync(self.cmd, paths)
 
-    def copy_batch(self, paths, nbytes, stats=None):
+    def copy_batch(self, paths, nbytes, stats=None, big=()):
         """One copy batch of relative paths: --rsyncs rsyncs side by side, each over its
         part of the batch, waited for in turn. While they run we look for a 'share' and
-        send our counts, so a long copy does not keep our queued work from idle ranks.
-        The batch is one unit: it fails if any of its rsyncs does. stats (--index): the
-        paths' source lstats, recorded per part as its rsync returns (record_copied())."""
+        send our counts (with the big entries' in-flight bytes), so a long copy does not
+        keep our queued work from idle ranks. The batch is one unit: it fails if any of
+        its rsyncs does. stats (--index): the paths' source lstats, recorded per part as
+        its rsync returns (record_copied()). big: CopyBatch.big."""
+        try:
+            self.run_copy_batch(paths, nbytes, stats, big)
+        finally:
+            self.clear_inflight()             # credited (or not) by now: never counted twice
+
+    def run_copy_batch(self, paths, nbytes, stats, big):
         c = self.stats.counters
         t0 = time.monotonic()
         parts = split(paths, self.rsyncs)
         stat_parts = split(stats, self.rsyncs) if stats is not None else None   # the same cuts
+        self.start_inflight(paths, parts, big)
         failed = vanished = False
         try:
             for i, (part, rsync) in enumerate(self.in_flight(parts, self.start_rsync, len(parts), Rsync.kill)):
                 rc = rsync.wait(self.tick)
+                if rc in (0, RSYNC_VANISHED):
+                    self.part_done(i)
                 if stat_parts is not None and rc in (0, RSYNC_VANISHED):
                     self.record_copied(part, stat_parts[i], rc == RSYNC_VANISHED)
                 if rc == RSYNC_VANISHED:
@@ -322,6 +376,8 @@ class SyncWorker(BaseWorker):
             c['rsync_failures'] += 1
             return
 
+        # the batch's bytes replace its in-flight bytes in one step (no tick() between)
+        self.clear_inflight()
         self.copied_bytes += nbytes
         self.copied_files += len(paths)
         self.stats.num_files += len(paths)      # each rank's share of the copying (--verbose)
@@ -340,9 +396,97 @@ class SyncWorker(BaseWorker):
                 continue
             index.add(path, s)
 
+    def start_inflight(self, paths, parts, big):
+        """An InFlight for each big entry of the batch about to run, in its part
+        (split()'s consecutive cuts)."""
+        self.inflight = []
+        self.inflight_time = float('-inf')
+        if not big or self.inflight_mode is None:
+            return
+        ends, end = [], 0
+        for part in parts:
+            end += len(part)
+            ends.append(end)
+        join, dirname, basename = os.path.join, os.path.dirname, os.path.basename
+        for i, size in big:
+            part = next(k for k, e in enumerate(ends) if i < e)
+            rel = paths[i]
+            self.inflight.append(InFlight(part, join(self.dest, dirname(rel)), basename(rel), size))
+
+    def part_done(self, part):
+        """A part's rsync returned 0 or 24: its big entries are written, in full."""
+        for f in self.inflight:
+            if f.part == part:
+                f.done = True
+        self.inflight_time = float('-inf')
+
+    def clear_inflight(self):
+        self.inflight = []
+        self.inflight_time = float('-inf')
+        self.inflight_value = 0
+
+    def inflight_bytes(self):
+        """What is written so far of the running batch's big entries (the module
+        docstring), re-measured at most every INFLIGHT_CACHE_SECONDS: a share reply
+        carries our counts too, and must not cost a round of lstats each time."""
+        if not self.inflight:
+            return 0
+        now = time.monotonic()
+        if now - self.inflight_time >= INFLIGHT_CACHE_SECONDS:
+            self.inflight_value = sum(self.written_of(f, now) for f in self.inflight)
+            self.inflight_time = now
+        return self.inflight_value
+
+    def written_of(self, f, now):
+        """Bytes written so far of one big entry, at most its size."""
+        if f.done:
+            return f.size
+        if self.inflight_mode == 'inplace':
+            try:
+                return min(os.lstat(os.path.join(f.destdir, f.name)).st_size, f.size)
+            except OSError:
+                return 0
+        if f.temp is None:
+            if now < f.next_look:
+                return 0
+            f.temp = find_temp(f.destdir, f.name)
+            if f.temp is None:          # not created yet: look again later, less and less often
+                f.next_look = now + f.look_wait
+                f.look_wait = min(2 * f.look_wait, TEMP_LOOK_MAX_SECONDS)
+                return 0
+        try:
+            return min(os.lstat(os.path.join(f.destdir, f.temp)).st_size, f.size)
+        except FileNotFoundError:       # renamed into place: written in full
+            f.done = True
+            return f.size
+        except OSError:
+            return 0
+
     def progress_extra(self):
-        """(bytes, entries, rsync batches) copied so far, for the progress line's copy
-        rate; None with --dry-run, which copies nothing."""
+        """(bytes, entries, rsync batches) copied so far, the bytes with the running
+        batch's in-flight bytes, for the progress line's copy rate; None with --dry-run,
+        which copies nothing."""
         if self.dry_run:
             return None
-        return (self.copied_bytes, self.copied_files, self.nrsync)
+        return (self.copied_bytes + self.inflight_bytes(), self.copied_files, self.nrsync)
+
+
+def find_temp(destdir, name):
+    """The name of rsync's temp file for 'name' in destdir, .<name>.XXXXXX, or None; if
+    several match (one left by a killed run), the most recently modified."""
+    prefix = f'.{name}.'
+    want = len(prefix) + TEMP_SUFFIX_LEN
+    best, best_mtime = None, None
+    try:
+        with os.scandir(destdir) as it:
+            for de in it:
+                if len(de.name) == want and de.name.startswith(prefix):
+                    try:
+                        mtime = de.stat(follow_symlinks=False).st_mtime
+                    except OSError:
+                        continue
+                    if best is None or mtime > best_mtime:
+                        best, best_mtime = de.name, mtime
+    except OSError:
+        return None
+    return best

@@ -41,12 +41,13 @@ def progress_line(items, nbytes, elapsed, now=None):
 def written_status(nbytes, elapsed, delta=None, interval=None, waiting=None, verb='wrote'):
     """' | wrote S (R/s now, A/s avg), batches waiting B', appended to the progress line by
     tools that write (walktar; walksync says 'copied'). 'now' is 'delta' bytes over
-    'interval' seconds, the time since the last line; without them (the final line) only
-    the average."""
-    avg = nbytes / elapsed if elapsed > 0 else 0
+    'interval' seconds, the time since the last line, never below zero (walksync's
+    in-flight bytes are an estimate, and the batch's real total can be less: a file that
+    shrank since its compare); without them (the final line) only the average."""
+    avg = int(nbytes / elapsed) if elapsed > 0 else 0   # whole bytes: format_size prints a float's digits
     if delta is None or interval is None:
         return f' | {verb} {format_size(nbytes)} ({format_size(avg)}/s avg)'
-    now = delta / interval if interval > 0 else 0
+    now = int(max(0, delta / interval)) if interval > 0 else 0
     status = f' | {verb} {format_size(nbytes)} ({format_size(now)}/s now, {format_size(avg)}/s avg)'
     if waiting is not None:
         status += f', batches waiting {format_number(waiting)}'
