@@ -1,4 +1,4 @@
-"""Console scripts: walkstat, walktar and walksync (see [project.scripts] in pyproject.toml).
+"""Console scripts: walkstat, walktar, walksync and walkfind (see [project.scripts] in pyproject.toml).
 
 Rank 0 runs the Manager, every other rank a worker of the requested tool. What differs
 between the tools comes from their Tool (walk/tools.py, common/tool.py).
@@ -202,3 +202,7 @@ def walktar():
 
 def walksync():
     return main('walksync')
+
+
+def walkfind():
+    return main('walkfind')

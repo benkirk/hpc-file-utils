@@ -4,12 +4,13 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 
 | | |
 |---|---|
-| `cli.py` | the `walkstat`, `walktar` and `walksync` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports; everything tool-specific comes from the tool's `Tool` |
+| `cli.py` | the `walkstat`, `walktar`, `walksync` and `walkfind` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports; everything tool-specific comes from the tool's `Tool` |
 | `tools.py` | `TOOLS`, the tools by name |
 | `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker: the scan, the batch and in-flight scaffolding, `FileBatch`, `RankFile`), `tool.py` (`Tool`: what a tool adds — options, banner, report, exit status, worker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, `count()`, and how two ranks' combine), `report.py` (the balance and per-rank lines), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
 | `stat/` | walkstat: `tool.py`, `worker.py` (StatWorker, `StatBatch`), `report.py` (summary and userlists), `spreadsheet.py` |
 | `tar/` | walktar: `tool.py`, `worker.py` (TarWorker) |
 | `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`, `CopyBatch`, the in-flight bytes), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
+| `find/` | walkfind: `tool.py`, `worker.py` (FindWorker, `FindBatch`), `report.py` (the summary, `--output`) |
 
 What these tools measured about GLADE itself (read latency and parallelism, stat costs, the
 directory create ceiling, CPU binding, how to measure) is collected in
@@ -31,6 +32,8 @@ Outputs (in the working directory, written by rank 0):
   by the workers (see [File batches](#file-batches-phase-5)).
 - walksync: `walksync-dryrun-r{rank}.txt` with `--dry-run`, one per worker. No summary or
   userlists unless `--summary-prefix` or `--spreadsheet` is given.
+- walkfind: `walkfind-r{rank}.list`, one per worker, or the one `--output FILE`. No summary or
+  userlists.
 - `--profile`: `profile-r{rank}.prof`, a cProfile of every rank's run (the Manager's loop,
   each worker's walk), for `python -m pstats`.
 - `--index`: walkstat's `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with
@@ -308,6 +311,53 @@ rerun with nothing changed copies nothing: it costs only the walk.
     entries, and `--dry-run` on the 2,000-subdirectory tree;
   - a big directory is copied by several ranks;
   - a failing rsync fails the run.
+
+## walkfind (tools-find-rm, step 1)
+
+```
+mpiexec -n 33 walkfind --dirs ROOT [--name GLOB ...] [--prune-matches] [filters] [--print0] [--output FILE] [--index[=gz]]
+find ROOT -mindepth 1 \( -name GLOB -o ... \) [-prune] [predicates] -print      # the same list
+```
+
+Lists the entries that match, like find, spread over the ranks by the walk. A general tool:
+sync/ runs it as the HSM preflight (`--name 'COLD_STORAGE*' --prune-matches`, in place of
+mpifileutils' `dfind`).
+
+- **Scan** (one directory): one `scandir` (names and `d_type`). Every entry scanned counts as
+  walked. `--name GLOB` (repeatable, the globs OR together; fnmatch, case-sensitive) is tested
+  on the name **before any stat**, so a non-match costs nothing more. Without `--name` every
+  entry matches. A matched directory is lstat'ed here; with `--prune-matches` it is listed
+  and not descended (find's `-name GLOB -prune -print`). Matched non-directories go into
+  **find batches** of `--batch-files`, which a `share` hands to idle ranks, so a huge
+  directory's matches spread over the ranks.
+- **Find batch:** lstat each name, apply the selecting filters (`--type`, the times,
+  `--user`, `--group`, `--min-size`/`--max-size`, ANDed with `--name`), list the ones that
+  pass. `--exclude` prunes before anything, as everywhere. The `--dirs` roots are never
+  tested (`-mindepth 1`). A root that is a symlink to a directory is walked, as every walk tool
+  and `rsync SRC/` do; `dfind` walks only the link, even given `SRC/` (it walked 1 item of
+  3A-CESM-HR's source, now a symlink to its handed-off copy). With `--prune-matches`, a matching directory is pruned even if a
+  selecting filter keeps it off the list.
+- **Lists:** each worker writes `walkfind-r{rank}.list` in the working directory, one path
+  per line as walked, with `printable()`'s escapes (`\n`, `\t`, `\xNN` for control characters
+  and undecodable bytes); `--print0` writes the raw bytes and a NUL instead. A run first
+  removes the working directory's `walkfind-r*.list`, so a rank that matches nothing leaves
+  no stale list. `--output FILE`: rank 0 joins the lists in rank order into `FILE.tmp`,
+  renames it to `FILE` and removes them; `FILE` exists, empty, when nothing matched. The
+  order is the walk's: sort it if it matters.
+- **`--index`** (`--index=gz`): each rank's index of its matches, walkstat's format with
+  `tool=walkfind` (find `-ls`, [Indexes](#indexes-the-sweeps-part-c)).
+- **Progress and summary:** the progress line counts entries walked and the matches' bytes.
+  The summary's first line is the one scripts read:
+  `--> Find: walked N entries below the roots (D directories scanned); matched M (f F, d D, l L), S`,
+  then what was excluded or pruned and what the filters dropped.
+- **Exit status:** 1 on any error (a directory that could not be scanned, an entry that could
+  not be stat'ed), as find: a directory it could not read may hold a match.
+- **Termination:** a find batch creates nothing (manager.py, point 1).
+- **Tested** (`tests/test_walkfind.py`): find as the oracle on the golden tree, with every
+  directory split over batches too: one and two `--name`s, `--prune-matches`, `--name` with
+  `--type`, with `--exclude`, no `--name`, a selecting filter alone (the list, the match count
+  and the walked count); the wide tree with shared batches; `--index` closed under ancestry
+  and equal to the list; an unreadable directory exits 1; the refusals.
 
 ## CPU binding (perf-1, step A)
 

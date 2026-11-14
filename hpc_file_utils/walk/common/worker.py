@@ -33,17 +33,21 @@ class FileBatch(NamedTuple):
 
 
 class RankFile:
-    """A text file one rank writes (walksync's dry-run list): opened at its first write, so
-    a rank that writes nothing leaves no file; closed by the worker's run(), which knows
-    the ones made with BaseWorker.rank_file()."""
+    """A text file one rank writes (walksync's dry-run list, walkfind's list): opened at its
+    first write, so a rank that writes nothing leaves no file; closed by the worker's run(),
+    which knows the ones made with BaseWorker.rank_file(). binary: written as bytes
+    (walkfind --print0), not UTF-8 text."""
 
-    def __init__(self, name):
+    binary = False
+
+    def __init__(self, name, binary=False):
         self.name = name
         self.file = None
+        self.binary = binary
 
     def write(self, text):
         if self.file is None:
-            self.file = open(self.name, 'w', encoding='utf-8')
+            self.file = open(self.name, 'wb') if self.binary else open(self.name, 'w', encoding='utf-8')
         self.file.write(text)
 
     def close(self):
@@ -78,10 +82,10 @@ class BaseWorker(MPIClass):
     def rank_info(self):
         return MPIClass.rank_info(self)._replace(wait_time=self.wait_time, max_local_dirs=self.max_local_dirs)
 
-    def rank_file(self, pattern):
+    def rank_file(self, pattern, binary=False):
         """A RankFile named pattern.format(rank) (e.g. 'walksync-dryrun-r{:03d}.txt'), in the
         working directory, closed by run()."""
-        f = RankFile(pattern.format(self.rank))
+        f = RankFile(pattern.format(self.rank), binary)
         self.files.append(f)
         return f
 

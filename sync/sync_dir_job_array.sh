@@ -21,7 +21,7 @@
 # ratchet each pair to completion.
 #
 # stages:
-#   1. HSM preflight: dfind COLD_STORAGE* -> cold_storage.<pair>.list
+#   1. HSM preflight: walkfind COLD_STORAGE* -> cold_storage.<pair>.list
 #                     (abort if found and pair is not 'hsm: yes')
 #   2. dsync          (skipped for hsm pairs - dsync cannot exclude), or
 #      walksync       (copier: walksync - any pair, COLD_STORAGE* excluded), on all nodes
@@ -180,11 +180,9 @@ msrsync=$(pwd)/msrsync
 [[ -f ${msrsync} ]] || { echo "${msrsync}: no such file!";   exit 1; }
 [[ -x ${msrsync} ]] || { echo "${msrsync}: not executable?"; exit 1; }
 
-if [[ ${copier} == walksync ]]; then
-    [[ -f ${hfu_root}/etc/config_env.sh ]] || { echo "ERROR: hfu_root ${hfu_root}: no etc/config_env.sh"; exit 1; }
-fi
+# every pair: walkfind (the HSM preflight) comes from the shared install
+[[ -f ${hfu_root}/etc/config_env.sh ]] || { echo "ERROR: hfu_root ${hfu_root}: no etc/config_env.sh"; exit 1; }
 
-which dfind >/dev/null 2>&1 || { echo "Cannot locate dfind!!"; exit 1; }
 which dsync >/dev/null 2>&1 || { echo "Cannot locate dsync!!"; exit 1; }
 
 # ranks & ranks/node from the PBS select statement (one nodefile line per mpiproc)
@@ -202,25 +200,14 @@ ppn=$((nranks / nnodes))
 which mpibind >/dev/null 2>&1 || { echo "Cannot locate mpibind!!"; exit 1; }
 echo "${cluster}: ${nnodes} nodes, ${nranks} MPI ranks (${ppn}/node)"
 
-# copier: walksync - from the shared install (hfu_root), on every node of the job (the select
-# line's mpiprocs ranks per node), in its own directory walksync.<suffix>/ (summary, userlists,
-# per-rank indexes of what it copied, or the dry-run lists). In a subshell, config_env.sh loads
-# the install's modules (etc/modules-derecho) and activates its env; dfind and dsync keep the
-# job's mpifileutils. /usr/bin/rsync: the env's conda-forge rsync has no ACLs.
+# copier: walksync - from the shared install, on every node of the job, in its own directory
+# walksync.<suffix>/ (summary, userlists, per-rank indexes of what it copied, or the dry-run
+# lists). /usr/bin/rsync: the env's conda-forge rsync has no ACLs.
 run_walksync() # [--dry-run]
 {
-    local ws_bind ws_opts
-    read -r -a ws_bind <<< "${walksync_bind}"
+    local ws_opts
     mapfile -t ws_opts < <(walksync_args "${walksync_use_inplace:-no}")
-    mkdir -p "walksync.${suffix}" || return 1
-    (
-        cd "walksync.${suffix}" || exit 1
-        export NCAR_HOST="${NCAR_HOST:-${cluster}}"
-        # shellcheck source=/dev/null
-        source "${hfu_root}/etc/config_env.sh" || { echo "ERROR: cannot activate ${hfu_root}"; exit 1; }
-        echo "walksync: $(command -v walksync), mpiexec: $(command -v mpiexec)"
-        mpiexec --no-transfer "${ws_bind[@]}" \
-            walksync \
+    run_hfu "${walksync_bind}" walksync "walksync.${suffix}" \
             --rsync /usr/bin/rsync \
             --exclude "${hsm_pattern}" \
             --verbose --progress 60 \
@@ -228,8 +215,8 @@ run_walksync() # [--dry-run]
             --summary-prefix "${pair}" \
             --index=gz \
             "$@" \
-            --dirs "${srcdir}" --dest "${destdir}"
-    ) 1> "walksync.out.${suffix}" 2> "walksync.err.${suffix}"
+            --dirs "${srcdir}" --dest "${destdir}" \
+        1> "walksync.out.${suffix}" 2> "walksync.err.${suffix}"
 }
 
 # walksync's summary lines, for the job log
@@ -252,45 +239,47 @@ if [[ -n ${rsync_chmod} ]]; then
 fi
 
 
-# HSM preflight: find any COLD_STORAGE* entries (stat only, no recalls).
-# dfind prints absolute realpaths, mixed with '[timestamp] ...' progress lines and
-# mpibind notes on stdout; keep the paths and map the realpath prefix back to ${srcdir}.
-# LC_ALL=C and grep -a: names with non-UTF-8 bytes must not make grep drop matches.
+# HSM preflight: find any COLD_STORAGE* entries (lstat only, no recalls), with walkfind: it
+# lists them as walked (${srcdir}/...), one escaped line each, into its own --output file,
+# and does not descend into a match. LC_ALL=C: names with non-UTF-8 bytes sort as bytes.
 cs_list="cold_storage.${pair}.list"
-echo -n "...running dfind ${srcdir} -name '${hsm_pattern}' at $(date)... "
+echo -n "...running walkfind ${srcdir} --name '${hsm_pattern}' --prune-matches at $(date)... "
 sstart=$(date +%s)
-mpibind \
-        "$(which dfind)" \
-        --quiet \
-        "${srcdir}/" \
-        --name "${hsm_pattern}" --print \
-    2> dfind.err.${suffix} \
-    | tee dfind.out.${suffix} \
-    | LC_ALL=C grep -a '^/' \
-    | LC_ALL=C awk -v r="${src_real}/" -v s="${srcdir}/" 'index($0, r) == 1 { $0 = s substr($0, length(r) + 1) } { print }' \
-    | LC_ALL=C sort > "${cs_list}.tmp"
-rcs=("${PIPESTATUS[@]}")
-# mpibind can exit 0 even when the launcher crashes, so also require dfind's final
-# summary line - an empty list from a dfind that never ran must not pass the guard.
-# (pipeline: 0 mpibind/dfind, 1 tee, 2 grep - 1 just means no paths, 3 awk, 4 sort/write)
-walked="$(LC_ALL=C grep -aoE 'Walked [0-9]+ items in [0-9.]+ seconds' dfind.out.${suffix} | tail -n 1 | awk '{print $2}')"
-if [[ ${rcs[0]} -ne 0 || ${rcs[1]} -ne 0 || ${rcs[2]} -gt 1 || ${rcs[3]} -ne 0 || ${rcs[4]} -ne 0 || -z ${walked} ]]; then
-    echo "ERROR: dfind failed (pipeline status: ${rcs[*]}), see dfind.{out,err}.${suffix}"
+rm -f "${cs_list}.found"
+run_hfu "${hfu_bind}" walkfind "walkfind.${suffix}" \
+        --progress 60 --name "${hsm_pattern}" --prune-matches \
+        --output "$(pwd)/${cs_list}.found" \
+        --dirs "${srcdir}" \
+    1> "walkfind.out.${suffix}" 2> "walkfind.err.${suffix}"
+rc=$?
+LC_ALL=C sort "${cs_list}.found" > "${cs_list}.tmp" 2>/dev/null
+rc_sort=$?
+# fail closed: walkfind exits 1 on any error (a directory it could not read may hold a
+# match), and its summary line must be there - an empty list from a walkfind that never
+# ran (the launcher died, the env would not activate) must not pass the guard. The list
+# must also hold exactly the entries the summary says matched.
+found_line="$(LC_ALL=C grep -aE '^--> Find: walked [0-9,]+ entries' "walkfind.out.${suffix}" | tail -n 1)"
+walked="$(awk '{ gsub(/,/, "", $4); print $4 }' <<< "${found_line}")"
+matched="$(sed -nE 's/.*; matched ([0-9,]+).*/\1/p' <<< "${found_line}" | tr -d ,)"
+if [[ ${rc} -ne 0 || ${rc_sort} -ne 0 || -z ${walked} || -z ${matched} ]]; then
+    echo "ERROR: walkfind failed (exit status ${rc}, sort ${rc_sort}), see walkfind.{out,err}.${suffix}"
     exit 1
 fi
-mv -f "${cs_list}.tmp" "${cs_list}" || exit 1
+mv -f "${cs_list}.tmp" "${cs_list}" && rm -f "${cs_list}.found" || exit 1
 report_elapsed ${sstart}
 
 # an empty (or vanished, e.g. unlinked fileset) source would make rsync --delete empty dest
-[[ ${walked} -ge 2 ]] \
-    || { echo "ERROR: ${srcdir} is empty (dfind walked ${walked} item), refusing to sync"; exit 1; }
+[[ ${walked} -ge 1 ]] \
+    || { echo "ERROR: ${srcdir} is empty (walkfind walked ${walked} entries below it), refusing to sync"; exit 1; }
 
 ncs=$(wc -l < "${cs_list}" | tr -d ' ')
-# fail closed: also count any non-progress dfind line naming the pattern, parsed or not
-nraw=$(LC_ALL=C grep -av '^\[' dfind.out.${suffix} | LC_ALL=C grep -ac -- "${hsm_pattern%\*}")
-echo "   walked ${walked} items, found ${ncs} '${hsm_pattern}' entries (${nraw} raw dfind lines), see ${cs_list}"
+echo "   walked ${walked} entries, found ${ncs} '${hsm_pattern}' entries (walkfind matched ${matched}), see ${cs_list}"
+if [[ ${ncs} -ne ${matched} ]]; then
+    echo "ERROR: ${cs_list} holds ${ncs} entries, walkfind matched ${matched}: refusing to go on"
+    exit 1
+fi
 
-if [[ ( ${ncs} -gt 0 || ${nraw} -gt 0 ) && ${hsm} != "yes" ]]; then
+if [[ ${ncs} -gt 0 && ${hsm} != "yes" ]]; then
     echo "ERROR: ${srcdir} contains '${hsm_pattern}' but [${pair}] is not 'hsm: yes'!!"
     echo "       refusing to dsync (would recall from tape). Inspect ${cs_list}"
     exit 1
@@ -443,7 +432,7 @@ fi
 # clean up with a serial pass, including the delete flag (which is not supported in msrsync).
 # the exclude also protects the dest COLD_STORAGE* -> src symlinks from --delete.
 # --max-delete caps the damage if src is wrong or mostly empty: rsync stops deleting and
-# exits 25 (no stamp). max_delete: N, or N% of the source items dfind walked [1%, >= 1000].
+# exits 25 (no stamp). max_delete: N, or N% of the source entries walkfind walked [1%, >= 1000].
 max_delete="$(setting max_delete 1%)"
 if [[ ${max_delete} == *% ]]; then
     max_delete=$(( walked * ${max_delete%\%} / 100 ))

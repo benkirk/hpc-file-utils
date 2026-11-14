@@ -73,20 +73,54 @@ setting()
 
 
 #--------------------------------------------------------------
-# copier_load : sets copier, pair_chmod and, for walksync, walksync_opts, walksync_bind,
-# hfu_root (validated). called by pair_load, with ${pair}, ${hsm} set.
+# hfu_host : derecho or casper, the host whose shared install and MPI launch the job uses
+# (from ${NCAR_HOST}; derecho when unset)
+hfu_host()
+{
+    case "${NCAR_HOST:-}" in
+        casper) echo casper ;;
+        *)      echo derecho ;;
+    esac
+}
+
+
+#--------------------------------------------------------------
+# hfu_load : sets hfu_root and hfu_bind (validated), for every pair: the HSM preflight runs
+# walkfind from the shared install whatever the copier. called by copier_load.
+#   hfu_root: the hpc-file-utils install [/glade/u/apps/opt/hpc-file-utils/current-<host>]
+#   hfu_bind: mpiexec CPU binding for walkfind (and the dest preflight and delete)
+#             [derecho: --cpu-bind depth --depth 4; casper: none]
+hfu_load()
+{
+    local host default_bind
+    host="$(hfu_host)"
+    [[ ${host} == derecho ]] && default_bind="--cpu-bind depth --depth 4" || default_bind=""
+    hfu_root="$(setting hfu_root "/glade/u/apps/opt/hpc-file-utils/current-${host}")"
+    hfu_bind="$(setting hfu_bind "${default_bind}")"
+    [[ ${hfu_root} =~ ^/[-A-Za-z0-9_./]+$ ]] \
+        || { echo "ERROR: [${pair}] hfu_root: '${hfu_root}' must be an absolute path" >&2; return 1; }
+    # split on blanks into words, never through a shell: no quotes, no globs
+    [[ ${hfu_bind} =~ ^[-A-Za-z0-9_.,=:/@+%[:space:]]*$ ]] \
+        || { echo "ERROR: [${pair}] hfu_bind: '${hfu_bind}': only letters, digits, blanks and -_.,=:/@+% (split on blanks, no quoting)" >&2; return 1; }
+}
+
+
+#--------------------------------------------------------------
+# copier_load : sets copier, pair_chmod, hfu_root and hfu_bind (hfu_load) and, for walksync,
+# walksync_opts, walksync_bind (validated). called by pair_load, with ${pair}, ${hsm} set.
 #   copier: dsync|walksync [dsync]   walksync replaces dsync and msrsync (auto) as the
 #                                    bulk copy; the final serial rsync --delete stays
 copier_load()
 {
     copier="$(setting copier dsync)"
     pair_chmod="$(pair_get "${pair}" chmod)"
-    walksync_opts="" walksync_bind="" hfu_root="" walksync_inplace=""
+    walksync_opts="" walksync_bind="" hfu_root="" hfu_bind="" walksync_inplace=""
     case "${copier}" in
-        dsync) return 0 ;;
-        walksync) ;;
+        dsync|walksync) ;;
         *) echo "ERROR: [${pair}] invalid copier: '${copier}' (dsync|walksync)" >&2; return 1 ;;
     esac
+    hfu_load || return 1
+    [[ ${copier} == walksync ]] || return 0
 
     # walksync always copies with --chmod=Du+w (read-only sources, parents several ranks
     # create); a pair may ask for nothing else
@@ -98,7 +132,6 @@ copier_load()
     walksync_opts="$(setting walksync_opts "--rsyncs 8")"
     # shellcheck disable=SC2034
     walksync_bind="$(setting walksync_bind "--cpu-bind depth --depth 4")"
-    hfu_root="$(setting hfu_root /glade/u/apps/opt/hpc-file-utils/current-derecho)"
 
     # both are split on blanks into words, never through a shell: no quotes, no globs
     local k v
@@ -117,8 +150,6 @@ copier_load()
                 echo "ERROR: [${pair}] walksync_opts: give --rsync-opts=<option> as one word" >&2; return 1 ;;
         esac
     done
-    [[ ${hfu_root} =~ ^/[-A-Za-z0-9_./]+$ ]] \
-        || { echo "ERROR: [${pair}] hfu_root: '${hfu_root}' must be an absolute path" >&2; return 1; }
 
     # walksync_inplace: auto|yes|no [auto]: rsync --inplace for walksync's copies (no temp
     # file and rename per file); auto = only when dest is empty at job start, so every file
@@ -128,6 +159,38 @@ copier_load()
         auto|yes|no) ;;
         *) echo "ERROR: [${pair}] invalid walksync_inplace: '${walksync_inplace}' (auto|yes|no)" >&2; return 1 ;;
     esac
+}
+
+
+#--------------------------------------------------------------
+# run_hfu <bind> <tool> <dir> [args...] : a tool of the shared install (hfu_root) on every
+# rank of the PBS job (the select line's mpiprocs per node), in its own directory <dir>/
+# (made here); call after pair_load. ${cluster} (derecho|casper) picks the launcher, else
+# hfu_host. In a subshell, config_env.sh loads the install's modules (etc/modules-<host>)
+# and activates its env, so the job's own modules (the sync job's mpifileutils, for dsync)
+# are untouched. <bind>: CPU binding words (hfu_bind or walksync_bind), split on blanks.
+# derecho launches with PALS's mpiexec; casper with the env's conda-forge Open MPI
+# (HFU_MPI=conda): the host Open MPI launcher segfaults now and then.
+run_hfu()
+{
+    local bind launch host tool=$2 dir=$3
+    read -r -a bind <<< "$1"
+    shift 3
+    host="${cluster:-$(hfu_host)}"
+    case "${host}" in
+        casper) launch=(mpiexec ${PBS_NODEFILE:+--hostfile "${PBS_NODEFILE}"}) ;;
+        *)      launch=(mpiexec --no-transfer) ;;
+    esac
+    mkdir -p "${dir}" || return 1
+    (
+        cd "${dir}" || exit 1
+        export NCAR_HOST="${NCAR_HOST:-${host}}"
+        [[ ${host} == casper ]] && export HFU_MPI=conda
+        # shellcheck source=/dev/null
+        source "${hfu_root}/etc/config_env.sh" || { echo "ERROR: cannot activate ${hfu_root}"; exit 1; }
+        echo "${tool}: $(command -v "${tool}"), mpiexec: $(command -v mpiexec)"
+        "${launch[@]}" "${bind[@]}" "${tool}" "$@"
+    )
 }
 
 
@@ -189,7 +252,7 @@ msrsync_resolve()
 
 #--------------------------------------------------------------
 # pair_load <name> : sets pair, srcdir, destdir, hsm, owner, pair_done and copier_load's
-# copier, pair_chmod, walksync_opts, walksync_bind, hfu_root (validated)
+# copier, pair_chmod, walksync_opts, walksync_bind, hfu_root, hfu_bind (validated)
 pair_load()
 {
     pair="$1"
@@ -262,7 +325,7 @@ pairs_list()
     echo "# ${pairs_conf}: $(pair_count) pairs"
     echo "# settings for ${NCAR_HOST:-(unknown host)}:"
     for key in queue walltime nodes chunk maxconcur copier batch_files msrsync msrsync_procs chmod \
-               walksync_opts walksync_bind hfu_root; do
+               walksync_opts walksync_bind hfu_root hfu_bind; do
         echo "#   ${key}: $(conf_get ${key})"
     done
     for name in $(pair_names); do

@@ -4,9 +4,10 @@ Large cross-fileset copies on `/glade/campaign` for CGD (Nov 2026 derecho downti
 modeled on `../p_migration`. Each pair in `pairs.conf` is synchronized by one PBS job,
 `sync_dir_job_array.sh`:
 
-1. **HSM preflight** - `dfind` for `COLD_STORAGE*` → `cold_storage.<pair>.list`.
-   Aborts if any are found and the pair is not `hsm: yes`: HSM stubs are never read, so no tape recalls.
-   Also aborts if the source is empty (an `rsync --delete` would empty dest).
+1. **HSM preflight** - `walkfind --name 'COLD_STORAGE*' --prune-matches` (from the shared install
+   `hfu_root`, on every node) → `cold_storage.<pair>.list`. Aborts if any are found and the pair is
+   not `hsm: yes`: HSM stubs are never read, so no tape recalls. Also aborts if the source is empty
+   (an `rsync --delete` would empty dest), and fails closed (see *The walkfind preflight*).
 2. **dsync** (mpifileutils 0.12) bulk copy across all nodes. **Skipped for `hsm: yes` pairs** -
    dsync has no `--exclude`. Or, with `copier: walksync`, **walksync** across all nodes, for any
    pair (see *walksync as the copier*).
@@ -30,7 +31,7 @@ Copies run as `${USER}`; ownership is fixed at the very end by root.
 queue:     main
 walltime:  12:00:00
 nodes:     4
-chunk:     ncpus=128:mpiprocs=32:mem=235G    # per-node PBS resources; dfind/dsync run 'mpiprocs' ranks/node
+chunk:     ncpus=128:mpiprocs=32:mem=235G    # per-node PBS resources; walkfind/dsync run 'mpiprocs' ranks/node
 maxconcur: 4
 
 fresh_after: 2026-11-03 08:00                # optional: older done stamps don't count
@@ -57,12 +58,13 @@ Tunables, per pair or global:
 | `msrsync` | `auto` | `auto` = hsm and chmod pairs only, `yes`, `no` |
 | `chmod` | - | rsync `--chmod` for every pass, e.g. `Du+w` for a read-only source: dsync copies modes as they are and can't fill the read-only dirs it creates, so chmod pairs skip dsync |
 | `msrsync_procs` | `nproc` | on the node left after the release |
-| `max_delete` | `1%` | rsync `--max-delete`: N, or N% of the source items (at least 1000) |
+| `max_delete` | `1%` | rsync `--max-delete`: N, or N% of the source entries walkfind walked (at least 1000) |
 | `verify_sample` | 200 | files compared with the source before stamping (0 = off) |
 | `copier` | `dsync` | `dsync` or `walksync` (derecho only): the bulk copy, see *walksync as the copier* |
 | `walksync_opts` | `--rsyncs 8` | more walksync options, split on blanks (no quotes or globs) |
 | `walksync_bind` | `--cpu-bind depth --depth 4` | walksync's `mpiexec` CPU binding |
-| `hfu_root` | `/glade/u/apps/opt/hpc-file-utils/current-derecho` | the install walksync runs from |
+| `hfu_root` | `/glade/u/apps/opt/hpc-file-utils/current-<host>` | the install walkfind (every pair) and walksync run from |
+| `hfu_bind` | derecho `--cpu-bind depth --depth 4`, casper none | walkfind's `mpiexec` CPU binding |
 | `walksync_inplace` | `auto` | rsync `--inplace` for walksync's copies: `auto` = only into a dest empty at job start, `yes`, `no` |
 
 Safety checks on every pair: src and dest absolute and normalized, different, not nested
@@ -98,7 +100,7 @@ make archive_logs                          # move logs into logs/<timestamp>/ (r
 
 Logs: the job log (`cgd_migration.o<jobid>.<index>` for an array member, `cgd_<pair>.o<jobid>`
 otherwise) has per-stage timings and exit status; each stage writes
-`{dfind,dsync,walksync,msrsync,rsync}.{out,err}.<pair>.<jobid>.<timestamp>`. walksync also writes
+`{walkfind,dsync,walksync,msrsync,rsync}.{out,err}.<pair>.<jobid>.<timestamp>`. walksync also writes
 a directory `walksync.<pair>.<jobid>.<timestamp>/`: its summary and userlists, and each rank's
 gzipped index of what it copied (`make clean` keeps it, `make archive_logs` moves it).
 
@@ -150,8 +152,8 @@ behind - remove it by hand.
   `Completed sync` in `dsync.out`, no `ERROR:` lines there, and nothing but known launcher noise
   in `dsync.err` - otherwise no stamp. rsync's size+mtime check is not a content check, hence
   the byte-for-byte sample before stamping.
-- **mpibind can exit 0 when the MPI launcher crashed.** The job therefore requires dfind's final
-  `Walked ... seconds` summary and dsync's `Completed sync`, and aborts otherwise.
+- **mpibind can exit 0 when the MPI launcher crashed.** The job therefore requires walkfind's
+  `--> Find: walked` summary and dsync's `Completed sync`, and aborts otherwise.
 - **Casper: Open MPI's launcher (PRRTE 3.0.11a1) segfaults for some multi-node allocations**,
   depending on the node set, before any rank starts. Such jobs abort at the preflight; derecho
   (cray-mpich) is not affected.
@@ -164,8 +166,8 @@ behind - remove it by hand.
   under-reports; it is only meaningful for an almost-complete dest.
 - **Copies are written uncompressed.** GPFS-compressed sources expand on copy (1.65x for 3D,
   1.07x for 3C): check destination quotas, see Compression below.
-- **Non-UTF-8 file names** occur in these trees; the preflight parses dfind's output byte-wise
-  (`LC_ALL=C grep -a`) and also counts raw lines naming `COLD_STORAGE`, failing closed.
+- **Non-UTF-8 file names** occur in these trees; walkfind's list shows their bytes as `\xNN`
+  (and newlines in names as `\n`), one line per entry, sorted with `LC_ALL=C`.
 - **`make clean` / `make archive_logs` refuse while `cgd_` jobs exist** on the cluster you run
   them on (a running job reads its own logs); `clean` keeps the `.xz` indexes.
 - **Hard links:** dsync copies every name of a hard-linked file separately (mpifileutils keeps
@@ -175,6 +177,34 @@ behind - remove it by hand.
 
 The patched `msrsync` is `../p_migration/msrsync.BSK` (skip vs. fail on non-UTF-8 names) plus
 `MSRSYNC_PRUNE` pruning (directories and files) in `crawl()`.
+
+## The walkfind preflight
+
+Every pair's first stage, whatever the copier, runs walkfind (`../hpc_file_utils/walk/README.md`,
+"walkfind") from the shared install, on every rank of the job:
+
+```
+( cd walkfind.<suffix> && source ${hfu_root}/etc/config_env.sh &&
+  mpiexec --no-transfer ${hfu_bind} walkfind --progress 60 --name 'COLD_STORAGE*' --prune-matches \
+      --output $PWD/../cold_storage.<pair>.list.found --dirs <src> ) > walkfind.out.<suffix> 2> walkfind.err.<suffix>
+LC_ALL=C sort cold_storage.<pair>.list.found > cold_storage.<pair>.list
+```
+
+walkfind tests each name before any stat and stats only the matches, so the walk is one
+`scandir` per directory; a matching directory is listed and not descended. It replaced
+`dfind`, whose output mixed progress lines and mpibind notes with the paths (realpaths, mapped
+back to `src` with awk); walkfind writes its list to its own file, paths as walked.
+
+It **fails closed**: the job aborts unless walkfind exits 0 (it exits 1 on any error, as find
+does: a directory it could not read may hold a match), its `--> Find: walked N entries ...;
+matched M` line is in `walkfind.out`, and the list holds exactly M lines. `walked` (entries below
+the source, the root not counted) must be at least 1, and is what `max_delete`'s percentage is
+of.
+
+On casper the job sets `HFU_MPI=conda` before `config_env.sh`, and launches with the env's
+conda-forge Open MPI (`mpiexec --hostfile $PBS_NODEFILE`): the host Open MPI launcher segfaults
+now and then (*Expectations*, below). That needs the install's casper env built with
+`HFU_MPI=conda` (`deploy/README.md`); until it is, a casper job aborts at `config_env.sh`.
 
 ## walksync as the copier
 
@@ -193,11 +223,11 @@ the shared install `hfu_root`. It runs on all nodes before the node release:
   source's r-x mode, then cannot fill it), nor exclude `COLD_STORAGE*`; msrsync, the fallback
   for both, is one node. walksync copies with `--chmod=Du+w` and `--exclude` on every node, and
   never touches an unchanged file, so a rerun costs only the walk.
-- **The rest of the pipeline is unchanged:** the dfind preflight, the serial
+- **The rest of the pipeline is unchanged:** the walkfind preflight, the serial
   `rsync -axAHX --delete`, the index, the sample `cmp` and the stamp. The serial pass deletes,
   re-links hard links (walksync copies each name separately), and sets each directory's real
   mode and times, except on chmod pairs, which keep `Du+w` as before.
-- **Environment:** the job's `module --force purge` and mpifileutils stay (dfind needs them);
+- **Environment:** the job's `module --force purge` and mpifileutils stay (dsync needs them);
   `config_env.sh` loads the install's `etc/modules-derecho` and activates its env in a
   subshell. `/usr/bin/rsync` has the ACLs and xattrs the env's conda-forge rsync lacks.
 - **Exit status:** a non-zero walksync exit (a failed stat, scan or rsync batch) keeps the pass
@@ -323,7 +353,7 @@ make link
 ```
 
 Resources are per submission (`nodes=`, `chunk=`, `maxconcur=` in the environment); all pieces of
-one array share them, and an hsm piece releases all but one node after its dfind guard.
+one array share them, and an hsm piece releases all but one node after its walkfind guard.
 
 - COLD_STORAGE* locations: live `find` (authoritative, seconds for CESM-HR).
 - sizes & tree shape: `cs-usage query collections -P /collections/...` (scan DB, paths relative to
@@ -337,7 +367,7 @@ one array share them, and an hsm piece releases all but one node after its dfind
   its average file size: a few thousand huge files would otherwise be one batch, all of it
   recopied after a walltime kill.
 - the final whole-tree pass catches loose files, small subtrees, and anything newer than the scan;
-  every split dsync pair still runs the dfind guard.
+  every split dsync pair still runs the walkfind guard.
 
 What to expect (3A, Oct 2026: casper, 4 nodes x 8 cores per piece, 8 pieces at a time):
 - ~50-60 GiB/s aggregate while dsync pieces dominate; ~1.1 PiB in ~9 h.

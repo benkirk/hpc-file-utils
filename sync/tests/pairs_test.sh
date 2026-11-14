@@ -136,9 +136,18 @@ check_bad "a glob in walksync_bind" "walksync_bind: "                    "src: $
 check_bad "--dest in walksync_opts" "--dest is set by the job"           "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --rsyncs 4 --dest /tmp"
 check_bad "--dry-run in walksync_opts" "--dry-run is set by the job"     "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --dry-run"
 check_bad "a relative hfu_root"   "must be an absolute path"             "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "hfu_root: current-derecho"
-# an invalid walksync key on a dsync pair is never read
-printf '%s\n' "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_root: relative" | write_conf ok.conf
-expect_eq "dsync pair: walksync keys ignored" "$(in_pairs ok.conf 'pair_load X && echo "${copier} [${hfu_root}]"')" "dsync []"
+# hfu_root and hfu_bind are read for every pair (walkfind runs the HSM preflight); walksync's keys only for walksync
+check_bad "dsync: a relative hfu_root" "must be an absolute path"       "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_root: relative"
+check_bad "dsync: a glob in hfu_bind" "hfu_bind: "                      "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_bind: --cpu-bind *"
+printf '%s\n' "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" "walksync_bind: --cpu-bind *" | write_conf ok.conf
+expect_eq "dsync pair: walksync keys ignored, hfu keys defaulted" \
+          "$(in_pairs ok.conf 'pair_load X && echo "${copier} [${walksync_bind}] [${hfu_root}] [${hfu_bind}]"')" \
+          "dsync [] [/glade/u/apps/opt/hpc-file-utils/current-derecho] [--cpu-bind depth --depth 4]"
+expect_eq "casper: its own install, no binding" \
+          "$(NCAR_HOST=casper in_pairs ok.conf 'pair_load X && echo "[${hfu_root}] [${hfu_bind}]"')" \
+          "[/glade/u/apps/opt/hpc-file-utils/current-casper] []"
+printf '%s\n' "casper.hfu_bind: --bind-to core" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf bind.conf
+expect_eq "a host-specific hfu_bind" "$(NCAR_HOST=casper in_pairs bind.conf 'pair_load X && echo "[${hfu_bind}]"')" "[--bind-to core]"
 
 write_conf copier.conf <<EOF
 derecho.copier: walksync     # host-specific global
@@ -170,7 +179,7 @@ msrsync: yes
 EOF
 show='pair_load "$0" && echo "${copier}|${walksync_opts}|${walksync_bind}|${hfu_root}|$(msrsync_resolve)"'
 copier_of() { pairs_conf=copier.conf bash -c '. ./pairs.sh || exit 1; '"${show}" "$1" 2>&1; }
-expect_eq "copier: dsync by default" "$(copier_of W-plain)" "dsync||||no"
+expect_eq "copier: dsync by default" "$(copier_of W-plain)" "dsync|||/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
 export NCAR_HOST=derecho
 expect_eq "copier: host-specific global, defaults" "$(copier_of W-plain)" \
           "walksync|--rsyncs 8|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
@@ -178,10 +187,10 @@ expect_eq "copier: per-pair opts and hfu_root; chmod Du+w; no msrsync (auto)" "$
           "walksync|--rsyncs 4 --batch-size 4GiB|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/abc1234-derecho|no"
 expect_eq "copier: hsm pair, no msrsync (auto)" "$(copier_of W-hsm)" \
           "walksync|--rsyncs 8|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
-expect_eq "copier: per-pair dsync beats the global" "$(copier_of D-dsync)" "dsync||||yes"
+expect_eq "copier: per-pair dsync beats the global" "$(copier_of D-dsync)" "dsync|||/glade/u/apps/opt/hpc-file-utils/current-derecho|yes"
 expect_has "pairs_list shows the copier" "$(in_pairs copier.conf pairs_list)" "copier=walksync"
 export NCAR_HOST=casper
-expect_eq "copier: derecho.copier does not apply on casper" "$(copier_of W-plain)" "dsync||||no"
+expect_eq "copier: derecho.copier does not apply on casper" "$(copier_of W-plain)" "dsync|||/glade/u/apps/opt/hpc-file-utils/current-casper|no"
 unset NCAR_HOST
 
 # walksync_inplace: auto|yes|no, and --inplace merged into walksync's --rsync-opts
