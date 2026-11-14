@@ -116,6 +116,16 @@ one node however the files are made; and campaign's numbers move with the day's 
   1.9–3.1 ms per file for a single process. The directory is the serialization point; the
   bytes are not. Sweep "K rsyncs". A login-node probe had seen the same shape (26.5 s into
   one directory against 14.1 into 32, Part A).
+- **One scratch directory takes ~6,000 unlinks per second, whichever tool.** A mock of 4D's
+  `cpl` on derecho scratch (741,000 × 4 KiB files in `hist/`, 917,204 entries in all), 2 nodes
+  × 32 (tools-find-rm, step 2): `drm` 154 s (5,940 items/s), walkrm 144 s (137.7 s walk, 0.1 s
+  for the 204 directories). walkrm scanned all 917K names in 12 s and spread the 741 unlink
+  batches over the ranks (730 moved by shares). Both then ran at the directory's unlink rate,
+  so the gain is small. drm's ~17-minute stall in 4D's real delete (`cpl/hist` on campaign
+  GPFS, 1,048 s for ~1M items) did not happen on scratch; a campaign comparison is still open.
+- **A tree's names cost a scandir each, not a stat each.** walkfind `--name 'COLD_STORAGE*'`
+  stats only its matches: 240,921 entries of CESM-HR on campaign in 4 s after dfind's 57 s,
+  though dfind's walk had just warmed the metadata cache (tools-find-rm, step 1).
 - **The production scans load campaign's metadata.** With csgteam's `scan_dirs` array (8
   subjobs of 1 × 128) running, the same `.Radiosonde` copy took 912 s against 367 s in the
   morning. Only pairs from one job compare; note `qstat -t -u csgteam | grep -c " R "` with
@@ -192,7 +202,10 @@ one node however the files are made; and campaign's numbers move with the day's 
 - **Check a big copy's rate outside the tool.** A counter that credits work when it finishes
   lags when the units are large: walksync's progress line said 36.7 GiB/s for 4F while the
   destination fileset's `df` grew 85.8 GiB/s (5,146 GiB in 60 s), Grafana's csfs1 writes read
-  ~88 and the job nodes' summed HSN `tx_bytes` 88.2. Take `df -B1G` of the destination fileset
+  ~88 and the job nodes' summed HSN `tx_bytes` 88.2. Since tools-find-rm (step 0) walksync
+  counts its big files while rsync writes them: on an 842 GiB mock (8 × 100 GiB) it tracked
+  `du -sb` of the destination at 0.96–1.00 (temp files) and 0.91–1.00 (`--inplace`) after the
+  first minute. walktar still credits a member when it is done. Take `df -B1G` of the destination fileset
   a minute apart, or the GPFS dashboard (grafana.hpc.ucar.edu, "GPFS Filesystems / Storage
   systems", row csfs1); its legend's "Last" is a partial interval, so read the curve.
 - **Check the copy with the oracle** (`rsync -naxAX --delete -i --chmod=Du+w SRC/ DEST/`):

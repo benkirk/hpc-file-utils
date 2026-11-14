@@ -69,3 +69,6 @@ def test_written_status():
     assert written_status(100 * MiB, 10, 40 * MiB, 2, 3) == \
         " | wrote 100 MiB (20 MiB/s now, 10 MiB/s avg), batches waiting 3"
     assert written_status(0, 0, 0, 0, 0) == " | wrote 0 bytes (0 bytes/s now, 0 bytes/s avg), batches waiting 0"
+    # walksync's in-flight bytes are an estimate: a batch can end below it, but "now" never goes negative
+    assert written_status(90 * MiB, 10, -10 * MiB, 2, 0, "copied") == \
+        " | copied 90 MiB (0 bytes/s now, 9 MiB/s avg), batches waiting 0"

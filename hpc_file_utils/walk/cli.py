@@ -1,4 +1,4 @@
-"""Console scripts: walkstat, walktar and walksync (see [project.scripts] in pyproject.toml).
+"""Console scripts: walkstat, walktar, walksync, walkfind and walkrm (see [project.scripts] in pyproject.toml).
 
 Rank 0 runs the Manager, every other rank a worker of the requested tool. What differs
 between the tools comes from their Tool (walk/tools.py, common/tool.py).
@@ -7,6 +7,7 @@ between the tools comes from their Tool (walk/tools.py, common/tool.py).
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 
 from hpc_file_utils.walk.common import log as walk_log
@@ -72,7 +73,7 @@ def main(app, argv=None):
     if exit_status is None:
         return 0
     if exit_status:
-        return exit_status
+        return rank_exit_status(comm, rank, exit_status)
 
     if size < 2:
         if rank == 0:
@@ -103,13 +104,41 @@ def main(app, argv=None):
 
     walk_log.setup(rank, walker.options.verbose)   # now that every rank has the options
     run_walker(walker, rank)
+    tool.finish(walker)          # collective if the tool makes it so (walkrm's rmdir pass)
 
     stats = walker.collect()     # collective; the combined stats on rank 0 only
     if rank == 0:
         report(walker, stats, tool)
 
     # exit-status policy: collect() summed the error counts on every rank
-    return tool.exit_status(walker.total_errors, walker.options)
+    return rank_exit_status(comm, rank, tool.exit_status(walker.total_errors, walker.options))
+
+
+# rank 0 waits this long, after every rank finalized MPI, before it exits with a non-zero status
+EXIT_GRACE_SECONDS = float(os.environ.get('HFU_EXIT_GRACE', 2))
+
+
+def rank_exit_status(comm, rank, status):
+    """What this rank returns: 'status' on rank 0, 0 on the others.
+
+    Every rank knows the status, but Cray PALS SIGTERMs every rank still running once one
+    exits non-zero, and then reports 143 for the job, not the status (cgd-walksync, 4F:
+    every rank exited 1 at once). So only rank 0 exits with it, and last: after a Barrier
+    every rank finalizes MPI; the workers leave at once (os._exit, their output flushed and
+    their files closed by now), and rank 0 waits EXIT_GRACE_SECONDS before it returns. A
+    Barrier alone was not enough on derecho: rank 0 exited 2 while a worker was still in its
+    shutdown, which PALS killed (143). With status 0 nothing is killed: a plain return."""
+    comm.Barrier()
+    if not status:
+        return 0
+    from mpi4py import MPI
+    sys.stdout.flush()
+    sys.stderr.flush()
+    MPI.Finalize()
+    if rank != 0:
+        os._exit(0)
+    time.sleep(EXIT_GRACE_SECONDS)
+    return status
 
 
 def cpus_per_rank(comm):
@@ -174,3 +203,11 @@ def walktar():
 
 def walksync():
     return main('walksync')
+
+
+def walkfind():
+    return main('walkfind')
+
+
+def walkrm():
+    return main('walkrm')

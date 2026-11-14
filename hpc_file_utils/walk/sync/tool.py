@@ -5,7 +5,7 @@ import shlex
 
 from hpc_file_utils.walk.common.index import add_index_argument
 from hpc_file_utils.walk.common.tool import Tool
-from hpc_file_utils.walk.sync.rsync import RSYNC_OPTS, choose_rsync, rsync_base_opts
+from hpc_file_utils.walk.sync.rsync import RSYNC_OPTS, choose_rsync, inflight_mode, rsync_base_opts
 
 
 class SyncTool(Tool):
@@ -36,6 +36,7 @@ class SyncTool(Tool):
             args.rsync_opts = shlex.split(args.rsync_opts)
         except ValueError as e:
             parser.error(f'--rsync-opts: {e}')
+        args.inflight = inflight_mode(args.rsync_opts)
         rsync, acls, xattrs, args.rsync_note = choose_rsync(args.rsync)
         if rsync is None:
             parser.error(f"--rsync: no such program: {args.rsync or 'rsync'}")
@@ -59,6 +60,9 @@ class SyncTool(Tool):
             lines.append(f'rsync: {args.rsync_note}')
         for missing in args.rsync_missing:
             lines.append(f'WARNING: {args.rsync} was built without {missing}: they are not copied')
+        if args.inflight is None and not args.dry_run:
+            lines.append('Progress: the copy rate counts finished batches only (--rsync-opts puts the temp files '
+                         'elsewhere, so big files are not followed while rsync writes them)')
         lines += super().banner(args)
         if args.filters is not None and args.filters.selects:
             lines.append('    a partial copy: only the files the filters select (every directory is created)')

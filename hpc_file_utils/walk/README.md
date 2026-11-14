@@ -4,12 +4,14 @@ Forked from https://github.com/benkirk/mpi4py_task_runner
 
 | | |
 |---|---|
-| `cli.py` | the `walkstat`, `walktar` and `walksync` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports; everything tool-specific comes from the tool's `Tool` |
+| `cli.py` | the `walkstat`, `walktar`, `walksync`, `walkfind` and `walkrm` console scripts: options on rank 0, Manager on rank 0, a tool's worker on the others, then the collectives and the reports; everything tool-specific comes from the tool's `Tool` |
 | `tools.py` | `TOOLS`, the tools by name |
 | `common/` | the walk itself, shared by every tool: `manager.py` (its docstring is the protocol and the termination rule), `worker.py` (BaseWorker: the scan, the batch and in-flight scaffolding, `FileBatch`, `RankFile`), `tool.py` (`Tool`: what a tool adds — options, banner, report, exit status, worker), `protocol.py` (tags, the progress payload), `mpiclass.py` (the end-of-walk collectives), `stats.py` (what a rank accumulates, `count()`, and how two ranks' combine), `report.py` (the balance and per-rank lines), `heaps.py`, `progress.py`, `formatting.py`, `options.py`, `filters.py` |
 | `stat/` | walkstat: `tool.py`, `worker.py` (StatWorker, `StatBatch`), `report.py` (summary and userlists), `spreadsheet.py` |
 | `tar/` | walktar: `tool.py`, `worker.py` (TarWorker) |
-| `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
+| `sync/` | walksync: `tool.py`, `worker.py` (SyncWorker, `CompareBatch`, `CopyBatch`, the in-flight bytes), `compare.py` (the copy decision, pure), `rsync.py` (which rsync, its command, one rsync as a process), `report.py` |
+| `find/` | walkfind: `tool.py`, `worker.py` (FindWorker, `FindBatch`), `report.py` (the summary, `--output`) |
+| `rm/` | walkrm: `tool.py` (the guard rails, the rmdir pass in `finish()`), `worker.py` (RmWorker, `RmBatch`), `report.py` |
 
 What these tools measured about GLADE itself (read latency and parallelism, stat costs, the
 directory create ceiling, CPU binding, how to measure) is collected in
@@ -18,7 +20,9 @@ sources.
 
 Only `manager.py`, `worker.py`, `mpiclass.py` and `cli.py` touch MPI, and they import mpi4py when
 called rather than when imported, so the rest unit-tests without it. A fourth tool is one
-`<tool>/tool.py` and one `<tool>/worker.py`, added to `TOOLS`.
+`<tool>/tool.py` and one `<tool>/worker.py`, added to `TOOLS`. A tool that needs a collective phase
+after the walk (walkrm's rmdir pass) does it in `Tool.finish()`, on every rank before the
+end-of-walk collectives.
 
 Outputs (in the working directory, written by rank 0):
 - `summary-<prefix>` (`summary-output` without `--summary-prefix`), also echoed to stdout. The
@@ -31,6 +35,9 @@ Outputs (in the working directory, written by rank 0):
   by the workers (see [File batches](#file-batches-phase-5)).
 - walksync: `walksync-dryrun-r{rank}.txt` with `--dry-run`, one per worker. No summary or
   userlists unless `--summary-prefix` or `--spreadsheet` is given.
+- walkfind: `walkfind-r{rank}.list`, one per worker, or the one `--output FILE`. No summary or
+  userlists.
+- walkrm: `walkrm-dryrun-r{rank}.txt` with `--dry-run`, one per worker. No summary or userlists.
 - `--profile`: `profile-r{rank}.prof`, a cProfile of every rank's run (the Manager's loop,
   each worker's walk), for `python -m pstats`.
 - `--index`: walkstat's `index-r{rank}.tsv` (`index-<prefix>-r{rank}.tsv` with
@@ -273,8 +280,18 @@ rerun with nothing changed copies nothing: it costs only the walk.
   filters choose which files are copied, a partial copy (the banner says so). Every directory
   is still walked and created. A file that later leaves the selection (it grew past
   `--max-size`, or was modified under `--mtime-older`) keeps its old copy in the destination.
-- **Progress:** `| copied S (R/s now, A/s avg)`. Bytes count when a batch's rsync returns, so
-  the rate is lumpy. **Summary:** new / changed / unchanged / only in the destination, the
+- **Progress:** `| copied S (R/s now, A/s avg)`. A batch's bytes count when its last rsync
+  returns, and meanwhile its big entries (at least 256 MiB) count as rsync writes them
+  (tools-find-rm, step 0): the destination file itself with `--inplace` (or `--append`),
+  otherwise rsync's temp file `.<name>.XXXXXX` beside it, found by one `scandir` of the
+  destination directory (looked for again after 1, 2, 4 ... s, at most every minute, until it
+  appears), each lstat'ed at most once a second and capped at the entry's size. A big entry
+  whose rsync returned counts in full; when the whole batch ends its bytes replace all of that
+  in one step, and a failed batch drops it, so nothing counts twice. "now" never goes below 0.
+  Before, a batch of one 900 GiB file showed nothing for an hour: on 4F (16 nodes, files up to
+  929 GiB) the line said 36.7 GiB/s while the destination's `df` grew at ~86 GiB/s.
+  `--rsync-opts` that put the temp file elsewhere (`-T`/`--temp-dir`, `--partial-dir`,
+  `--delay-updates`) turn this off; the banner says so. **Summary:** new / changed / unchanged / only in the destination, the
   excluded and unselected counts, and the files, bytes, rsync batches and rsync-seconds
   copied. `--verbose`'s per-rank `files` column is what each rank copied.
 - **`--dry-run`:** copies nothing. Each rank lists `N path` (new), `C path` (changed) and
@@ -285,7 +302,12 @@ rerun with nothing changed copies nothing: it costs only the walk.
   rsync copied, from the source lstat the compare took. Unchanged entries are not listed.
   With `--dry-run` it lists what the run would copy.
 - **Exit status:** 1 on any error: a failed stat or scan, or an rsync failure. rsync's exit
-  24 (source files vanished) is counted and reported, but it is not an error.
+  24 (source files vanished) is counted and reported, but it is not an error. Only rank 0
+  exits with it, and last: after a barrier every rank finalizes MPI, the workers exit 0 at
+  once, and rank 0 waits 2 s (`HFU_EXIT_GRACE`) before it exits with the status. When every
+  rank exited 1 at once, PALS SIGTERMed the ranks still finishing and the job showed 143
+  (cgd-walksync, 4F); with only the barrier, rank 0 still beat a worker's shutdown now and
+  then. This holds for every tool, and for an option error (2).
 - **Tested** (`tests/test_walksync.py`, as root and non-root):
   - the oracle `rsync -naxAX --delete -i --chmod=Du+w` lists only directory-time lines on the
     golden tree (read-only subtree with ACLs included), and a rerun copies nothing;
@@ -293,6 +315,114 @@ rerun with nothing changed copies nothing: it costs only the walk.
     entries, and `--dry-run` on the 2,000-subdirectory tree;
   - a big directory is copied by several ranks;
   - a failing rsync fails the run.
+
+## walkfind (tools-find-rm, step 1)
+
+```
+mpiexec -n 33 walkfind --dirs ROOT [--name GLOB ...] [--prune-matches] [filters] [--print0] [--output FILE] [--index[=gz]]
+find ROOT -mindepth 1 \( -name GLOB -o ... \) [-prune] [predicates] -print      # the same list
+```
+
+Lists the entries that match, like find, spread over the ranks by the walk. A general tool:
+sync/ runs it as the HSM preflight (`--name 'COLD_STORAGE*' --prune-matches`, in place of
+mpifileutils' `dfind`).
+
+- **Scan** (one directory): one `scandir` (names and `d_type`). Every entry scanned counts as
+  walked. `--name GLOB` (repeatable, the globs OR together; fnmatch, case-sensitive) is tested
+  on the name **before any stat**, so a non-match costs nothing more. Without `--name` every
+  entry matches. A matched directory is lstat'ed here; with `--prune-matches` it is listed
+  and not descended (find's `-name GLOB -prune -print`). Matched non-directories go into
+  **find batches** of `--batch-files`, which a `share` hands to idle ranks, so a huge
+  directory's matches spread over the ranks.
+- **Find batch:** lstat each name, apply the selecting filters (`--type`, the times,
+  `--user`, `--group`, `--min-size`/`--max-size`, ANDed with `--name`), list the ones that
+  pass. `--exclude` prunes before anything, as everywhere. The `--dirs` roots are never
+  tested (`-mindepth 1`). A root that is a symlink to a directory is walked, as every walk tool
+  and `rsync SRC/` do; `dfind` walks only the link, even given `SRC/` (it walked 1 item of
+  3A-CESM-HR's source, now a symlink to its handed-off copy). With `--prune-matches`, a matching directory is pruned even if a
+  selecting filter keeps it off the list.
+- **Lists:** each worker writes `walkfind-r{rank}.list` in the working directory, one path
+  per line as walked, with `printable()`'s escapes (`\n`, `\t`, `\xNN` for control characters
+  and undecodable bytes); `--print0` writes the raw bytes and a NUL instead. A run first
+  removes the working directory's `walkfind-r*.list`, so a rank that matches nothing leaves
+  no stale list. `--output FILE`: rank 0 joins the lists in rank order into `FILE.tmp`,
+  renames it to `FILE` and removes them; `FILE` exists, empty, when nothing matched. The
+  order is the walk's: sort it if it matters.
+- **`--index`** (`--index=gz`): each rank's index of its matches, walkstat's format with
+  `tool=walkfind` (find `-ls`, [Indexes](#indexes-the-sweeps-part-c)).
+- **Progress and summary:** the progress line counts entries walked and the matches' bytes.
+  The summary's first line is the one scripts read:
+  `--> Find: walked N entries below the roots (D directories scanned); matched M (f F, d D, l L), S`,
+  then what was excluded or pruned and what the filters dropped.
+- **Exit status:** 1 on any error (a directory that could not be scanned, an entry that could
+  not be stat'ed), as find: a directory it could not read may hold a match.
+- **Termination:** a find batch creates nothing (manager.py, point 1).
+- **Tested** (`tests/test_walkfind.py`): find as the oracle on the golden tree, with every
+  directory split over batches too: one and two `--name`s, `--prune-matches`, `--name` with
+  `--type`, with `--exclude`, no `--name`, a selecting filter alone (the list, the match count
+  and the walked count); the wide tree with shared batches; `--index` closed under ancestry
+  and equal to the list; an unreadable directory exits 1; the refusals.
+
+## walkrm (tools-find-rm, step 2)
+
+```
+mpiexec -n 64 walkrm --allowed-root ROOT --dirs TARGET [TARGET ...] [--keep-root] [--dry-run]
+```
+
+Removes whole trees in parallel. A general tool: sync/'s `make delete_dest` runs it on a pair's
+destination (in place of the ad hoc `drm` jobs of cgd-walksync).
+
+- **Guard rails**, all checked on rank 0 before any rank touches anything; each refusal exits
+  non-zero:
+  - `--allowed-root` is required and repeatable; `/` is refused;
+  - every target must be strictly below an allowed root after resolving symlinks (a root
+    itself is refused);
+  - a target that is itself a symlink, `/`, a target given twice or one inside another are
+    refused;
+  - filters (`--exclude` and the selecting ones) are refused: walkrm removes everything.
+
+  The walk uses the targets' real paths, and each target's `st_dev` is the one it stays on.
+- **Walk** (one directory): open it with `O_NOFOLLOW` (a directory swapped for a symlink since
+  its parent's scan is refused, not followed), check its `st_dev`, then one `scandir` of the
+  open directory. Each subdirectory is lstat'ed:
+  - one on another `st_dev` (a mount) is an error and left alone, never crossed;
+  - one without u+rwx is given it first (`chmod`) if it is ours, otherwise it is an error and
+    left (the read-only trees cgd-walksync made, `drm.pbs`'s `find -perm` pass, built in);
+  - the others are walked.
+
+  Files, links and specials go into **unlink batches** of `--batch-files`. A `share` hands
+  them to idle ranks, so a 741K-entry directory's unlinks spread over every rank. A batch
+  reopens its directory, checks that it is the one scanned (`st_dev`, `st_ino`), and
+  `unlink(name, dir_fd)`s each name: a symlink is removed, never followed.
+- **rmdir pass**, after the walk has ended (`Tool.finish()`, every rank): every unlink is done
+  by then. Depth by depth, deepest first, each rank `rmdir`s the directories it scanned at
+  that depth, then a barrier. A directory's children are deeper, so they are gone (or failed,
+  which leaves it non-empty: an error) before its turn. No messages are needed, and the walk's
+  termination argument is untouched: an unlink batch creates nothing. `--keep-root` skips the
+  targets themselves. Then rank 0 checks each target: gone, or empty with `--keep-root`.
+- **`--dry-run`:** nothing is removed or chmod'ed. Each rank lists every path it would remove
+  (directories included; the targets too unless `--keep-root`) in `walkrm-dryrun-r{rank}.txt`,
+  and the summary counts them.
+- **Summary:** `--> Removed F files, links and specials and D directories (C made u+rwx first);
+  walk W s, directories R s`, then what vanished, what was on another filesystem, and the
+  errors.
+- **Exit status:** 1 on any error: something was left.
+- **Measured** (derecho scratch, 2 nodes × 32): a mock of 4D's `cpl` with 741,000 files in one
+  directory (917,204 entries) went in 144 s (137.7 s walk, 0.1 s rmdir pass) against `drm`'s
+  154 s on its twin. The 917K names were scanned in 12 s and the 741 unlink batches spread
+  over the ranks, then both tools ran at the directory's ~6,000 unlinks/s
+  ([GLADE_PERFORMANCE](../../docs/GLADE_PERFORMANCE.md), section 3).
+- **Not guarded:** a directory higher up the path swapped for a symlink between a scan and the
+  open of a directory below it. Only the last component is opened with `O_NOFOLLOW`; GNU
+  `rm -r` closes this with a chain of `openat`s.
+- **Tested** (`tests/test_walkrm.py`):
+  - on a private golden tree, symlinks to a file and a directory outside it added: the tree is
+    gone, the read-only subtree handled, the outside untouched, the counts find's;
+  - `--keep-root`; `--dry-run`, whose list is find's and which changes nothing;
+  - a 2,000-file directory unlinked by several ranks;
+  - every refusal, which touches nothing;
+  - in-process: a mount is not crossed, a read-only directory not ours is an error, an unlink
+    batch is refused in a replaced directory, the rmdir pass.
 
 ## CPU binding (perf-1, step A)
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hpc_file_utils.walk.sync.rsync import rsync_command, split
+from hpc_file_utils.walk.sync.rsync import inflight_mode, rsync_command, split
 
 
 @pytest.mark.parametrize("n, k, sizes", [
@@ -22,3 +22,12 @@ def test_rsync_command_is_walksyncs():
                         rsync_opts=["--inplace"], dirs=["/src/tree/"], dest="/dest/tree")
     assert rsync_command(o) == ["/usr/bin/rsync", "-aAX", "--numeric-ids", "--chmod=Du+w", "--files-from=-",
                                 "--from0", "--inplace", "/src/tree/", "/dest/tree/"]
+
+
+@pytest.mark.parametrize("opts, mode", [
+    ([], "temp"), (["-v", "--partial"], "temp"), (["--inplace"], "inplace"), (["--append-verify"], "inplace"),
+    (["--temp-dir=/tmp"], None), (["--temp-dir", "/tmp"], None), (["-T", "/tmp"], None), (["-vT", "/tmp"], None),
+    (["--partial-dir=.p"], None), (["--delay-updates"], None), (["--inplace", "--delay-updates"], None),
+])
+def test_inflight_mode_knows_where_rsync_writes(opts, mode):
+    assert inflight_mode(opts) == mode

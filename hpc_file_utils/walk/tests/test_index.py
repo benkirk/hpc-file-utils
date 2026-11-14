@@ -20,7 +20,6 @@ from hpc_file_utils.walk.common import index as index_mod
 from hpc_file_utils.walk.common.index import (IndexWriter, closure_errors, decode_path, encode_path,
                                               entries, index_stat, read_index)
 from hpc_file_utils.walk.common.stats import WalkStats
-from hpc_file_utils.walk.common.worker import FileBatch
 from hpc_file_utils.walk.sync.compare import NEW
 from hpc_file_utils.walk.sync.worker import CopyBatch, SyncWorker
 from hpc_file_utils.walk.tar import worker as tar_worker
@@ -229,6 +228,7 @@ def _sync_worker(tmp_path, root, index=True, dry_run=False):
     w.options = SimpleNamespace(batch_files=2, batch_size=1 << 40)
     w.index = IndexWriter(str(tmp_path / "index-r001.tsv"), "walksync", [str(root)]) if index else None
     w.batch_stats = [] if index else None
+    w.init_inflight("temp")
     return w
 
 
@@ -267,7 +267,7 @@ def test_walksync_copy_batches_carry_their_stats(tmp_path, index):
     w.close_batch()
     first, second = w.local_batches
     if not index:
-        assert type(first) is FileBatch and first == FileBatch(["a", "b"], 20)
+        assert first == CopyBatch(["a", "b"], 20, None, ())
         return
     assert type(first) is CopyBatch and first.paths == ["a", "b"] and first.nbytes == 20
     assert first.stats == [index_stat(os.lstat(root / n)) for n in ("a", "b")]

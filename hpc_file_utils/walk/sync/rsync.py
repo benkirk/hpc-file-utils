@@ -88,6 +88,30 @@ def rsync_command(options):
             options.dirs[0].rstrip('/') + '/', options.dest.rstrip('/') + '/']
 
 
+# rsync options after which a file being written is neither the destination file itself
+# nor a temp file beside it: walksync then does not count in-flight bytes
+TEMP_ELSEWHERE = ('--temp-dir', '--partial-dir', '--delay-updates')
+IN_PLACE = ('--inplace', '--append', '--append-verify')
+
+
+def inflight_mode(rsync_opts):
+    """How walksync finds what a running rsync has written of a big file (sync/worker.py):
+    'inplace' (the destination file itself: --inplace, --append), 'temp' (rsync's default:
+    a temp file .<name>.XXXXXX in the destination directory), or None if --rsync-opts puts
+    the temp file elsewhere (-T DIR, --temp-dir, --partial-dir, --delay-updates)."""
+    inplace = False
+    for opt in rsync_opts:
+        if opt.startswith('--'):
+            name = opt.split('=', 1)[0]
+            if name in TEMP_ELSEWHERE:
+                return None
+            if name in IN_PLACE:
+                inplace = True
+        elif opt.startswith('-') and 'T' in opt[1:]:
+            return None                     # -T DIR, alone or in a cluster such as -vT
+    return 'inplace' if inplace else 'temp'
+
+
 def split(paths, k):
     """paths cut into k consecutive lists of near-equal length (fewer when there are fewer
     paths than k; one when k is 1; none for no paths), in order."""

@@ -23,6 +23,10 @@ cat > bin/qsub <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(wc -l < "${QSUB_LOG}" 2>/dev/null || echo 0) + 1 ))
 echo "$*" >> "${QSUB_LOG}"
+# the variables a dest job reads from its environment (qsub -v), for submit_pair_job's checks
+for v in confirm dryrun_rm pair preflight since; do
+    [[ -v ${v} ]] && printf '%s=%s\n' "${v}" "${!v}"
+done >> "${QSUB_LOG}.env"
 echo "${n}000.desched1"
 EOF
 chmod +x bin/qsub
@@ -136,9 +140,18 @@ check_bad "a glob in walksync_bind" "walksync_bind: "                    "src: $
 check_bad "--dest in walksync_opts" "--dest is set by the job"           "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --rsyncs 4 --dest /tmp"
 check_bad "--dry-run in walksync_opts" "--dry-run is set by the job"     "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "walksync_opts: --dry-run"
 check_bad "a relative hfu_root"   "must be an absolute path"             "src: ${root}/src/x" "dest: ${root}/dest/x" "copier: walksync" "hfu_root: current-derecho"
-# an invalid walksync key on a dsync pair is never read
-printf '%s\n' "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_root: relative" | write_conf ok.conf
-expect_eq "dsync pair: walksync keys ignored" "$(in_pairs ok.conf 'pair_load X && echo "${copier} [${hfu_root}]"')" "dsync []"
+# hfu_root and hfu_bind are read for every pair (walkfind runs the HSM preflight); walksync's keys only for walksync
+check_bad "dsync: a relative hfu_root" "must be an absolute path"       "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_root: relative"
+check_bad "dsync: a glob in hfu_bind" "hfu_bind: "                      "src: ${root}/src/x" "dest: ${root}/dest/x" "hfu_bind: --cpu-bind *"
+printf '%s\n' "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" "walksync_bind: --cpu-bind *" | write_conf ok.conf
+expect_eq "dsync pair: walksync keys ignored, hfu keys defaulted" \
+          "$(in_pairs ok.conf 'pair_load X && echo "${copier} [${walksync_bind}] [${hfu_root}] [${hfu_bind}]"')" \
+          "dsync [] [/glade/u/apps/opt/hpc-file-utils/current-derecho] [--cpu-bind depth --depth 4]"
+expect_eq "casper: its own install, no binding" \
+          "$(NCAR_HOST=casper in_pairs ok.conf 'pair_load X && echo "[${hfu_root}] [${hfu_bind}]"')" \
+          "[/glade/u/apps/opt/hpc-file-utils/current-casper] []"
+printf '%s\n' "casper.hfu_bind: --bind-to core" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf bind.conf
+expect_eq "a host-specific hfu_bind" "$(NCAR_HOST=casper in_pairs bind.conf 'pair_load X && echo "[${hfu_bind}]"')" "[--bind-to core]"
 
 write_conf copier.conf <<EOF
 derecho.copier: walksync     # host-specific global
@@ -170,7 +183,7 @@ msrsync: yes
 EOF
 show='pair_load "$0" && echo "${copier}|${walksync_opts}|${walksync_bind}|${hfu_root}|$(msrsync_resolve)"'
 copier_of() { pairs_conf=copier.conf bash -c '. ./pairs.sh || exit 1; '"${show}" "$1" 2>&1; }
-expect_eq "copier: dsync by default" "$(copier_of W-plain)" "dsync||||no"
+expect_eq "copier: dsync by default" "$(copier_of W-plain)" "dsync|||/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
 export NCAR_HOST=derecho
 expect_eq "copier: host-specific global, defaults" "$(copier_of W-plain)" \
           "walksync|--rsyncs 8|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
@@ -178,10 +191,10 @@ expect_eq "copier: per-pair opts and hfu_root; chmod Du+w; no msrsync (auto)" "$
           "walksync|--rsyncs 4 --batch-size 4GiB|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/abc1234-derecho|no"
 expect_eq "copier: hsm pair, no msrsync (auto)" "$(copier_of W-hsm)" \
           "walksync|--rsyncs 8|--cpu-bind depth --depth 2|/glade/u/apps/opt/hpc-file-utils/current-derecho|no"
-expect_eq "copier: per-pair dsync beats the global" "$(copier_of D-dsync)" "dsync||||yes"
+expect_eq "copier: per-pair dsync beats the global" "$(copier_of D-dsync)" "dsync|||/glade/u/apps/opt/hpc-file-utils/current-derecho|yes"
 expect_has "pairs_list shows the copier" "$(in_pairs copier.conf pairs_list)" "copier=walksync"
 export NCAR_HOST=casper
-expect_eq "copier: derecho.copier does not apply on casper" "$(copier_of W-plain)" "dsync||||no"
+expect_eq "copier: derecho.copier does not apply on casper" "$(copier_of W-plain)" "dsync|||/glade/u/apps/opt/hpc-file-utils/current-casper|no"
 unset NCAR_HOST
 
 # walksync_inplace: auto|yes|no, and --inplace merged into walksync's --rsync-opts
@@ -309,6 +322,77 @@ expect_has "dsync on casper: submitted" "${qsubs}" "-N cgd_D-dsync"
 submit nope
 expect_eq "unknown pair: exit status" "${rc}" "1"
 expect_eq "unknown pair: no qsub" "${qsubs}" ""
+
+#--------------------------------------------------------------
+# submit_pair_job: the dest jobs (make preflight, make delete_dest) on this host's queue and chunk
+pair_job() # <env...> -- <submit_pair_job args...> : sets out, rc, qsubs, qenv
+{
+    local envs=()
+    while [[ $1 != -- ]]; do envs+=("$1"); shift; done
+    shift
+    rm -f "${QSUB_LOG}" "${QSUB_LOG}.env"
+    out="$(env "${envs[@]}" bash -c '. ./pairs.sh || exit 1; pair_load B-second || exit 1; export since="2026-11-06 18:00"; submit_pair_job "$@"' _ "$@" 2>&1)"
+    rc=$?
+    qsubs="$(cat "${QSUB_LOG}" 2>/dev/null)"
+    qenv="$(paste -sd ' ' "${QSUB_LOG}.env" 2>/dev/null)"
+}
+pair_job -- dest_preflight.sh 1 "" since
+expect_eq "submit_pair_job: queue, chunk, variables" "${qsubs}" "-q main -l select=1:ncpus=128:mpiprocs=32:mem=235G -v pair,since dest_preflight.sh"
+expect_eq "submit_pair_job: exported to qsub" "${qenv}" "pair=B-second since=2026-11-06 18:00"
+pair_job NCAR_HOST=casper -- delete_dest.sh 2 1234.desched1
+expect_eq "submit_pair_job: casper, after a job" "${qsubs}" "-q casper -l select=2:ncpus=16:mpiprocs=16:mem=160G -v pair -W depend=afterany:1234.desched1 delete_dest.sh"
+
+#--------------------------------------------------------------
+# delete_dest_check: the guards before 'make delete_dest' removes a pair's dest
+mkdir -p "${root}/dest/b" "${root}/dest/real" "${work}/elsewhere/x"
+ln -s "${root}/dest/real" "${root}/dest/link"
+ln -s "${work}/elsewhere" "${root}/dest/out"
+printf '%s\n' "[L]" "src: ${root}/src/l" "dest: ${root}/dest/link" "[O]" "src: ${root}/src/o" "dest: ${root}/dest/out/x" \
+    | write_conf deletes.conf
+sed -n '/^\[A-first\]/,$p' pairs.conf >> deletes.conf     # B-second (dest ${root}/dest/b) too
+write_ok() # <pair> <dest> <finished epoch>
+{
+    printf 'pair: %s\ndest: %s\nsince: 1\nfinished: %s\njobid: 1.desched1\nentries: 3\n' "$1" "$2" "$3" > "preflight.$1.ok"
+}
+check_delete() # <pair> <confirm> <preflight> : sets out, rc
+{
+    out="$(pairs_conf=deletes.conf bash -c '. ./pairs.sh || exit 1; pair_load "$0" || exit 1; delete_dest_check "$1" "$2"' "$@" 2>&1)"
+    rc=$?
+}
+now=$(date +%s)
+check_delete B-second "" ""
+expect_has "delete: CONFIRM required" "${out}" "give CONFIRM=<dest>"
+check_delete B-second "${root}/dest/c" ""
+expect_has "delete: CONFIRM must be the dest" "${out}" "is not the pair's dest"
+check_delete B-second "${root}/dest/b/" ""
+expect_has "delete: CONFIRM exactly (no trailing slash)" "${out}" "is not the pair's dest"
+check_delete L "${root}/dest/link" "skip"
+expect_has "delete: a symlinked dest" "${out}" "not a directory, or a symlink"
+check_delete O "${root}/dest/out/x" "skip"
+expect_has "delete: a dest resolving outside allowed_roots" "${out}" "not under allowed_roots"
+check_delete B-second "${root}/dest/b" ""
+expect_has "delete: no preflight" "${out}" "run 'make preflight PAIR=B-second' first"
+write_ok B-second "${root}/dest/a" "${now}"
+check_delete B-second "${root}/dest/b" ""
+expect_has "delete: a preflight for another dest" "${out}" "is for '${root}/dest/a'"
+write_ok B-second "${root}/dest/b" "$(( now - 8 * 86400 ))"
+check_delete B-second "${root}/dest/b" ""
+expect_has "delete: a stale preflight" "${out}" "older than 7 days"
+check_delete B-second "${root}/dest/b" "later"
+expect_has "delete: PREFLIGHT takes only skip" "${out}" "only 'skip' overrides"
+write_ok B-second "${root}/dest/b" "${now}"
+check_delete B-second "${root}/dest/b" ""
+expect_eq "delete: a passing preflight" "${rc}:${out}" "0:"
+write_ok B-second "${root}/dest/a" "${now}"           # only skip gets past a wrong preflight
+check_delete B-second "${root}/dest/b" "skip"
+expect_eq "delete: PREFLIGHT=skip passes, loudly" "${rc}" "0"
+expect_has "delete: PREFLIGHT=skip warns" "${out}" "without a passing preflight"
+# the sync lock: a HOME of the test's own, so a real lock is never touched
+lock="$(HOME="${work}" pairs_conf=deletes.conf bash -c '. ./pairs.sh && pair_load B-second && sync_lock')"
+expect_has "sync_lock: in HOME, per pair" "${lock}" "${work}/.sync_dir."
+touch "${lock}"
+out="$(HOME="${work}" pairs_conf=deletes.conf bash -c '. ./pairs.sh && pair_load B-second && delete_dest_check "$0" skip' "${root}/dest/b" 2>&1)"
+expect_has "delete: refused while the sync lock is held" "${out}" "sync lock"
 
 echo
 if [[ ${fails} -gt 0 ]]; then

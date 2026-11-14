@@ -61,11 +61,9 @@ def _mpiexec_base():
 
 
 def exit_status_matches(returncode, wanted):
-    """Open MPI passes the ranks' exit status through; Cray PALS SIGTERMs the other
-    ranks once one exits non-zero and reports 143. So exact only under Open MPI."""
-    if wanted == 0 or "--oversubscribe" in _mpiexec_base():
-        return returncode == wanted
-    return returncode != 0
+    """Exact, under every launcher: only rank 0 exits with the status (cli.rank_exit_status()),
+    so Cray PALS no longer SIGTERMs the other ranks and reports 143."""
+    return returncode == wanted
 
 
 def mpiexec(nranks):
@@ -390,9 +388,11 @@ def build_golden_tree(root):
 
 
 def _unlock(root):
-    """Make the golden tree's read-only subtree writable again, so pytest can clean it up."""
+    """Make the golden tree's read-only subtree writable again, so pytest can clean it up
+    (if it is still there: walkrm's tests remove it)."""
     for p in [root / "readonly", root / "readonly/sub"]:
-        p.chmod(0o755)
+        if p.exists():
+            p.chmod(0o755)
 
 
 @pytest.fixture(scope="session")

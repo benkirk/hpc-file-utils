@@ -29,6 +29,11 @@ class Tool:
             return []
         return [f'Filters: {args.filters.describe()}']
 
+    def finish(self, walker) -> None:
+        """Every rank (the Manager and the workers), after the walk ended and before the
+        end-of-walk collectives: a tool's own collective phase (walkrm's rmdir pass, level by
+        level). Errors counted here are in the exit status."""
+
     def report(self, manager, stats) -> None:
         """Rank 0, after the walk's balance lines: the tool's own reports (walkstat's
         summary and userlists, unless the tool says otherwise)."""
