@@ -195,6 +195,87 @@ run_hfu()
 
 
 #--------------------------------------------------------------
+# submit_pair_job <script> <nodes> <after jobid, or ''> [VAR...] : qsub a job script for
+# ${pair} (after pair_load) on this host's queue and chunk (pairs.conf), with 'pair' and the
+# named variables from this environment (qsub -v), after <jobid> ends if given (afterany:
+# never two jobs on campaign at once). The script's #PBS lines give account and walltime.
+submit_pair_job()
+{
+    local script=$1 nodes=$2 after=$3 q chunk vars v
+    shift 3
+    q="$(conf_get queue)"
+    chunk="$(conf_get chunk)"
+    vars="$(IFS=,; echo "pair${*:+,$*}")"
+    export pair
+    for v in "$@"; do export "${v?}"; done
+    qsub -q "${q:-main}" -l "select=${nodes}${chunk:+:${chunk}}" -v "${vars}" \
+         ${after:+-W "depend=afterany:${after}"} "${script}"
+}
+
+
+#--------------------------------------------------------------
+# sync_lock : the pair's lock file (after pair_load), held by its sync job and by
+# delete_dest.sh, so neither runs beside the other
+sync_lock()
+{
+    echo "${HOME}/.sync_dir.$(echo "${srcdir}+${destdir}" | md5sum | awk '{print $1}').lock"
+}
+
+
+#--------------------------------------------------------------
+# kv_get <file> <key> : the value of a "key: value" line (stamps, preflight.<pair>.ok)
+kv_get()
+{
+    [[ -f $1 ]] || return 0
+    awk -v key="$2" '{ i = index($0, ":"); if (i && substr($0, 1, i-1) == key) {
+                           v = substr($0, i+1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit } }' "$1"
+}
+
+
+#--------------------------------------------------------------
+# delete_dest_check <confirm> <preflight: ''|skip> : refuses (1, says why) unless ${destdir}
+# (after pair_load) may be removed by delete_dest.sh: confirm is exactly the pair's dest;
+# dest is a real directory (not a symlink) whose realpath is still under allowed_roots; no
+# sync of the pair holds its lock; and a passing preflight.<pair>.ok names this dest and is
+# under PREFLIGHT_MAX_AGE (7 days), unless preflight=skip (then a warning).
+PREFLIGHT_MAX_AGE=$(( 7 * 86400 ))
+delete_dest_check()
+{
+    local confirm=$1 preflight=$2 real roots root ok ok_file finished
+    [[ -n ${confirm} ]] \
+        || { echo "ERROR: [${pair}] give CONFIRM=<dest>, exactly the pair's dest: ${destdir}" >&2; return 1; }
+    [[ ${confirm} == "${destdir}" ]] \
+        || { echo "ERROR: [${pair}] CONFIRM='${confirm}' is not the pair's dest '${destdir}'" >&2; return 1; }
+    [[ -d ${destdir} && ! -L ${destdir} ]] \
+        || { echo "ERROR: [${pair}] ${destdir}: not a directory, or a symlink" >&2; return 1; }
+    real="$(realpath "${destdir}")"
+    roots="$(conf_get allowed_roots)"
+    ok=no
+    for root in ${roots:-/glade/campaign/}; do
+        [[ ${real}/ == "$(realpath -m "${root}")"/?* ]] && ok=yes
+    done
+    [[ ${ok} == yes ]] \
+        || { echo "ERROR: [${pair}] ${destdir} resolves to ${real}, not under allowed_roots" >&2; return 1; }
+    [[ ! -e $(sync_lock) ]] \
+        || { echo "ERROR: [${pair}] its sync lock $(sync_lock) is held: a sync job may be running" >&2; return 1; }
+    ok_file="preflight.${pair}.ok"
+    if [[ ${preflight} == skip ]]; then
+        echo "WARNING: [${pair}] PREFLIGHT=skip: deleting ${destdir} without a passing preflight" >&2
+        return 0
+    fi
+    [[ -z ${preflight} ]] \
+        || { echo "ERROR: [${pair}] PREFLIGHT='${preflight}': only 'skip' overrides the preflight" >&2; return 1; }
+    [[ -f ${ok_file} ]] \
+        || { echo "ERROR: [${pair}] no ${ok_file}: run 'make preflight PAIR=${pair}' first (or PREFLIGHT=skip)" >&2; return 1; }
+    [[ $(kv_get "${ok_file}" dest) == "${destdir}" ]] \
+        || { echo "ERROR: [${pair}] ${ok_file} is for '$(kv_get "${ok_file}" dest)', not ${destdir}" >&2; return 1; }
+    finished="$(kv_get "${ok_file}" finished)"
+    [[ ${finished} =~ ^[0-9]+$ && $(( $(date +%s) - finished )) -le ${PREFLIGHT_MAX_AGE} ]] \
+        || { echo "ERROR: [${pair}] ${ok_file} is older than 7 days: run 'make preflight PAIR=${pair}' again" >&2; return 1; }
+}
+
+
+#--------------------------------------------------------------
 # walksync_inplace_resolve <dest is empty: yes|no> : prints yes|no; call after pair_load
 walksync_inplace_resolve()
 {

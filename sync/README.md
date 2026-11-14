@@ -96,6 +96,8 @@ make root_acl_commands PAIRS="..."         # before copying: read ACLs on the so
 make root_commands                         # root hand-off for pairs keeping source ownership
 make root_chown_commands                   # root hand-off for pairs with a new 'owner:'
 make archive_logs                          # move logs into logs/<timestamp>/ (refused while jobs run)
+make preflight PAIR=<pair> [SINCE=...]     # read-only check of a dest before deleting it (PBS job)
+make delete_dest PAIR=<pair> CONFIRM=<dest> # remove a dest with walkrm (PBS job), see Deleting a dest
 ```
 
 Logs: the job log (`cgd_migration.o<jobid>.<index>` for an array member, `cgd_<pair>.o<jobid>`
@@ -205,6 +207,46 @@ On casper the job sets `HFU_MPI=conda` before `config_env.sh`, and launches with
 conda-forge Open MPI (`mpiexec --hostfile $PBS_NODEFILE`): the host Open MPI launcher segfaults
 now and then (*Expectations*, below). That needs the install's casper env built with
 `HFU_MPI=conda` (`deploy/README.md`); until it is, a casper job aborts at `config_env.sh`.
+
+## Deleting a dest
+
+Round 4 deleted two destinations ad hoc (`drm.pbs` with a hard-coded allowed list, a
+`find -perm` pass for read-only dirs, and a check that the target was gone). Two targets do that
+now, both PBS jobs submitted on this host's queue and chunk:
+
+```bash
+make preflight PAIR=<pair> [SINCE='YYYY-MM-DD HH:MM'] [AFTER=<jobid>]
+make delete_dest PAIR=<pair> CONFIRM=<dest> [PREFLIGHT=skip] [DRYRUN=yes] [AFTER=<jobid>] [NODES=2]
+```
+
+- **`preflight`** (`dest_preflight.sh`, 1 node, read-only): `walkstat --index=gz` of the dest
+  (from `hfu_root`), then from the index:
+  - entries not owned by the job's user (someone else's files: not ours to delete);
+  - entries with an atime or mtime after `SINCE` (someone read or wrote the copy);
+  - directories without u+w (reported only: walkrm gives our own u+rwx).
+
+  `SINCE` defaults to the pair's done stamp `finished` time (the copy's last pass, its cmp
+  sample included); with neither it refuses. Nothing found writes `preflight.<pair>.ok`
+  (pair, dest, since, time, job); anything found exits 1 and writes none. The index and the
+  first examples of each finding are in `preflight.<pair>.<job>.<time>/`.
+- **`delete_dest`** (`delete_dest.sh`, `NODES` [2] nodes) refuses, at submission and again in
+  the job (`delete_dest_check` in `pairs.sh`), unless:
+  - `CONFIRM` is exactly the pair's dest, as `pairs.conf` gives it (no trailing `/`);
+  - the dest is a real directory (not a symlink) whose realpath is still under
+    `allowed_roots`;
+  - no sync of the pair holds its lock;
+  - `preflight.<pair>.ok` names this dest and is under 7 days old. `PREFLIGHT=skip` overrides
+    only this one, with a warning.
+
+  The job takes the pair's sync lock, so no sync starts beside it, and runs
+  `walkrm --allowed-root <each allowed_root> --dirs <dest>`
+  (`../hpc_file_utils/walk/README.md`, "walkrm"). walkrm also refuses anything not strictly
+  below an allowed root, never follows a symlink or crosses a filesystem, and gives our
+  read-only directories u+rwx first. When walkrm exits 0 and the dest is gone, the pair's done
+  stamp moves aside (`stamps/<pair>.done.deleted-<time>`), so a later `make run` copies it
+  again, and the ok file is removed. `DRYRUN=yes` runs `walkrm --dry-run` (lists in
+  `walkrm.<pair>.<job>.<time>/`). Logs are `walkrm.{out,err}.<pair>.<job>.<time>`.
+- Any real campaign delete is confirmed by a person right before it is submitted.
 
 ## walksync as the copier
 

@@ -91,8 +91,7 @@ esac
 batch_files="$(setting batch_files 250000)"
 #--------------------------------------------------------------
 
-sha=$(echo "${srcdir}+${destdir}" | md5sum | awk '{print $1}')
-LOCK=${HOME}/.sync_dir.${sha}.lock
+LOCK="$(sync_lock)"
 
 remove_lock()
 {
