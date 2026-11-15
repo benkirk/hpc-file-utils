@@ -173,8 +173,8 @@ def test_batches_carry_their_big_entries(setup, monkeypatch):
     for name, size in [("a", 500), ("b", 10), ("c", 100), ("d", 99)]:
         w.want_copy(name, size, NEW, [])
     w.close_batch()
-    assert w.local_batches == [CopyBatch(["a", "b"], 510, None, ((0, 500),)),
-                               CopyBatch(["c", "d"], 199, None, ((0, 100),))]
+    assert w.local_batches == [CopyBatch(["a", "b"], 510, None, ((0, 500),), 500),
+                               CopyBatch(["c", "d"], 199, None, ((0, 100),), 100)]
     assert w.batch_big == []
 
 

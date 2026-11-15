@@ -270,6 +270,11 @@ class BaseWorker(MPIClass):
         walks before it copies (sync/worker.py)."""
         return self.local_batches.pop() if self.local_batches else None
 
+    def last_batch(self):
+        """The batch drain_local_work() processes when next_batch() gave none and the stack
+        is empty, removed from our list. Default: the newest. walksync: the costliest."""
+        return self.local_batches.pop()
+
     def drain_local_work(self):
         """Process our batches and walk our stack until both are empty, in next_batch()'s
         order (batches first, unless the tool says otherwise); then close the open batch
@@ -287,7 +292,7 @@ class BaseWorker(MPIClass):
                 self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
                 self.process_directory(self.local_dirs.pop())
             elif self.local_batches:
-                self.process_batch(self.local_batches.pop())
+                self.process_batch(self.last_batch())
             else:
                 self.close_batch()
                 if not self.local_batches:

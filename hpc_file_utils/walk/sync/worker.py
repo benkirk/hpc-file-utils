@@ -28,6 +28,11 @@ which a 'share' can hand to idle ranks (see manager.py):
 A compare batch creates copy batches; they stay on this rank's list and are processed
 before its next 'ready' (manager.py, point 1), so the termination argument holds.
 
+The order (docs/walk-tail-4F.md): a rank walks before it copies (compare batches, then
+directories, then copy batches), so every copy batch is known early; and the copy batches
+go costliest first (copy_cost()), on the rank, in what a 'share' takes and at the Manager,
+so a copy that takes hours starts in the run's first minutes.
+
 --index (indexes-2, step B; common/index.py): a per-rank record of what was copied,
 index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix, .gz with --index=gz),
 walkstat's format with tool=walksync, root= the source and dest= the destination in the
@@ -93,6 +98,22 @@ class CopyBatch(NamedTuple):
     nbytes : int
     stats  : list   # None without --index
     big    : tuple  # ((index in paths, st_size), ...) of the entries >= INFLIGHT_MIN
+    cost   : int = 0  # copy_cost(): the bytes its longest rsync stream moves; the costliest go first
+
+
+def copy_cost(nbytes, largest, rsyncs):
+    """What orders the copy batches: an estimate of the bytes a batch's longest rsync
+    moves, so of how long the batch takes. One file is one stream, whatever --rsyncs; the
+    rest of a batch is spread over --rsyncs of them. A batch of one 900 GiB file so
+    outranks a 16 GiB batch of a thousand files, and that one a 16 GiB batch of ten."""
+    return max(largest, -(-nbytes // max(rsyncs, 1)))
+
+
+def pick_key(batch):
+    """Sorts a rank's batches into the order they leave it, last first: compare batches
+    (the walk) after every copy batch, and the copy batches by cost. The sort is stable,
+    so the compare batches keep their order (newest last)."""
+    return (1, 0) if type(batch) is CompareBatch else (0, batch.cost)
 
 
 class InFlight:
@@ -124,6 +145,8 @@ class SyncWorker(BaseWorker):
         self.dryrun = self.rank_file(DRYRUN_FILE)   # --dry-run's list, a file at its first line
         self.index = self.open_index()
         self.batch_stats = [] if self.index is not None else None   # the open batch's stats (--index)
+        self.batch_largest = 0                # the open batch's largest entry, for its cost
+        self.batches_sorted = False           # local_batches is in pick_key() order
         self.init_inflight(o.inflight)
 
     def init_inflight(self, mode):
@@ -184,14 +207,19 @@ class SyncWorker(BaseWorker):
                 self.batch_stats.append(None if statinfo is None else index_stat(statinfo))
             if size >= INFLIGHT_MIN:
                 self.batch_big.append((len(self.batch), size))
+            if size > self.batch_largest:
+                self.batch_largest = size
             self.add_to_batch(rel, size)
 
     def close_batch(self):
-        """BaseWorker's, as a CopyBatch: the stats (--index) and the big entries go with the paths."""
+        """BaseWorker's, as a CopyBatch: the stats (--index), the big entries and the cost
+        go with the paths."""
         if self.batch:
+            cost = copy_cost(self.batch_bytes, self.batch_largest, self.rsyncs)
             self.local_batches.append(CopyBatch(self.batch, self.batch_bytes, self.batch_stats,
-                                                tuple(self.batch_big)))
-            self.batch, self.batch_bytes, self.batch_big = [], 0, []
+                                                tuple(self.batch_big), cost))
+            self.batches_sorted = False
+            self.batch, self.batch_bytes, self.batch_big, self.batch_largest = [], 0, [], 0
             if self.batch_stats is not None:
                 self.batch_stats = []
 
@@ -273,6 +301,32 @@ class SyncWorker(BaseWorker):
             if type(batches[i]) is CompareBatch:
                 return batches.pop(i)
         return None
+
+    def sort_batches(self):
+        """Put local_batches in pick_key() order, if a batch was added since the last time.
+        Sorting a list that is already nearly in order is cheap (one pass)."""
+        if not self.batches_sorted:
+            self.local_batches.sort(key=pick_key)
+            self.batches_sorted = True
+
+    def last_batch(self):
+        """The walk is done here: the costliest copy batch first (copy_cost()). A copy that
+        takes hours then starts in the run's first minutes, not after everything else
+        (docs/walk-tail-4F.md, recommendation 3)."""
+        self.sort_batches()
+        return self.local_batches.pop()
+
+    def oldest_batches(self):
+        """What a 'share' takes: half of our batches, rounded up; the compare batches
+        first (an idle rank finishes the walk sooner than we do), then the costliest copy
+        batches, which an idle rank can start now."""
+        self.sort_batches()
+        batches = self.local_batches
+        n = len(batches) // 2
+        give = batches[n:]
+        del batches[n:]
+        give.reverse()                        # the order they should start in
+        return give
 
     def process_batch(self, batch):
         """A CompareBatch, or a CopyBatch to copy, ours or shared."""

@@ -228,6 +228,7 @@ def _sync_worker(tmp_path, root, index=True, dry_run=False):
     w.options = SimpleNamespace(batch_files=2, batch_size=1 << 40)
     w.index = IndexWriter(str(tmp_path / "index-r001.tsv"), "walksync", [str(root)]) if index else None
     w.batch_stats = [] if index else None
+    w.batch_largest, w.batches_sorted = 0, False
     w.init_inflight("temp")
     return w
 
@@ -267,7 +268,7 @@ def test_walksync_copy_batches_carry_their_stats(tmp_path, index):
     w.close_batch()
     first, second = w.local_batches
     if not index:
-        assert first == CopyBatch(["a", "b"], 20, None, ())
+        assert first == CopyBatch(["a", "b"], 20, None, (), 10)    # cost: its largest entry (20 / 3 rsyncs is less)
         return
     assert type(first) is CopyBatch and first.paths == ["a", "b"] and first.nbytes == 20
     assert first.stats == [index_stat(os.lstat(root / n)) for n in ("a", "b")]

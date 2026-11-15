@@ -88,6 +88,38 @@ from hpc_file_utils.walk.common.protocol import Tag
 from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
 from hpc_file_utils.walk.tools import TOOLS
 
+class BatchQueue:
+    """The batches waiting here for a worker, in the order they are handed out.
+
+    A batch with a 'cost' (walksync's copy batches: sync/worker.py) leaves costliest
+    first, so the longest work starts first and does not become the run's tail. Any other
+    batch (stat, compare, tar, find, rm) leaves in arrival order, and before every costed
+    one: those are the walk, or sized alike.
+    """
+
+    def __init__(self):
+        self.fifo = deque()
+        self.costed = []                      # a heap of (-cost, arrival number, batch)
+        self.arrivals = 0
+
+    def __len__(self):
+        return len(self.fifo) + len(self.costed)
+
+    def extend(self, batches):
+        for batch in batches:
+            cost = getattr(batch, 'cost', None)
+            if cost is None:
+                self.fifo.append(batch)
+            else:
+                self.arrivals += 1
+                heapq.heappush(self.costed, (-cost, self.arrivals, batch))
+
+    def pop(self):
+        if self.fifo:
+            return self.fifo.popleft()
+        return heapq.heappop(self.costed)[2]
+
+
 def _ms(seconds):
     return f'{1e3 * seconds:.3f} ms'
 
@@ -123,7 +155,7 @@ class Manager(MPIClass):
         MPI = self.MPI
         self.c = Counters()
         self.dirs = list(self.options.dirs)           # directories waiting for a worker
-        self.batches = deque()                         # batches waiting for a worker (phase 5)
+        self.batches = BatchQueue()                    # batches waiting for a worker
         self.nworkers = self.nranks - 1
         self.idle = deque()                            # (rank, when) of each 'ready' we hold, unanswered
         self.idle_set = set()                          # ... just the ranks
@@ -228,11 +260,12 @@ class Manager(MPIClass):
         Batches first, one per worker: a batch is already sized as a unit of work, and
         handing one worker several would rebuild the tail. Then directories, up to
         --dirs-per-dispatch each, fewer when there are not enough to go round the idle
-        workers.
+        workers. Last, the batches with a cost (walksync's copies; BatchQueue), costliest
+        first: they wait for the walk, which finds the rest of them.
         """
         while (self.batches or self.dirs) and self.idle:
-            if self.batches:
-                give = ([], [self.batches.popleft()])
+            if self.batches.fifo or (self.batches and not self.dirs):
+                give = ([], [self.batches.pop()])
                 self.c.nbatch_dispatches += 1
             else:
                 n = max(1, min(self.options.dirs_per_dispatch, len(self.dirs) // len(self.idle)))
