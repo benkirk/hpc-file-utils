@@ -28,7 +28,7 @@ conda-env:
 \ttest -z "$$HFU_STUB_FAIL"
 \tmkdir -p conda-env-$(NCAR_HOST)/bin
 \tprintf '#!/bin/sh\\nexit 0\\n' > conda-env-$(NCAR_HOST)/bin/python
-\tfor t in walkstat walktar walksync; do cp conda-env-$(NCAR_HOST)/bin/python conda-env-$(NCAR_HOST)/bin/$$t; done
+\tfor t in walkstat walktar walksync walkfind walkrm; do cp conda-env-$(NCAR_HOST)/bin/python conda-env-$(NCAR_HOST)/bin/$$t; done
 \tchmod +x conda-env-$(NCAR_HOST)/bin/*
 \techo "$(HFU_MPI)" > conda-env-$(NCAR_HOST)/hfu_mpi
 """

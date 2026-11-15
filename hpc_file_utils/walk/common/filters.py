@@ -21,6 +21,7 @@ workers inside the options by bcast. Each rank then builds its callables once fr
 pays only an 'is None' test per entry.
 """
 
+import argparse
 import fnmatch
 import grp
 import pwd
@@ -127,7 +128,6 @@ def add_filter_options(parser: argparse.ArgumentParser) -> None:
     g.add_argument('--type', metavar='T[,T...]',
                    help='only entries of these types: f (regular file), d (directory), l (symlink), '
                         'p (fifo), s (socket), b (block device), c (character device)')
-    return g
 
 
 def parse_when(text: str, now: float) -> float:

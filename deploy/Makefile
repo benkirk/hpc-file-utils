@@ -57,7 +57,7 @@ REPO    ?= https://github.com/benkirk/hpc-file-utils.git
 REF     ?= main
 HOSTS   ?= derecho casper
 HFU_MPI ?= auto
-TOOLS   ?= walkstat walktar walksync
+TOOLS   ?= walkstat walktar walksync walkfind walkrm
 
 # The lock that keeps updates and prunes one at a time, whichever host runs them: a file
 # on derecho's Lustre scratch, not in ROOT.  ROOT is on GPFS (/glade/u), and casper mounts

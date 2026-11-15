@@ -96,7 +96,6 @@ class RmWorker(BaseWorker):
 
     def process_directory(self, dirname):
         st = self.stats
-        c = st.counters
         if dirname in self.target_devs:      # a target: its own mode, before the open needs it
             try:
                 s = os.lstat(dirname)

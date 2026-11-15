@@ -106,9 +106,6 @@ class IDCounts:
         self.nbytes += other.nbytes
         self.nitems += other.nitems
 
-    def to_dict(self):
-        return {'name': self.name, 'nbytes': self.nbytes, 'nitems': self.nitems}
-
 
 class UIDCounts(IDCounts):
     _id_to_name = staticmethod(uid_name)
