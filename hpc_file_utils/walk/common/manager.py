@@ -2,16 +2,23 @@
 
 Workers walk their own local stack of directories, depth-first, and talk to the Manager
 only when it overflows, when it runs dry, or when the Manager asks them to share
-(phase 3.5; docs/walk-load-balancing.md, section 5).
+(docs/walk-load-balancing.md, section 5).
 
-Phase 5: the workers also turn a directory's files into batches, kept on the scanning
+Batches: the workers also turn a directory's names into batches, kept on the scanning
 worker's own list and processed there, batches before directories (walksync: compare
-batches, then directories, then copy batches; BaseWorker.next_batch()): walkstat's are
-StatBatch(dirname, names, tail), the names still to stat (stat/worker.py); walktar's
-are those too, whose stats fill FileBatch(paths, nbytes), archived into one tar each
-(tar/worker.py); walksync's are CompareBatch and FileBatch (sync/worker.py). A batch
-leaves its worker only in a share_reply, and the Manager hands batches out before
-directories. To the Manager and to this argument, a batch is opaque: one unit of work.
+batches, then directories, then copy batches; BaseWorker.next_batch()). Each tool has
+its own kinds:
+  walkstat   StatBatch(dirname, names, tail), the names still to stat (stat/worker.py)
+  walktar    those too, whose stats fill FileBatch(paths, nbytes), archived into one tar
+             each (tar/worker.py)
+  walksync   CompareBatch, the names still to compare, and CopyBatch, what one group of
+             rsyncs copies (sync/worker.py)
+  walkfind   FindBatch, the matching names still to stat and list (find/worker.py)
+  walkrm     RmBatch, the names still to unlink (rm/worker.py)
+A batch leaves its worker only in a share_reply, and the Manager hands batches out before
+directories (BatchQueue: walksync's copy batches last, costliest first). To the Manager
+and to this argument, a batch is one unit of work: it reads nothing of one but an
+optional 'cost'.
 
 Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tuple):
 
@@ -45,8 +52,9 @@ How the Manager decides the walk is done:
   1. A worker is idle only while the Manager holds its 'ready' unanswered. A worker
      sends 'ready' only when its local stack is empty, it holds no batch (none closed,
      and the open one, if any, has been closed and processed), and its last directory
-     or batch is done; process_batch() runs on the worker's only thread, so done means
-     returned. It then waits for the answer, so it cannot send anything else.
+     or batch is done; process_batch() runs on the worker's main thread, the only one
+     that talks to MPI (a tool's stat or reader threads are joined inside it), so done
+     means returned. It then waits for the answer, so it cannot send anything else.
   2. The Manager receives with ANY_SOURCE and ANY_TAG, so every message matches the
      same receive and it gets each worker's messages in the order they were sent
      (MPI's non-overtaking rule applies to messages from one sender that match the
@@ -175,15 +183,16 @@ class Manager(MPIClass):
         self.progress.update(rank, payload)
 
     def written(self):
-        """(bytes, files, archives) written so far, summed over the workers' 'extra'
-        payloads; None when no worker sends one (walkstat)."""
+        """(bytes, files, archives) written so far (walksync: bytes, entries, rsync batches
+        copied), summed over the workers' 'extra' payloads; None when no worker sends one
+        (a tool that writes nothing)."""
         extras = [e for e in self.progress.extra if e is not None]
         if not extras:
             return None
         return tuple(sum(col) for col in zip(*extras))
 
     def progress_extra_status(self, elapsed, interval=None):
-        """Text appended to the progress line: tools that write (walktar) report bytes
+        """Text appended to the progress line: tools that write (walktar, walksync) report bytes
         written and the rate, now (over 'interval', since the last line) and on average.
         Without 'interval', the final line: the totals only."""
         written = self.written()

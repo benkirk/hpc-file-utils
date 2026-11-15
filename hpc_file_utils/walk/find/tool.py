@@ -18,12 +18,18 @@ class FindTool(Tool):
     description = ('Walk directory trees in parallel (MPI) and list the entries that match, like find: '
                    '--name GLOB (and --prune-matches) tested on the name before any stat, the selecting '
                    'filters on the matches, one list per rank or one --output file.')
+    examples = ("mpiexec -n 32 walkfind --dirs /glade/campaign/proj --name '*.nc' --mtime-older 5y --output old-nc.list",
+                'mpiexec -n 32 walkfind --dirs /glade/campaign/proj --name COLD_STORAGE --prune-matches --type d')
+    batch_help = 'the names that match are stat\'ed and listed a batch at a time'
+    reports = False
+    selects = 'listed'
+    errors_exit = 1          # as find: a directory that could not be read may hold a match
 
     def add_arguments(self, parser):
         parser.add_argument('--name', action='append', metavar='GLOB', help='List entries whose name matches GLOB (fnmatch, case-sensitive; repeatable, the globs OR together), tested before any stat: nothing else is stat\'ed. Without --name every entry matches. The --dirs roots are never tested (find -mindepth 1)')
         parser.add_argument('--prune-matches', action='store_true', help='Do not descend into a directory that matches --name (find -name GLOB -prune -print): it is listed, its contents are not walked')
-        parser.add_argument('--print0', action='store_true', help='End each listed path with a NUL, as the raw bytes of the name (find -print0); default: one line per path, with newlines, tabs, other control characters and undecodable bytes escaped')
-        parser.add_argument('--output', metavar='FILE', help='Rank 0 joins the per-rank lists into FILE (written as FILE.tmp, then renamed), in rank order, and removes them; FILE exists, empty, when nothing matched. Default: walkfind-r{rank}.list in the working directory, one per worker')
+        parser.add_argument('--print0', action='store_true', help='End each listed path with a NUL, as the raw bytes of the name (find -print0). Without it: one line per path, with newlines, tabs, other control characters and undecodable bytes escaped')
+        parser.add_argument('--output', metavar='FILE', help='Rank 0 joins the per-rank lists into FILE (written as FILE.tmp, then renamed), in rank order, and removes them; FILE exists, empty, when nothing matched (default: walkfind-r{rank}.list in the working directory, one per worker)')
         add_index_argument(parser, 'Every rank also writes an index of its matches, one line of metadata each (find -ls: type, size, allocation, mode, owner, times, inode, path), to index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix) in the working directory; see the walk README, "Indexes"')
 
     def check(self, parser, args):
@@ -60,10 +66,6 @@ class FindTool(Tool):
         if options.output is not None:
             join_lists(options.output, [LIST_FILE.format(r) for r in range(1, manager.nranks)])
         print('\n'.join(find_lines(stats, options, LIST_FILE)), flush=True)
-
-    def exit_status(self, total_errors, options):
-        """1 on any error, as find: a directory that could not be read may hold a match."""
-        return 1 if total_errors else 0
 
     def make_worker(self):
         from hpc_file_utils.walk.find.worker import FindWorker

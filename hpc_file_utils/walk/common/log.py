@@ -1,10 +1,11 @@
-"""Diagnostics on stderr, through the stdlib logging (the sweep's Part D).
+"""Diagnostics on stderr, through the stdlib logging.
 
 Every rank writes its own warnings and errors ('[rank] LEVEL message', one write per
 line, so lines from many ranks splice less under mpiexec); the results (the banner,
 the progress line, the '-->' lines, the summary and the userlists) stay print() on
-rank 0's stdout: they are the parsed contract. BaseWorker.error() stays the one place
-that counts errors; logging never is the counter.
+rank 0's stdout: they are the parsed contract. Logging never counts: an error is counted
+where it is found, in BaseWorker.error() on a worker (walkrm's check of its targets after
+the run, on rank 0, counts its own).
 
   setup(rank, verbose)   once per rank, in cli.main(): one stderr handler on the
                          'hpc_file_utils.walk' logger, DEBUG with --verbose, else INFO

@@ -1,4 +1,4 @@
-"""walkrm (tools-find-rm, step 2): the tree is gone, nothing outside it is touched, and every
+"""walkrm: the tree is gone, nothing outside it is touched, and every
 refusal leaves the tree as it was. MPI end to end on a private golden tree (its read-only
 subtree, symlinks, a fifo, hard links), find(1) as the oracle for the counts and the dry
 run's list; the scan's guards in-process."""

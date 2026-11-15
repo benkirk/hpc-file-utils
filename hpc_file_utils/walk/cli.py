@@ -22,7 +22,7 @@ def main(app, argv=None):
     # Pickled receives go through Probe + Recv, not mpi4py's default matched probe
     # (Mprobe + Mrecv): on derecho a walktar over two nodes hung every time with every
     # rank in PMPI_Mprobe, the Manager's any-source receive never seeing a message that
-    # had been sent (perf-1, step B), and the same run with this switch finished; one
+    # had been sent, and the same run with this switch finished; one
     # thread per rank talks to MPI, so the unmatched probe is safe. HFU_RECV_MPROBE=1
     # restores the matched probe, for experiments.
     if os.environ.get('HFU_RECV_MPROBE') != '1':
@@ -47,7 +47,7 @@ def main(app, argv=None):
     sys.excepthook = abort_on_exception
 
     # a rank that seems stuck can be asked where it is: 'kill -USR1 <pid>' writes every
-    # thread's Python stack to its stderr and the rank goes on (perf-1, step B: a run that
+    # thread's Python stack to its stderr and the rank goes on (a run that
     # hung at 2 nodes with every rank spinning in MPI's receive had no other way to say
     # which receive)
     import faulthandler
@@ -77,7 +77,7 @@ def main(app, argv=None):
 
     if size < 2:
         if rank == 0:
-            log.error('%s needs at least 2 MPI ranks (a manager and a worker)', app)
+            log.error('%s needs at least 2 MPI ranks (the Manager and a worker)', app)
         return 2
 
     cpus = cpus_per_rank(comm)
@@ -122,8 +122,8 @@ def rank_exit_status(comm, rank, status):
     """What this rank returns: 'status' on rank 0, 0 on the others.
 
     Every rank knows the status, but Cray PALS SIGTERMs every rank still running once one
-    exits non-zero, and then reports 143 for the job, not the status (cgd-walksync, 4F:
-    every rank exited 1 at once). So only rank 0 exits with it, and last: after a Barrier
+    exits non-zero, and then reports 143 for the job, not the status (seen on
+    Derecho with every rank exiting 1 at once). So only rank 0 exits with it, and last: after a Barrier
     every rank finalizes MPI; the workers leave at once (os._exit, their output flushed and
     their files closed by now), and rank 0 waits EXIT_GRACE_SECONDS before it returns. A
     Barrier alone was not enough on derecho: rank 0 exited 2 while a worker was still in its
@@ -146,7 +146,7 @@ def cpus_per_rank(comm):
     sets: PALS gives each rank one by default, 'mpiexec --cpu-bind depth --depth N' N),
     gathered on rank 0 as '4' or '1-4'; None where there is no mask to read (macOS). The
     binding bounds what a rank's threads (walktar's readers, walkstat's --stat-threads)
-    can do, so every run records it (perf-1, step A)."""
+    can do, so every run records it."""
     getaffinity = getattr(os, 'sched_getaffinity', None)
     counts = comm.gather(len(getaffinity(0)) if getaffinity else None, root=0)
     if counts is None or None in counts:

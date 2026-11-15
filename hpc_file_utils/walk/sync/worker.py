@@ -1,7 +1,7 @@
-"""SyncWorker: walksync's worker (phase 6). Copies what is new or changed from the source
+"""SyncWorker: walksync's worker. Copies what is new or changed from the source
 (--dirs SRC) to --dest DEST with batched rsync --files-from, never deleting anything.
 
-Three kinds of work, the first the Manager's directories, the others batches (phase 5),
+Three kinds of work, the first the Manager's directories, the others batches,
 which a 'share' can hand to idle ranks (see manager.py):
 
   scan     a source directory: one scandir of it (names and d_type: no stat for files,
@@ -33,7 +33,7 @@ directories, then copy batches), so every copy batch is known early; and the cop
 go costliest first (copy_cost()), on the rank, in what a 'share' takes and at the Manager,
 so a copy that takes hours starts in the run's first minutes.
 
---index (indexes-2, step B; common/index.py): a per-rank record of what was copied,
+--index (common/index.py): a per-rank record of what was copied,
 index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix, .gz with --index=gz),
 walkstat's format with tool=walksync, root= the source and dest= the destination in the
 header. One E record for each entry an rsync copied, from the source lstat the compare
@@ -46,7 +46,7 @@ is what this run copied, not a listing (walkstat --index is that). With --dry-ru
 index is the one the run would write, recorded at the compare, and the header says
 dry-run=yes.
 
-In-flight bytes (tools-find-rm, step 0): a copy batch's bytes are credited when every
+In-flight bytes: a copy batch's bytes are credited when every
 rsync of it has returned, so a batch of one 900 GiB file used to show nothing for an
 hour, and on 4F (16 nodes) the progress line said 36.7 GiB/s while df said ~86 GiB/s.
 A batch now carries its big entries (st_size >= INFLIGHT_MIN), and while it runs the
@@ -133,7 +133,7 @@ class SyncWorker(BaseWorker):
     def __init__(self):
         super().__init__()
         o = self.options
-        self.src = o.dirs[0]                  # normalized by options.py: no trailing '/'
+        self.src = o.dirs[0]                  # normalized by SyncTool.check(): no trailing '/'
         self.dest = o.dest
         self.src_prefix = len(self.src.rstrip('/')) + 1
         self.dry_run = o.dry_run

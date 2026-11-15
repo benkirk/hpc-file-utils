@@ -1,4 +1,4 @@
-"""walksync's in-flight bytes (tools-find-rm, step 0), in-process (no MPI, no rsync): while a
+"""walksync's in-flight bytes, in-process (no MPI, no rsync): while a
 copy batch runs, the progress line counts what is already written of its big entries,
 and replaces that with the batch's bytes when it ends, never counting anything twice."""
 

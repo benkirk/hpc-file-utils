@@ -1,4 +1,4 @@
-"""IndexWriter: an index file a rank writes with --index (the sweep's Part C): one line of
+"""IndexWriter: an index file a rank writes with --index: one line of
 metadata per entry, TSV, written by every rank in parallel with no coordination.
 
   walkstat   index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix): every
@@ -7,13 +7,15 @@ metadata per entry, TSV, written by every rank in parallel with no coordination.
              be found or extracted without reading the whole tar
   walksync   index-r{rank}.tsv: every entry the rank's rsyncs copied (sync/worker.py),
              with dest= (and dry-run=yes for a dry run) in the header
+  walkfind   index-r{rank}.tsv: every entry the rank listed (find/worker.py), like find -ls
 
 The rule: parents before children, in every file. Before any record, every ancestor
 directory up to its --dirs root has a record earlier in the *same* file, so a reader never
 meets a child before its parent and each file imports on its own, in any order or in
 parallel (cat index-*.tsv keeps the property). Two kinds of record, the first column:
-  E  an entry: counted (walkstat) or archived (walktar) here, and exactly once across the
-     whole set of files, by the guarantees the reports and the tars rely on
+  E  an entry: counted (walkstat), archived (walktar), copied (walksync) or listed
+     (walkfind) here, and exactly once across the whole set of files, by the guarantees
+     the reports and the tars rely on
   P  a parent: a structural record that keeps the file closed, repeated across files (and
      batches) as needed, one lstat each. An importer uses it for the hierarchy and skips
      it for totals. The --dirs roots and the directories that fail a selecting filter
@@ -32,7 +34,7 @@ directory the rank ever touched. HFU_INDEX_CACHE_MAX in the environment sets the
 tests set it to 1, so every record's parents are re-derived and the P repeats happen).
 
 Format: a versioned header, then one record per line (the column set is fixed at v1, for
-every tool: docs/HANDOFF-sweep.md 4.8):
+every tool: the walk README, "Indexes"):
   # hfu-index v1<TAB>tool=walkstat<TAB>columns=rec,type,...,path<TAB>root=<root>[<TAB>root=...][<TAB>key=value...]
   rec type size alloc mode uid gid nlink ino atime mtime ctime [offset offset_data] path
 type is one of f d l p s b c ('?' otherwise), alloc st_blocks*512, mode the permission
@@ -75,7 +77,7 @@ FORMATS = ('tsv', 'gz')          # --index's values: --index alone is tsv
 GZIP_SUFFIX = '.gz'
 GZIP_LEVEL = 6
 GZIP_MAGIC = b'\x1f\x8b'
-RANK_INDEX = 'index-r{:03d}.tsv'              # walkstat's and walksync's per-rank index
+RANK_INDEX = 'index-r{:03d}.tsv'              # walkstat's, walksync's and walkfind's per-rank index
 PREFIXED_RANK_INDEX = 'index-{}-r{:03d}.tsv'  # ... with --summary-prefix
 
 TYPE_LETTERS = {stat.S_IFREG: 'f', stat.S_IFDIR: 'd', stat.S_IFLNK: 'l', stat.S_IFIFO: 'p',
@@ -97,12 +99,12 @@ def _escape(m):
 def add_index_argument(parser, help):
     """The --index option of a tool: --index (plain TSV) or --index=gz (the same through
     gzip); options.index is None without it, else 'tsv' or 'gz'."""
-    parser.add_argument('--index', nargs='?', const='tsv', default=None, choices=FORMATS, metavar='gz',
-                        help=help + '. --index=gz writes the same through gzip, ".gz" on each name')
+    parser.add_argument('--index', nargs='?', const='tsv', default=None, choices=FORMATS, metavar='tsv|gz',
+                        help=help + '. --index=gz writes the same through gzip, ".gz" on each name (default: no index; --index alone is tsv)')
 
 
 def rank_index_name(prefix, rank):
-    """A per-rank index's name (walkstat, walksync), before any '.gz': index-r{rank}.tsv,
+    """A per-rank index's name (walkstat, walksync, walkfind), before any '.gz': index-r{rank}.tsv,
     or index-<prefix>-r{rank}.tsv with --summary-prefix."""
     return PREFIXED_RANK_INDEX.format(prefix, rank) if prefix else RANK_INDEX.format(rank)
 

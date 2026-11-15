@@ -107,7 +107,7 @@ def test_worker_updates_have_their_own_timer(progress, interval):
 
 
 # ---------------------------------------------------------------------------
-# phase 4 filters
+# filters
 # ---------------------------------------------------------------------------
 
 def _filtered_worker(tmp_path, *args):
@@ -153,7 +153,7 @@ def test_unfiltered_lists_every_directory(tmp_path):
     w = _worker()
     _walk(w, tmp_path)
     assert {e.path for _, e in w.stats.heaps["nitems_dirs"].top()} == {str(tmp_path), str(tmp_path / "empty")}
-    assert dict(w.stats.st_modes) == {"dir": 2}      # the root too, as before phase 4
+    assert dict(w.stats.st_modes) == {"dir": 2}      # the root too, as without a filter
 
 
 def test_matching_directories_count_as_dirs(tmp_path):
@@ -206,7 +206,7 @@ def test_excluded_entries_are_never_stated(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# phase 5 batches
+# batches
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -420,7 +420,7 @@ def _shutdown(w):
 @pytest.mark.parametrize("stat_threads", [0, 2, 16])
 def test_lstats_keep_the_order_and_yield_errors_in_place(tmp_path, stat_threads):
     """lstats() yields (path, result) in the batch's order whatever the thread count, an
-    OSError standing in for a name that vanished (--stat-threads, perf-1 step C)."""
+    OSError standing in for a name that vanished (--stat-threads)."""
     names = [f"f{i:02d}" for i in range(40)]
     for name in names:
         (tmp_path / name).write_bytes(b"x" * (int(name[1:]) + 1))

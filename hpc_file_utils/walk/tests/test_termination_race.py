@@ -1,4 +1,4 @@
-"""The Manager termination race (HANDOFF phase 2), fixed in manager.py.
+"""The Manager termination race, fixed in manager.py.
 
 Before the fix, the Manager marked a rank idle when it received a ``dir_reply``, but
 workers send those mid-directory every 200 subdirectories (then ``--max-dirs-per-send``). If
@@ -8,19 +8,19 @@ eager limit its send blocked forever (the hang seen on derecho, 2026-11-05); bel
 it the directories were silently dropped. On the wide tree this hung 10 of 10 runs.
 
 Each run is bounded by a timeout and must count every entry. HFU_RACE_RUNS sets the
-number of runs per --local-queue-max value (default 50: the phase 2 gate).
+number of runs per --local-queue-max value (default 50).
 
-Since phase 3.5 the workers keep a local queue and ship its oldest half as overflow
+The workers now keep a local queue and ship its oldest half as overflow
 past --local-queue-max, so 2 is the equivalent stress: a dir_reply every other
 subdirectory, while the Manager also asks the busy rank to share with the idle ones.
 
-Phase 5 adds two batch variants: walkstat with tiny stat batches (lqm2-statbatch20; a
+Two batch variants: walkstat with tiny stat batches (lqm2-statbatch20; a
 lost batch there loses its entries from the Total Count), and walktar with tiny batches, so the busy rank's share
 replies carry batches as well as directories. A lost batch would not show in the Total
 Count (the scan counted it), only in the tars, so it checks that their union is the tree.
-Phase 5.5 runs it with the reader threads (--read-ahead, default 16) and without (0). The
+The walktar one runs with the reader threads (--read-ahead, default 16) and without (0). The
 storm archives 20,000 files on 3 ranks: on derecho scratch, with 16 test workers at once,
-phase 5's tar.add() path (0) takes 45-58 s, so it gets HFU_RACE_TAR_TIMEOUT (default 120 s).
+the plain tar.add() path (0) takes 45-58 s, so it gets HFU_RACE_TAR_TIMEOUT (default 120 s).
 A hang never finishes, so the longer limit still catches one.
 """
 

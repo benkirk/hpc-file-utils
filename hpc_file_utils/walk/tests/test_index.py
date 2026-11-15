@@ -1,4 +1,4 @@
-"""The indexes (the sweep's Part C; common/index.py): the writer and the path encoding in
+"""The indexes (common/index.py): the writer and the path encoding in
 process, then walkstat --index and walktar --index under MPI, checked for closure (every
 record's parent earlier in the same file), exactly once (no E path twice across the files),
 completeness (walkstat's E records are find's listing; walktar's are its tars' members, with

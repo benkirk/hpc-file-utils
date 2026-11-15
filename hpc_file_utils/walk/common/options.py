@@ -9,6 +9,15 @@ from hpc_file_utils.walk.common.filters import add_filter_options, compile_filte
 from hpc_file_utils.walk.tools import TOOLS
 
 
+class HelpFormatter(argparse.HelpFormatter):
+    """argparse's, but text with line breaks of its own (the examples) is left as written."""
+
+    def _fill_text(self, text, width, indent):
+        if '\n' in text:
+            return '\n'.join(indent + line for line in text.splitlines())
+        return super()._fill_text(text, width, indent)
+
+
 def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse argv (default: sys.argv[1:]) for the tool named appname; args.app names it.
 
@@ -17,26 +26,31 @@ def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Names
     """
     tool = TOOLS[appname]
     # allow_abbrev=False: '--summary x' used to be taken silently as '--summary-prefix x'
-    parser = argparse.ArgumentParser(prog=appname, description=tool.description, allow_abbrev=False)
+    parser = argparse.ArgumentParser(prog=appname, description=tool.description, epilog=tool.epilog(), allow_abbrev=False,
+                                     formatter_class=HelpFormatter)
 
-    # common arguments first
-    parser.add_argument('-d', '--dirs', nargs='+', help='List of Directories', required=True)
-    parser.add_argument('-p', '--progress', type=int, default=5, help='Frequency to report progress (default:5 seconds, <=0 disables)')
-    parser.add_argument('-s', '--spreadsheet', default=None, help='Summary spreadsheet', type=str, required=False)
-    parser.add_argument('--summary-prefix', default=None, help='Summary spreadsheet entity prefix', required=False)
+    # common arguments first. An option a tool accepts but does not use is left out of
+    # its --help (hidden()); it still parses, as before.
+    def hidden(used, text):
+        return text if used else argparse.SUPPRESS
+
+    parser.add_argument('-d', '--dirs', nargs='+', metavar='DIR', required=True, help=tool.dirs_help)
+    parser.add_argument('-p', '--progress', type=int, default=5, metavar='SECONDS', help='Seconds between progress lines; 0 or less prints none (default: 5)')
+    parser.add_argument('-s', '--spreadsheet', default=None, type=str, metavar='FILE', help=hidden(tool.reports, 'Also write the summary\'s lists to this .xlsx workbook, as sheets added to it or replaced in it (needs pandas and openpyxl)'))
+    parser.add_argument('--summary-prefix', default=None, metavar='PREFIX', help=hidden(tool.reports or tool.indexes, 'Name this run\'s outputs: ' + ('summary-PREFIX, userlists/PREFIX/, the spreadsheet\'s sheets and ' if tool.reports else '') + 'index-PREFIX-r{rank}.tsv (default: ' + ('summary-output, userlists/ and ' if tool.reports else '') + 'index-r{rank}.tsv)'))
     parser.add_argument('-v', '--verbose', action='store_true', help='Print detailed information (per-rank counts, Manager counters)')
-    parser.add_argument('--heap-size', default=500, type=int, required=False, help='Length of the largest-files/directories lists kept, overall and per user (default: 500)')
-    parser.add_argument('--threshold-size', default='10MB', type=str, required=False, help='Only consider directories larger than this threshold when tracking mtimes/atimes (string')
-    parser.add_argument('--threshold-count', default=10000, type=int, required=False, help='Only consider directories larger than this threshold when tracking mtimes/atimes (count)')
-    parser.add_argument('--local-queue-max', default=1000, type=int, required=False, help='Subdirectories a worker keeps for itself; past this it sends the oldest half to the manager (default: 1000)')
-    parser.add_argument('--dirs-per-dispatch', default=8, type=int, required=False, help='Directories the manager hands an idle worker at once (default: 8)')
-    parser.add_argument('--batch-files', default=1000, type=int, required=False, help='Files per batch, the unit of work idle ranks can take: walkstat stats a batch, walktar writes it as one tar, walksync compares one and copies one with one rsync (default: 1000)')
+    parser.add_argument('--heap-size', default=500, type=int, metavar='N', help=hidden(tool.reports, 'Length of the largest-files and largest-directories lists kept, overall and per user (default: 500)'))
+    parser.add_argument('--threshold-size', default='10MB', type=str, metavar='SIZE', help=hidden(tool.reports, 'With --threshold-count, what is too small to list: a directory below both stays out of the per-user and by-age directory lists, and a user or group below both gets no row and no userlist (default: 10MB)'))
+    parser.add_argument('--threshold-count', default=10000, type=int, metavar='N', help=hidden(tool.reports, 'The same threshold, as a number of entries (default: 10000)'))
+    parser.add_argument('--local-queue-max', default=1000, type=int, metavar='N', help='Subdirectories a worker keeps for itself; past this it sends the oldest half to the Manager (default: 1000)')
+    parser.add_argument('--dirs-per-dispatch', default=8, type=int, metavar='N', help='Directories the Manager hands an idle worker at once (default: 8)')
+    parser.add_argument('--batch-files', default=1000, type=int, metavar='N', help=f'Names per batch, the unit of work an idle rank can take from a busy one: {tool.batch_help} (default: 1000)')
     if tool.batches_bytes:
-        parser.add_argument('--batch-size', default='16GiB', type=str, required=False, help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own. The walk ends one batch after the last rank takes its last, so aim for at least ~5 batches per worker: total bytes / (5 x workers), within ~1-16GiB (the walk README, "Sizing the batches") (default: 16GiB)')
-    parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be scanned (default: exit 0, errors are only counted)')
+        parser.add_argument('--batch-size', default='16GiB', type=str, metavar='SIZE', help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own. The walk ends one batch after the last rank takes its last, so aim for at least ~5 batches per worker: total bytes / (5 x workers), within about 1GiB to 16GiB (the walk README, "Sizing the batches") (default: 16GiB)')
+    parser.add_argument('--fail-on-errors', action='store_true', help=hidden(tool.errors_exit is None, 'Exit with status 2 if any directory or entry could not be read (default: exit 0; errors are counted and reported)'))
     parser.add_argument('--profile', action='store_true', help='Every rank writes a cProfile of its run to profile-r{rank}.prof in the working directory (read with python -m pstats)')
 
-    add_filter_options(parser)
+    add_filter_options(parser, tool)
 
     # the tool's own arguments follow
     tool.add_arguments(parser)

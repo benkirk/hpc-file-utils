@@ -35,7 +35,7 @@ class DirEntry(NamedTuple):
 
 class DirTotals:
     """A directory's own (non-recursive) totals, or part of them: walkstat's stat batches
-    (phase 5) can split a big directory's entries over several ranks, whose parts add up.
+    can split a big directory's entries over several ranks, whose parts add up.
     Max times are over the non-directories only; -1 while there are none."""
     __slots__ = ('nitems', 'nbytes', 'max_mtime', 'max_ctime', 'max_atime', 'uids')
 
@@ -152,7 +152,7 @@ COUNTERS = (
     'num_dirs',        # directories walked
     'num_items',       # entries counted (num_files plus the directories that count)
     'total_size',      # their bytes, min(st_size, st_blocks * 512)
-    'num_errors',      # entries that could not be scanned, stat'ed, archived or copied
+    'num_errors',      # entries that could not be scanned, stat'ed, archived, copied or removed
     'num_excluded',    # entries pruned by --exclude (never stat'ed or descended)
     'num_unmatched',   # entries stat'ed but not counted: they failed a selecting filter
 )

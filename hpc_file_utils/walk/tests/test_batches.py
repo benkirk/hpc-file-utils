@@ -1,4 +1,4 @@
-"""File batches as units of work (phase 5): one big directory of files, spread over all ranks
+"""File batches as units of work: one big directory of files, spread over all ranks
 (walktar's tars, and walkstat's stats).
 
 walktar's scanning rank closes a batch every --batch-files files and keeps it; the

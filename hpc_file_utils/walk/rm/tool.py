@@ -22,6 +22,14 @@ class RmTool(Tool):
                    'during the walk, then the directories, deepest first, after it. Every target must be '
                    'strictly under an --allowed-root; symlinks are never followed and no filesystem boundary '
                    'is crossed.')
+    examples = ('mpiexec -n 32 walkrm --allowed-root /glade/derecho/scratch/$USER --dirs /glade/derecho/scratch/$USER/old-run --dry-run',
+                'mpiexec -n 32 walkrm --allowed-root /glade/derecho/scratch/$USER --dirs /glade/derecho/scratch/$USER/old-run')
+    dirs_help = 'The directories to remove, each with everything below it'
+    batch_help = 'a directory\'s files are unlinked a batch at a time'
+    reports = False
+    indexes = False
+    selects = None           # whole trees only: a filter is refused
+    errors_exit = 1          # something was left (or would not be removed)
 
     rmdir_seconds = 0.0      # rank 0: the rmdir pass's time, for the report
 
@@ -122,10 +130,6 @@ class RmTool(Tool):
     def report(self, manager, stats):
         from hpc_file_utils.walk.rm.report import rm_lines
         print('\n'.join(rm_lines(stats, manager.options, manager.walk_elapsed, self.rmdir_seconds)), flush=True)
-
-    def exit_status(self, total_errors, options):
-        """1 on any error: something was left (or would not be removed)."""
-        return 1 if total_errors else 0
 
     def make_worker(self):
         from hpc_file_utils.walk.rm.worker import RmWorker

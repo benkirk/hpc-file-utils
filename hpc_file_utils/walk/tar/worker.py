@@ -1,5 +1,5 @@
 """TarWorker: walktar's worker. One tar file per batch of files, plus one per rank for
-the directories it walks (phase 5; see manager.py for batches and the protocol).
+the directories it walks (see manager.py for batches and the protocol).
 
   output-r{rank}-b{n}.tar   one batch (selected files only), archived by 'rank', its n-th
   output-r{rank}-dirs.tar   every directory 'rank' walked, roots included (mode, owner, times)
@@ -8,23 +8,23 @@ Restore: extract the batch tars in any order (or in parallel), then the -dirs ta
 set the directories' modes and times after their files are in place (a read-only
 directory would otherwise refuse files from another tar).
 
-Two levels of batches (the sweep's Part B): the scan is walkstat's (stat/worker.py), so
+Two levels of batches: the scan is walkstat's (stat/worker.py), so
 the scanning rank stats only the subdirectories and cuts the other names into
 StatBatches by count. The rank that processes a StatBatch stats, filters and counts
 each name, and puts the selected files in its open FileBatch, which closes at
 --batch-files files or --batch-size bytes of real st_size and is written as one tar,
 here or on an idle rank. Before this, the scanning rank stat'ed every file itself: on
-one huge campaign GPFS directory it made ~1,000 entries/s while the other ranks waited
-(phase 5.5). The StatBatch's FileBatches are created only on the rank processing it
+one huge campaign GPFS directory it made ~1,000 entries/s while the other ranks waited.
+The StatBatch's FileBatches are created only on the rank processing it
 and processed before its next 'ready', so the Manager's termination argument holds.
 
-Read-ahead (phase 5.5): a small file costs one storage round trip, ~35 ms on campaign GPFS
+Read-ahead: a small file costs one storage round trip, ~35 ms on campaign GPFS
 and on scratch, whatever its size up to a few MiB; one stream waiting on each in turn made
 ~26 files/s. --read-ahead reader threads open and read the batch's next files while this
 thread writes the current one into the tar, in order. tarfile's own gettarinfo() and
 addfile() build and write each member, so the members are exactly tar.add()'s.
 
---index (the sweep's Part C; common/index.py): one index beside each tar, <tar>.idx
+--index (common/index.py): one index beside each tar, <tar>.idx
 (<tar>.idx.gz with --index=gz), with every member's lstat and its offsets in the tar. The
 lstat is the found one, from before the member was read: the reader's, in open_member(),
 for a regular file; one taken just before tar.add() for anything else and with
@@ -44,7 +44,7 @@ from hpc_file_utils.walk.common.index import IndexWriter
 from hpc_file_utils.walk.stat.worker import StatBatch, StatWorker
 
 # tarfile copies a member's data in chunks of copybufsize bytes, 16 KiB by default. Bigger
-# reads and writes cost fewer calls; 16 MiB was 2-5% faster on derecho scratch (phase 5).
+# reads and writes cost fewer calls; 16 MiB was 2-5% faster on derecho scratch.
 COPY_BUFSIZE = 16 * 1024 * 1024
 
 # A reader thread reads a regular file whole when it is at most this big; a bigger one it
@@ -145,7 +145,7 @@ class TarWorker(StatWorker):
 
     def add_member(self, tar, path, opened, index=None):
         """Add one batch entry; opened is open_member(path)'s Future, or None (--read-ahead
-        0) for plain tar.add(), phase 5's path. Counts a failure, as add() does. With an
+        0) for plain tar.add(). Counts a failure, as add() does. With an
         index the member is recorded from the reader's lstat, taken before its read."""
         if opened is None:
             return self.add(tar, path, index)
@@ -203,7 +203,7 @@ class TarWorker(StatWorker):
         """A stat batch's lstats run --read-ahead at a time in the reader threads (one at
         a time with --read-ahead 0). On campaign GPFS under the readers' load one lstat
         took ~9 ms, so a batch's 1,000 in a row kept a rank's readers idle for a quarter
-        of its time (the walk README, Part B)."""
+        of its time (docs/walk-changelog.md, "walktar onto stat batches")."""
         return self.options.read_ahead
 
     def stat_pool(self):

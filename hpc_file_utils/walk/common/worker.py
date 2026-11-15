@@ -25,8 +25,8 @@ WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages
 
 
 class FileBatch(NamedTuple):
-    """A closed batch of selected files (close_batch()): walktar writes it as one tar,
-    walksync copies it with one rsync. Batches are module-level NamedTuples so they
+    """A closed batch of selected files (close_batch()): walktar writes it as one tar;
+    walksync's is a CopyBatch (sync/worker.py), with more fields. Batches are module-level NamedTuples so they
     pickle in a share_reply; the Manager treats every kind as one opaque unit of work."""
     paths  : list   # the files' paths (walktar) or paths relative to the source root (walksync)
     nbytes : int    # their st_size total
@@ -64,8 +64,8 @@ class BaseWorker(MPIClass):
     def __init__(self):
         super().__init__()
 
-        self.local_dirs = []          # directories still to walk, a stack (phase 3.5)
-        self.local_batches = []       # closed batches still to process (phase 5): FileBatch, or the tool's own kind
+        self.local_dirs = []          # directories still to walk, a stack
+        self.local_batches = []       # closed batches still to process: FileBatch, or the tool's own kind
         self.batch = []               # the open batch: paths of selected files, across directories
         self.batch_bytes = 0          # ... and their st_size total
         self.max_local_dirs = 0       # its high-water mark
@@ -171,8 +171,8 @@ class BaseWorker(MPIClass):
 
     def process_directory(self, dirname):
         """Scan one directory, ours or the Manager's: count it, push its subdirectories
-        (push_dir()) and queue its other names as the tool's batches. Every tool's scan
-        is walkstat's (stat/worker.py) or built on it; walksync's is its own."""
+        (push_dir()) and queue its other names as the tool's batches. Each tool has its
+        own scan; walktar's is walkstat's (stat/worker.py)."""
         raise NotImplementedError
 
     def list_directory(self, dirname, totals):

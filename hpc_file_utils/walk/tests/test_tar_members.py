@@ -1,4 +1,4 @@
-"""walktar's members (phase 5.5): the reader threads open and read a batch's files ahead,
+"""walktar's members: the reader threads open and read a batch's files ahead,
 and TarWorker.add_member() writes them; the tar must hold exactly what tar.add() wrote.
 In-process, no MPI."""
 

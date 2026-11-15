@@ -1,4 +1,4 @@
-"""RmWorker: walkrm's worker (tools-find-rm, step 2). Removes trees in two phases.
+"""RmWorker: walkrm's worker. Removes trees in two phases.
 
   scan     a directory: opened with O_NOFOLLOW (a directory swapped for a symlink since its
            parent's scan is refused, not followed), checked to be on its target's st_dev,
