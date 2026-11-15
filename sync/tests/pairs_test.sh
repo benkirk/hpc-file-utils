@@ -220,13 +220,16 @@ expect_eq "msrsync auto: plain dsync pair" "$(in_pairs pairs.conf 'pair_load C-f
 printf '%s\n' "msrsync: sometimes" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf ms.conf
 expect_has "msrsync: an invalid setting" "$(in_pairs ms.conf 'pair_load X && msrsync_resolve')" "invalid msrsync setting 'sometimes'"
 
-# casper refuses walksync (in the job, and at submission below); dsync is fine there
-expect_has "copier_host_check: walksync on casper" \
-    "$(NCAR_HOST=derecho in_pairs copier.conf 'pair_load W-plain && copier_host_check casper')" "not supported on casper"
-expect_eq "copier_host_check: walksync on derecho" \
-    "$(NCAR_HOST=derecho in_pairs copier.conf 'pair_load W-plain && copier_host_check derecho && echo ok')" "ok"
-expect_eq "copier_host_check: dsync on casper" \
-    "$(in_pairs copier.conf 'pair_load D-dsync && copier_host_check casper && echo ok')" "ok"
+# walksync on casper (conda-forge Open MPI): no PALS binding words by default
+printf '%s\n' "copier: walksync" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf wscasper.conf
+expect_eq "walksync on casper: binds nothing by default" \
+    "$(NCAR_HOST=casper in_pairs wscasper.conf 'pair_load X && echo "${copier}|${walksync_bind}|${hfu_root}"')" \
+    "walksync|--bind-to none|/glade/u/apps/opt/hpc-file-utils/current-casper"
+expect_eq "walksync on derecho: PALS depth binding by default" \
+    "$(NCAR_HOST=derecho in_pairs wscasper.conf 'pair_load X && echo "${walksync_bind}"')" "--cpu-bind depth --depth 4"
+printf '%s\n' "copier: walksync" "casper.walksync_bind: --bind-to socket" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf wsbind.conf
+expect_eq "walksync on casper: a host-specific binding" \
+    "$(NCAR_HOST=casper in_pairs wsbind.conf 'pair_load X && echo "${walksync_bind}"')" "--bind-to socket"
 
 #--------------------------------------------------------------
 # done stamps
@@ -307,14 +310,13 @@ expect_has "casper: queue" "${qsubs}" "-q casper"
 expect_has "casper: chunk, nodes from the environment" "${qsubs}" "-l select=2:ncpus=16:mpiprocs=16:mem=160G"
 expect_has "dryrun passed on" "${qsubs}" "dryrun=yes"
 
-# copier: walksync - submitted from derecho, refused on casper
+# copier: walksync - submitted from either host (casper since its conda-forge Open MPI)
 submit NCAR_HOST=derecho pairs_conf=copier.conf W-readonly
 expect_eq "walksync on derecho: exit status" "${rc}" "0"
 expect_has "walksync on derecho: submitted" "${qsubs}" "-N cgd_W-readonly"
 submit NCAR_HOST=casper pairs_conf=copier.conf W-readonly
-expect_eq "walksync on casper: refused" "${rc}" "1"
-expect_has "walksync on casper: says why" "${out}" "not supported on casper"
-expect_eq "walksync on casper: no qsub" "${qsubs}" ""
+expect_eq "walksync on casper: exit status" "${rc}" "0"
+expect_has "walksync on casper: submitted" "${qsubs}" "-N cgd_W-readonly"
 submit NCAR_HOST=casper pairs_conf=copier.conf D-dsync
 expect_has "dsync on casper: submitted" "${qsubs}" "-N cgd_D-dsync"
 

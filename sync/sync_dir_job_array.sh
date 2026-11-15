@@ -63,7 +63,6 @@ if [[ -z ${pair} ]]; then
     fi
 fi
 pair_load "${pair}" || exit 1
-copier_host_check "${cluster}" || exit 1
 
 echo "Synchronizing [${pair}] ${srcdir} -> ${destdir} (hsm=${hsm}, copier=${copier})"
 
