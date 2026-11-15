@@ -54,7 +54,7 @@ def test_big_directory_is_spread_over_every_rank(walk, big_dir_tree, tmp_path):
     assert sorted(files) == [1, 2, 3], f"a worker archived nothing: {dict(files)}\n{r.report()}"
     # every worker took at least one batch. How many each takes depends on timing: on CI's
     # loaded runners one rank has kept 270-363 of the 403 files, with or without --read-ahead,
-    # so the share is not bounded here. Balance at scale is measured on derecho (walk README).
+    # so the share is not bounded here. Balance at scale is measured on Derecho (docs/walk-changelog.md).
     assert min(n for n, _ in files.values()) >= 10, f"{dict(files)}\n{r.report()}"
     assert sum(len(v) for v in dirs.values()) == 5     # tree, big, a, a/b, c: one -dirs tar each walker
 

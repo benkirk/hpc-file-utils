@@ -83,7 +83,7 @@ Fairness: MPI promises no order between senders, but the Manager takes every mes
 as it comes, whatever its tag, and each costs it microseconds, so a busy worker's
 dir_reply/progress messages delay a 'ready' only briefly. (One blocking receive per
 message replaced a pass that probed every worker in turn: at 384 ranks over 4 nodes
-those probes kept the Manager busy and made workers wait; see walk/README.md.)
+those probes kept the Manager busy and made workers wait; see docs/walk-changelog.md.)
 """
 
 import heapq
