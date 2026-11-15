@@ -60,6 +60,7 @@ Tunables, per pair or global:
 | `msrsync_procs` | `nproc` | on the node left after the release |
 | `max_delete` | `1%` | rsync `--max-delete`: N, or N% of the source entries walkfind walked (at least 1000) |
 | `verify_sample` | 200 | files compared with the source before stamping (0 = off) |
+| `verify_max_bytes` | `16G` | sampled files up to this size are compared whole; bigger ones by their size, first and last 1 GiB and 8 random 1 GiB windows |
 | `copier` | `dsync` | `dsync` or `walksync` (derecho only): the bulk copy, see *walksync as the copier* |
 | `walksync_opts` | `--rsyncs 8` | more walksync options, split on blanks (no quotes or globs) |
 | `walksync_bind` | `--cpu-bind depth --depth 4` | walksync's `mpiexec` CPU binding |
@@ -378,7 +379,9 @@ All into empty destinations (4B's deleted with drm first: 1,615,528 items in 1,0
   during the run), so walksync exited 143 (the rank exited 1 and PALS sent its peers SIGTERM,
   after the summary). The serial pass found nothing to copy, but a non-zero walksync withholds
   the stamp; the re-pass (4 nodes) walked 3 PiB unchanged in 11 s and stamped. Its 80 minutes
-  were nearly all the 200-file `cmp` (~3.6 TB, serial).
+  were nearly all the 200-file `cmp`. It ran 8 at a time, but one sampled file was 898 GiB, and
+  that one `cmp` was the 80 minutes (`docs/walk-tail-4F.md`). Since tail-fixes, files above
+  `verify_max_bytes` [16G] are compared by windows.
 
 ## HSM / COLD_STORAGE (3A)
 

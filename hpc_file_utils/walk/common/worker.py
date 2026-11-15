@@ -216,12 +216,16 @@ class BaseWorker(MPIClass):
                 self.progress_extra())
 
     def oldest_half(self):
-        """Remove and return the oldest half of the local stack.
+        """Remove and return the oldest half of the local stack, rounded up.
 
         The oldest entries are the shallowest, so the ones most likely to hold big
         subtrees: one shipment carries real work, and we keep walking depth-first.
+        Rounded up, as oldest_batches(): a rank busy with an hour-long copy batch gives
+        away the one directory it still holds (4F: rounded down, 3 such directories sat
+        for minutes while hundreds of ranks asked, and the files in them were found
+        late; docs/walk-tail-4F.md).
         """
-        n = len(self.local_dirs) // 2
+        n = len(self.local_dirs) - len(self.local_dirs) // 2
         give, self.local_dirs = self.local_dirs[:n], self.local_dirs[n:]
         return give
 
@@ -260,20 +264,30 @@ class BaseWorker(MPIClass):
         self.last_progress_time = now
         self.comm.send(self.progress_payload(), dest=0, tag=Tag.PROGRESS)
 
+    def next_batch(self):
+        """The batch drain_local_work() processes next, before any directory, removed from
+        our list; None to walk a directory first. Default: the newest batch. walksync
+        walks before it copies (sync/worker.py)."""
+        return self.local_batches.pop() if self.local_batches else None
+
     def drain_local_work(self):
-        """Process our batches and walk our stack, batches first, until both are empty;
-        then close the open batch (the last, partial one) and process it too.
+        """Process our batches and walk our stack until both are empty, in next_batch()'s
+        order (batches first, unless the tool says otherwise); then close the open batch
+        (the last, partial one) and process it too.
 
         The 'share' check comes before each pick, since it may give away what we would
         have picked. On return we hold nothing: no directory, no batch, open or closed.
         """
         while True:
             self.check_share()
-            if self.local_batches:
-                self.process_batch(self.local_batches.pop())
+            batch = self.next_batch()
+            if batch is not None:
+                self.process_batch(batch)
             elif self.local_dirs:
                 self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
                 self.process_directory(self.local_dirs.pop())
+            elif self.local_batches:
+                self.process_batch(self.local_batches.pop())
             else:
                 self.close_batch()
                 if not self.local_batches:

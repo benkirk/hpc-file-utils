@@ -467,7 +467,7 @@ def _share_worker(dirs, batches):
 
 
 @pytest.mark.parametrize("ndirs, nbatches, gave_dirs, gave_batches", [
-    (0, 0, 0, 0), (1, 1, 0, 1), (4, 3, 2, 2), (5, 4, 2, 2), (0, 5, 0, 3)])
+    (0, 0, 0, 0), (1, 1, 1, 1), (4, 3, 2, 2), (5, 4, 3, 2), (0, 5, 0, 3)])
 def test_share_gives_oldest_half_of_dirs_and_batches_rounded_up(ndirs, nbatches, gave_dirs, gave_batches):
     dirs = [f"d{i}" for i in range(ndirs)]
     batches = [FileBatch([f"b{i}"], 1) for i in range(nbatches)]

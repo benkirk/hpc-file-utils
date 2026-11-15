@@ -469,17 +469,22 @@ if [[ ${rc} -eq 0 ]]; then
             | while IFS= read -r f; do [[ -f ${f} && ! -L ${f} ]] && echo "${f}"; done \
             | head -n "${verify_sample}" > verify_sample.${suffix}
         nsample=$(wc -l < verify_sample.${suffix} | tr -d ' ')
+        # files above verify_max_bytes are compared by windows (verify_cmp, pairs.sh)
+        verify_max="$(verify_max_resolve)" || exit 1
+        npartial=$(tr '\n' '\0' < verify_sample.${suffix} | xargs -0 -r stat -c %s -- 2>/dev/null \
+                   | awk -v m="${verify_max}" '$1 > m' | wc -l | tr -d ' ')
         # SRC/DST must be in xargs' environment: as a prefix on 'tr' they were empty, and cmp
         # compared each dest file with itself (GNU cmp: same file -> identical, instantly).
         # An empty SRC or a self-comparison counts as a mismatch.
+        export -f verify_cmp
         # shellcheck disable=SC2016
         tr '\n' '\0' < verify_sample.${suffix} \
-            | SRC="${srcdir}" DST="${destdir}" xargs -0 -r -n 1 -P 8 bash -c \
-                's="${SRC}/${1#"${DST}"/}"; [[ -n ${SRC} && ${s} != "$1" ]] && cmp -s -- "${s}" "$1" || echo "MISMATCH $1"' _ \
+            | SRC="${srcdir}" DST="${destdir}" VMAX="${verify_max}" xargs -0 -r -n 1 -P 8 bash -c \
+                's="${SRC}/${1#"${DST}"/}"; [[ -n ${SRC} && ${s} != "$1" ]] && verify_cmp "${s}" "$1" "${VMAX}" || echo "MISMATCH $1"' _ \
             > verify_mismatch.${suffix}
         nbad=$(wc -l < verify_mismatch.${suffix} | tr -d ' ')
         report_elapsed ${sstart}
-        echo "   compared ${nsample} files, ${nbad} mismatches (verify_mismatch.${suffix})"
+        echo "   compared ${nsample} files (${npartial} above ${verify_max} bytes by 1 GiB windows: head, tail, 8 random), ${nbad} mismatches (verify_mismatch.${suffix})"
         [[ ${nbad} -eq 0 ]] || unclean+=("${nbad} of ${nsample} sampled files differ from the source")
     fi
 fi

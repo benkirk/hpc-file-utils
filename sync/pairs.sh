@@ -278,6 +278,44 @@ delete_dest_check()
 
 
 #--------------------------------------------------------------
+# verify_max_resolve : prints the 'verify_max_bytes' tunable [16G] in bytes (N, or N with an
+# IEC suffix K M G T: 16G = 16 GiB); call after pair_load.
+verify_max_resolve()
+{
+    local v b
+    v="$(setting verify_max_bytes 16G)"
+    b="$(numfmt --from=iec -- "${v}" 2>/dev/null)" && [[ ${b} =~ ^[0-9]+$ && ${b} -gt 0 ]] \
+        || { echo "ERROR: [${pair}] invalid verify_max_bytes '${v}' (N or N[KMGT])" >&2; return 1; }
+    echo "${b}"
+}
+
+
+#--------------------------------------------------------------
+# verify_cmp <src> <dest> <max bytes> : prints "MISMATCH <dest>" unless dest has src's
+# content. A file up to <max bytes> is compared whole. A bigger one: its size, its first and
+# last VERIFY_WINDOW bytes [1 GiB] and VERIFY_WINDOWS [8] windows at random offsets, so one
+# huge file cannot hold the stage for an hour (4F: one 898 GiB file was the 80 min). Exported
+# to the xargs workers of the job's sample stage.
+verify_cmp()
+{
+    local src=$1 dst=$2 max=$3 win=${VERIFY_WINDOW:-1073741824} nwin=${VERIFY_WINDOWS:-8} ss ds off
+    ss="$(stat -c %s -- "${src}" 2>/dev/null)" && ds="$(stat -c %s -- "${dst}" 2>/dev/null)" && [[ ${ss} == "${ds}" ]] \
+        || { echo "MISMATCH ${dst}"; return 0; }
+    # whole when the windows would read as much (derecho: 10 x 1 GiB windows of an 8 GiB file
+    # took 22 s, the whole file 17 s)
+    if (( ds <= max || ds <= (nwin + 2) * win )); then
+        cmp -s -- "${src}" "${dst}" || echo "MISMATCH ${dst}"
+        return 0
+    fi
+    # cmp -n LIMIT FILE1 FILE2 SKIP1 SKIP2: GNU's and BSD's cmp both take it
+    for off in 0 $(( ds - win )) $(shuf -i "0-$(( ds - win ))" -n "${nwin}"); do
+        cmp -s -n "${win}" -- "${src}" "${dst}" "${off}" "${off}" || { echo "MISMATCH ${dst}"; return 0; }
+    done
+    return 0
+}
+
+
+#--------------------------------------------------------------
 # walksync_inplace_resolve <dest is empty: yes|no> : prints yes|no; call after pair_load
 walksync_inplace_resolve()
 {

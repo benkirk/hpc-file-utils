@@ -106,11 +106,14 @@ directories are, so one huge directory no longer ties up one rank for hours.
   directory it made ~1,000 entries/s while the other ranks waited (Phase 5.5, below).
 - **Where batches go:**
   - A rank keeps the batches it makes and processes them itself, batches before
-    directories: a stat batch's file batches go on the same list and are written before
-    the next stat batch. The open file batch carries over from one stat batch and one
+    directories (walksync: compare batches, then directories, then copy batches; see its
+    section): a stat batch's file batches go on the same list and are written before the
+    next stat batch. The open file batch carries over from one stat batch and one
     directory to the next, so small directories combine.
   - A batch leaves its rank only in the answer to the Manager's `share`: the oldest half of
-    the rank's closed batches, rounded up, plus the oldest half of its stack.
+    the rank's closed batches, rounded up, plus the oldest half of its stack, rounded up too
+    (tail-fixes: rounded down, a rank busy with one long batch kept its last directory;
+    [docs/walk-tail-4F.md](../../docs/walk-tail-4F.md)).
   - The Manager hands out one batch per `execute`, and hands batches out before directories.
   - The termination argument covers batches (see `manager.py`): a stat batch creates file
     batches only on the rank processing it, which processes them before its next `ready`.
@@ -272,6 +275,12 @@ rerun with nothing changed copies nothing: it costs only the walk.
   list says `no ACLs` or `no xattrs`, `-A`/`-X` are dropped, since rsync would refuse them.
   The banner warns, and the summary says the final serial rsync (with a capable rsync) must
   copy them.
+- **Walk before copying** (tail-fixes): a rank takes its compare batches first, then its
+  directories, and its copy batches only when its walk is done (`SyncWorker.next_batch()`).
+  Every copy is found early, while ranks are still free to take copy batches through
+  `share`s. With copies first, 4F's walk (66 s for `dfind`) took 10.4 h behind the copies,
+  and its last huge files were found at the end and copied by one rsync each while ~500
+  ranks waited ([docs/walk-tail-4F.md](../../docs/walk-tail-4F.md)).
 - **Termination:** a compare batch creates copy batches. They stay on the rank that
   processed it, which handles them before its next `ready`, so the Manager's argument
   (manager.py, point 1) is unchanged.

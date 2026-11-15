@@ -1,7 +1,16 @@
 # 4F's late-walk tail and the slow cmp sample (tools-find-rm, step 4)
 
-Investigation only: the findings, a local reproduction, and recommendations. Fixing either is its
-own sprint.
+Investigation: the findings, a local reproduction, and recommendations. **Fixed in tail-fixes:**
+recommendation 1 (share the last directory), 2 (walksync walks before copying) and the cmp
+byte cap, option (a). Recommendation 3 (largest batches first) is still open.
+
+Measured after the fixes (derecho scratch, 2 nodes × 32, a 4F-shaped mock: 16 directories, each
+an 8 GiB file on top and another three levels down, `--batch-size 4GiB`; ABBA against the
+shared install's 510ceab): the walk was complete at the first progress line (5 s) in both new
+runs, against 45 s and 30 s in the old ones, which sat at 139 of 145 items with `queued=1,
+idle=32` (one rank keeping its last directory while 32 waited). The totals did not move
+(218–227 s): this mock is bound by the copy bandwidth (~1.15 GiB/s), not by when the files are
+found. The gain is where idle ranks could have copied late-found huge files, as on 4F.
 
 Source: 4F (km-scale) round 1, job 8165386, 16 nodes × 32 ranks, `copier: walksync`,
 `--rsyncs 8 --rsync-opts=--inplace`. Logs are in `/glade/derecho/scratch/benkirk/cgd_migration/`
