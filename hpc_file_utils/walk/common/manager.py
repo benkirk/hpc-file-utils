@@ -5,7 +5,8 @@ only when it overflows, when it runs dry, or when the Manager asks them to share
 (phase 3.5; docs/walk-load-balancing.md, section 5).
 
 Phase 5: the workers also turn a directory's files into batches, kept on the scanning
-worker's own list and processed there, batches before directories: walkstat's are
+worker's own list and processed there, batches before directories (walksync: compare
+batches, then directories, then copy batches; BaseWorker.next_batch()): walkstat's are
 StatBatch(dirname, names, tail), the names still to stat (stat/worker.py); walktar's
 are those too, whose stats fill FileBatch(paths, nbytes), archived into one tar each
 (tar/worker.py); walksync's are CompareBatch and FileBatch (sync/worker.py). A batch

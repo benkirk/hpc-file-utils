@@ -262,6 +262,18 @@ class SyncWorker(BaseWorker):
         except OSError:
             return None
 
+    def next_batch(self):
+        """Walk before copying: the newest compare batch, or None (walk a directory) while
+        we hold one, so a copy batch waits until our walk is done. A compare batch finds
+        what to copy, so every copy batch is known early, and the idle ranks' shares can
+        take them; with copies first, 4F's last huge files were found ~10 h in and copied
+        by one rsync each while ~500 ranks waited (docs/walk-tail-4F.md)."""
+        batches = self.local_batches
+        for i in range(len(batches) - 1, -1, -1):
+            if type(batches[i]) is CompareBatch:
+                return batches.pop(i)
+        return None
+
     def process_batch(self, batch):
         """A CompareBatch, or a CopyBatch to copy, ours or shared."""
         if isinstance(batch, CompareBatch):

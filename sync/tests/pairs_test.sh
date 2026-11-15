@@ -394,6 +394,38 @@ touch "${lock}"
 out="$(HOME="${work}" pairs_conf=deletes.conf bash -c '. ./pairs.sh && pair_load B-second && delete_dest_check "$0" skip' "${root}/dest/b" 2>&1)"
 expect_has "delete: refused while the sync lock is held" "${out}" "sync lock"
 
+#--------------------------------------------------------------
+# the cmp sample: verify_max_bytes, and verify_cmp's whole-file and windowed compares
+expect_eq "verify_max_bytes: default 16G" "$(in_pairs pairs.conf 'pair_load B-second && verify_max_resolve')" "17179869184"
+printf '%s\n' "verify_max_bytes: 1M" "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" | write_conf vmax.conf
+expect_eq "verify_max_bytes: 1M" "$(in_pairs vmax.conf 'pair_load X && verify_max_resolve')" "1048576"
+printf '%s\n' "[X]" "src: ${root}/src/x" "dest: ${root}/dest/x" "verify_max_bytes: lots" | write_conf vbad.conf
+expect_has "verify_max_bytes: refused" "$(in_pairs vbad.conf 'pair_load X && verify_max_resolve')" "invalid verify_max_bytes"
+mkdir -p vc
+head -c 3000 /dev/urandom > vc/small && cp vc/small vc/small.copy
+head -c 100000 /dev/urandom > vc/big && cp vc/big vc/big.copy
+poke() # <file> <offset> : change one byte in place
+{
+    local b
+    b="$(dd if="$1" bs=1 skip="$2" count=1 2>/dev/null | od -An -tu1 | tr -d ' ')"
+    printf "\\$(printf '%03o' $(( (b + 1) % 256 )))" | dd of="$1" bs=1 seek="$2" conv=notrunc 2>/dev/null
+}
+vcmp() # <src> <dest> : verify_cmp with a 4 KiB cap and 512-byte windows
+{
+    VERIFY_WINDOW=512 VERIFY_WINDOWS=4 bash -c '. ./pairs.sh >/dev/null 2>&1; verify_cmp "$0" "$1" 4096' "$1" "$2" 2>&1
+}
+expect_eq "verify_cmp: small, equal" "$(vcmp vc/small vc/small.copy)" ""
+poke vc/small.copy 1500
+expect_eq "verify_cmp: small, one byte differs" "$(vcmp vc/small vc/small.copy)" "MISMATCH vc/small.copy"
+expect_eq "verify_cmp: big, equal (windows)" "$(vcmp vc/big vc/big.copy)" ""
+cp vc/big vc/big.head && poke vc/big.head 100
+expect_eq "verify_cmp: big, the head differs" "$(vcmp vc/big vc/big.head)" "MISMATCH vc/big.head"
+cp vc/big vc/big.tail && poke vc/big.tail 99999
+expect_eq "verify_cmp: big, the last byte differs" "$(vcmp vc/big vc/big.tail)" "MISMATCH vc/big.tail"
+head -c 99999 vc/big > vc/big.short
+expect_eq "verify_cmp: sizes differ" "$(vcmp vc/big vc/big.short)" "MISMATCH vc/big.short"
+expect_eq "verify_cmp: no source" "$(vcmp vc/missing vc/big)" "MISMATCH vc/big"
+
 echo
 if [[ ${fails} -gt 0 ]]; then
     echo "${fails} check(s) failed"
