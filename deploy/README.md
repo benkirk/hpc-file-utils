@@ -79,12 +79,14 @@ already source `${HFU_ROOT}/etc/config_env.sh` when `HFU_ROOT` is set, so produc
 scans move to the install by setting `HFU_ROOT` in their job environment.
 
 **`HFU_MPI` must match the build.** `config_env.sh` finds the env by a hash that covers
-`HFU_MPI`. update builds with `HFU_MPI=auto`, host MPI on both hosts, as `config_env.sh`
-defaults to. A casper build with conda-forge's Open MPI (`make update HFU_MPI=conda`,
-which the test suite prefers there: the host `mpiexec` segfaults now and then under
-`pytest -n`) must then be used with `HFU_MPI=conda` set before sourcing. Otherwise
-`config_env.sh` looks for an env that was never built, and fails, since users cannot
-write the install.
+`HFU_MPI`. update builds with `HFU_MPI=auto`, as `config_env.sh` defaults to: host MPI
+(cray-mpich) on derecho, conda-forge's Open MPI on casper. casper's host `mpiexec` (Open MPI
+5.0.8's PRRTE) segfaults now and then, under `pytest -n` and in multi-node sync jobs, and
+conda-forge's does not, so casper switched on 2026-11-14. On casper, launch across nodes with
+`mpiexec -x PATH --hostfile $PBS_NODEFILE ...`: the env is active on the first node only.
+An env built with another `HFU_MPI` (`make update HFU_MPI=host` on casper) must be used with
+the same `HFU_MPI` set before sourcing. Otherwise `config_env.sh` looks for an env that was
+never built, and fails, since users cannot write the install.
 
 ## Prerequisites
 

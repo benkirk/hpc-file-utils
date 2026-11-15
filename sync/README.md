@@ -208,8 +208,8 @@ On casper the job sets `HFU_MPI=conda` before `config_env.sh`, and launches with
 conda-forge Open MPI (`mpiexec -x PATH --hostfile $PBS_NODEFILE <tool's full path>`): the host
 Open MPI launcher segfaults now and then (*Expectations*, below). `-x PATH`: the env is active on
 the first node only, and without it the other nodes' daemons could not find the tool (exit 66).
-That needs the install's casper env built with `HFU_MPI=conda` (`deploy/README.md`); until it
-is, a casper job aborts at `config_env.sh`. Tested through `run_hfu` at 2 casper nodes × 16 from a
+The install's casper env is conda-forge's Open MPI (`HFU_MPI=auto` on casper since
+2026-11-14, `deploy/README.md`). Tested through `run_hfu` at 2 casper nodes × 16 from a
 conda-MPI test checkout: 6 of 6 launches ran on 32 ranks (exit 66 on every one before `-x PATH`).
 
 ## Deleting a dest
