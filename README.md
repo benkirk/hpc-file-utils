@@ -44,9 +44,10 @@ make help
 Needs conda and GNU make >= 4 (macOS: `brew install make`; `config_env.sh` uses `gmake`).
 `etc/config_env.sh` builds a content-addressed `conda-env-<hash>` and points the per-host link
 `conda-env-${NCAR_HOST:-local}` at it, so casper and derecho can share one checkout.
-`HFU_MPI=auto|host|conda` picks the MPI: `host` (the default on derecho and casper) loads
-`etc/modules-<host>` and builds mpi4py from source against it; `conda` uses conda-forge
-mpi4py + openmpi.
+`HFU_MPI=auto|host|conda` picks the MPI: `host` (the default on derecho) loads
+`etc/modules-<host>` and builds mpi4py from source against it; `conda` (the default elsewhere,
+casper included) uses conda-forge mpi4py + openmpi. casper's host Open MPI launcher segfaults
+now and then; conda-forge's does not.
 
 Tests: `*/tests/test_*.py` and every `*_test.sh` (exit 77 = skip; a `# pytest-mark: site` header
 marks a test that needs GLADE). Markers: `mpi` (runs the CLIs as `mpiexec -n 4`; skipped on

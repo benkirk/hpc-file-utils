@@ -21,14 +21,15 @@ config_env := module load conda >/dev/null 2>&1 || true && . $(CONDA_ROOT)/etc/p
 # ./conda-env-$(ENV_HOST) (casper and derecho share a glade checkout).
 # See etc/config_env.sh, the user-facing entry point, which calls 'conda-env'.
 #
-# HFU_MPI=auto|host|conda.  auto = host on derecho/casper, else conda.
+# HFU_MPI=auto|host|conda.  auto = host on derecho, else conda (casper too: its host Open MPI
+# launcher segfaults now and then, conda-forge's does not).
 #   host:  load etc/modules-<host> and build mpi4py from source against that MPI
 #   conda: add conda-env-mpi.yaml (conda-forge mpi4py + openmpi)
 # -------------------------------------------------------------------
 ENV_HOST := $(or $(NCAR_HOST),local)
 HFU_MPI  ?= auto
 ifeq ($(HFU_MPI),auto)
-  HFU_MPI_MODE := $(if $(filter derecho casper,$(NCAR_HOST)),host,conda)
+  HFU_MPI_MODE := $(if $(filter derecho,$(NCAR_HOST)),host,conda)
 else
   HFU_MPI_MODE := $(HFU_MPI)
 endif

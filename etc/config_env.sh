@@ -4,7 +4,8 @@
 # Builds (if needed) and activates this host's conda env, ./conda-env-${NCAR_HOST:-local},
 # a symlink to a content-addressed ./conda-env-<hash> (see the Makefile).
 #
-#   HFU_MPI=auto|host|conda   auto: host on derecho/casper, else conda
+#   HFU_MPI=auto|host|conda   auto: host on derecho, else conda (casper too: its host
+#                             Open MPI launcher segfaults now and then)
 #     host:  load etc/modules-<host> (at build and here, at activation) and
 #            build mpi4py from source against that MPI
 #     conda: conda-forge mpi4py + openmpi (laptops, CI)
@@ -33,7 +34,7 @@ ENV_DIR="${ROOT_DIR}/${ENV_NAME}"
 # MPI flavour; the Makefile resolves 'auto' the same way
 HFU_MPI="${HFU_MPI:-auto}"
 case "${HFU_MPI}" in
-    auto) case "${NCAR_HOST:-}" in derecho|casper) HFU_MPI_MODE=host ;; *) HFU_MPI_MODE=conda ;; esac ;;
+    auto) case "${NCAR_HOST:-}" in derecho) HFU_MPI_MODE=host ;; *) HFU_MPI_MODE=conda ;; esac ;;
     host|conda) HFU_MPI_MODE="${HFU_MPI}" ;;
     *) echo "HFU_MPI must be auto, host or conda (got '${HFU_MPI}')"; return 1 ;;
 esac
