@@ -3,6 +3,7 @@
 
 import os
 import tarfile
+import time
 import types
 
 import pytest
@@ -377,6 +378,17 @@ def _dir_lists(stats):
             for name in ("nitems_dirs", "nbytes_dirs")}
 
 
+def _freeze_atimes(root):
+    """Set every atime below root (root included) a day ahead, its mtime kept, before walking
+    the same tree twice: under relatime the first walk's scandir of a directory whose atime is
+    not newer than its mtime updates that atime (and APFS does it lazily), so the second walk
+    saw another max_atime and the comparison failed now and then (~3 runs in 8 on macOS)."""
+    ahead = time.time() + 86400
+    for dirpath, dirnames, filenames in os.walk(root):
+        for p in [dirpath] + [os.path.join(dirpath, n) for n in dirnames + filenames]:
+            os.utime(p, (ahead, os.lstat(p).st_mtime), follow_symlinks=False)
+
+
 @pytest.mark.parametrize("stat_threads", [0, 3], ids=["serial", "threads"])
 @pytest.mark.parametrize("batch_files", [1, 2, 3, 7])
 def test_split_directories_list_the_same_totals(tmp_path, batch_files, stat_threads):
@@ -386,6 +398,7 @@ def test_split_directories_list_the_same_totals(tmp_path, batch_files, stat_thre
     for i in range(7):
         (tmp_path / f"a/f{i}").write_bytes(b"x" * 1024 * (i + 1))
     (tmp_path / "a/b/g").write_bytes(b"y" * 4096)
+    _freeze_atimes(tmp_path)
     whole, split = _worker(), _worker(stat_threads=stat_threads)
     split.options.batch_files = batch_files
     _walk(whole, tmp_path)
@@ -428,6 +441,7 @@ def test_split_directory_parts_merge_across_ranks(tmp_path):
     """Parts of one directory processed on different ranks add up in the reduction."""
     for i in range(6):
         (tmp_path / f"f{i}").write_bytes(b"x" * 1024)
+    _freeze_atimes(tmp_path)
     whole = _worker()
     _walk(whole, tmp_path)
     scanner, other = _worker(), _worker()
