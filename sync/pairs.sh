@@ -130,8 +130,12 @@ copier_load()
     # (for the job script; walksync_bind is also read below, through ${!k})
     # shellcheck disable=SC2034
     walksync_opts="$(setting walksync_opts "--rsyncs 8")"
+    # each rank's rsyncs need CPUs beyond its own: derecho (PALS) gives each rank 4,
+    # casper (conda-forge Open MPI) does not bind at all
+    local default_bind="--cpu-bind depth --depth 4"
+    [[ $(hfu_host) == casper ]] && default_bind="--bind-to none"
     # shellcheck disable=SC2034
-    walksync_bind="$(setting walksync_bind "--cpu-bind depth --depth 4")"
+    walksync_bind="$(setting walksync_bind "${default_bind}")"
 
     # both are split on blanks into words, never through a shell: no quotes, no globs
     local k v
@@ -342,17 +346,6 @@ walksync_args()
     return 0
 }
 
-
-#--------------------------------------------------------------
-# copier_host_check <host> : copier: walksync runs on derecho only - casper's Open MPI
-# launcher (PRRTE) segfaults now and then. call after pair_load.
-copier_host_check()
-{
-    if [[ ${copier} == walksync && $1 == casper ]]; then
-        echo "ERROR: [${pair}] copier: walksync is not supported on casper (its MPI launcher segfaults now and then): run it from derecho" >&2
-        return 1
-    fi
-}
 
 
 #--------------------------------------------------------------

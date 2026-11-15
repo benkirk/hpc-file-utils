@@ -61,9 +61,9 @@ Tunables, per pair or global:
 | `max_delete` | `1%` | rsync `--max-delete`: N, or N% of the source entries walkfind walked (at least 1000) |
 | `verify_sample` | 200 | files compared with the source before stamping (0 = off) |
 | `verify_max_bytes` | `16G` | sampled files up to this size are compared whole; bigger ones by their size, first and last 1 GiB and 8 random 1 GiB windows |
-| `copier` | `dsync` | `dsync` or `walksync` (derecho only): the bulk copy, see *walksync as the copier* |
+| `copier` | `dsync` | `dsync` or `walksync`: the bulk copy, see *walksync as the copier* |
 | `walksync_opts` | `--rsyncs 8` | more walksync options, split on blanks (no quotes or globs) |
-| `walksync_bind` | `--cpu-bind depth --depth 4` | walksync's `mpiexec` CPU binding |
+| `walksync_bind` | derecho `--cpu-bind depth --depth 4`, casper `--bind-to none` | walksync's `mpiexec` CPU binding |
 | `hfu_root` | `/glade/u/apps/opt/hpc-file-utils/current-<host>` | the install walkfind (every pair) and walksync run from |
 | `hfu_bind` | derecho `--cpu-bind depth --depth 4`, casper none | walkfind's `mpiexec` CPU binding |
 | `walksync_inplace` | `auto` | rsync `--inplace` for walksync's copies: `auto` = only into a dest empty at job start, `yes`, `no` |
@@ -282,8 +282,13 @@ the shared install `hfu_root`. It runs on all nodes before the node release:
   rank was lost) aborts the job, as a dsync without `Completed sync` does: on a fresh
   destination the serial rsync would be a single-stream copy of the whole tree. A missing
   `hfu_root/etc/config_env.sh` aborts before the preflight.
-- **Refused:** on casper (its Open MPI launcher segfaults now and then; at submission and in
-  the job), with a `chmod:` other than `Du+w`, with `walksync_opts` that set `--dirs`, `--dest`,
+- **casper** (since 2026-11-15): walksync runs there too, launched with the install's
+  conda-forge Open MPI (`mpiexec -x PATH --hostfile $PBS_NODEFILE --bind-to none`). casper's
+  host Open MPI launcher, which used to segfault now and then, is no longer in the path. The
+  job's own `openmpi/5.0.8` module (for dsync) stays loaded, but conda's mpi4py finds its own
+  libmpi by RPATH: at 2 casper nodes under the job's modules, all 32 ranks loaded conda's
+  Open MPI 5.0.11, and walkfind (3/3) and walksync (2/2) ran clean.
+- **Refused:** with a `chmod:` other than `Du+w`, with `walksync_opts` that set `--dirs`, `--dest`,
   `--summary-prefix` or `--dry-run` (the job does), and when another filesystem is mounted
   inside the source (`/proc/mounts`): walksync's walk does not check `st_dev`, unlike the
   final pass's `-x`. GPFS filesets are not mounts and share one `st_dev`, so neither stops at
