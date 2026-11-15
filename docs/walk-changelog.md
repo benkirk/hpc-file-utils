@@ -710,7 +710,7 @@ benchmark scripts kept outside this repository.
 
 ### indexes-2, step C (the import contract, 4.8 closed)
 
-- **The column set stays fixed at v1** for every tool (`docs/HANDOFF-sweep.md` 4.8 has
+- **The column set stays fixed at v1** for every tool (`docs/history/HANDOFF-sweep.md` 4.8 has
   why). gzip answers the size question that trimming would have, every column comes from
   the `lstat` already taken, and one format means one parser. A different set would be
   `# hfu-index v2`.

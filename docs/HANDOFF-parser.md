@@ -1,8 +1,9 @@
 # Hand-off: the hfu-index parser for hpc-usage-queries (written 2026-11-10)
 
 The next piece of work, in the other repo: a parser in hpc-usage-queries' `fs_scans/parsers`
-that imports the index files walkstat, walktar and walksync write with `--index`. This
-repo's side is finished and fixed at v1 (`HANDOFF-indexes2.md`, `HANDOFF-sweep.md` 4.8). The
+that imports the index files walkstat, walktar, walksync and walkfind write with `--index`.
+This repo's side is finished and fixed at v1 (`history/HANDOFF-indexes2.md`,
+`history/HANDOFF-sweep.md` 4.8). The
 walk README's "Indexes" section, its "Importing" list above all, is the contract. This note
 adds what reading hpc-usage-queries showed, so the parser can be written from the two
 together. Nothing here changes hpc-file-utils. If the contract turns out wrong for the
@@ -37,11 +38,13 @@ Start from `devel`, or whatever that repo's own workflow says.
 
 ## How the format meets that
 
-- **Map the columns by position, not by the header.** The column set is fixed at v1 for
-  every tool, so a stateless `parse_line()` can split on tabs and know the fields from
-  their count. Paths are escaped and never hold a tab, so the split is exact:
-  - 13 fields: walkstat and walksync, `rec type size alloc mode uid gid nlink ino atime
-    mtime ctime path`;
+- **A stateless `parse_line()` can go by position.** The header's `columns=` field is the
+  authority and names the columns in order (the walk README says to map by name). But the
+  column set is fixed at v1 for every tool, so once `can_parse()` has refused any header
+  that is not v1, a line parser that never sees the header can split on tabs and know the
+  fields from their count. Paths are escaped and never hold a tab, so the split is exact:
+  - 13 fields: walkstat, walksync and walkfind, `rec type size alloc mode uid gid nlink ino
+    atime mtime ctime path`;
   - 15 fields: walktar, with `offset offset_data` before `path`;
   - anything else is not a record: return None, and count it if the importer counts
     malformed lines.
@@ -78,8 +81,9 @@ Start from `devel`, or whatever that repo's own workflow says.
 - **walktar's** list what its tars hold, the roots included as `E`. They are a fine listing
   of an archived tree.
 - **walksync's** are one run's copies, or with `dry-run=yes` in the header what a run
-  would copy: real source stats, but a subset of the tree. A usage import should refuse
-  them, or at least say so; `tool=` in the header tells. With the header unseen by
+  would copy: real source stats, but a subset of the tree. **walkfind's** (added after this
+  note was first written) are the entries one search listed, also a subset. A usage import
+  should refuse both, or at least say so; `tool=` in the header tells. With the header unseen by
   `parse_line()`, that check belongs in `can_parse()` or the import wrapper.
 
 ## Test material

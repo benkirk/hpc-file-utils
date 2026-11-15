@@ -5,7 +5,7 @@ recommendation 1 (share the last directory), 2 (walksync walks before copying) a
 byte cap, option (a). **Implemented since:** recommendation 3 (costliest copy batches first;
 see the note under it). Its gain at scale has not been measured yet.
 
-Measured after the fixes (derecho scratch, 2 nodes × 32, a 4F-shaped mock: 16 directories, each
+Measured after the fixes (Derecho scratch, 2 nodes × 32, a 4F-shaped mock: 16 directories, each
 an 8 GiB file on top and another three levels down, `--batch-size 4GiB`; ABBA against the
 shared install's 510ceab): the walk was complete at the first progress line (5 s) in both new
 runs, against 45 s and 30 s in the old ones, which sat at 139 of 145 items with `queued=1,

@@ -1,10 +1,12 @@
 # GLADE performance: what the walk tools measured
 
-What derecho and Casper's filesystems do under a parallel walk, archive or copy, as
-measured while building walkstat, walktar and walksync (phases 3–6 and the sweep, 2026-11).
-Every number has a source: a phase note in `hpc_file_utils/walk/README.md`, a section of
-`docs/HANDOFF-sweep.md` (cited as "sweep 0.4" and so on), or a derecho job in
-`/glade/derecho/scratch/benkirk/hfu-bench/`. Unless said otherwise a run is one derecho node,
+What Derecho's and Casper's filesystems do under a parallel walk, archive, copy or removal, as
+measured while building the walk tools (`walkstat`, `walktar`, `walksync`, `walkfind`,
+`walkrm`; 2026-11). This is the reference, organized by topic. Every number has a source: an
+entry of [walk-changelog.md](walk-changelog.md) (cited by its sprint, "phase 5.5", "perf-1
+step B"), a section of [history/HANDOFF-sweep.md](history/HANDOFF-sweep.md) (cited as "sweep
+0.4" and so on), or a Derecho job in `/glade/derecho/scratch/benkirk/hfu-bench/` (benchmark
+scripts kept outside this repository). Unless said otherwise a run is one Derecho node,
 32 MPI ranks (one Manager, 31 workers), PALS's default binding (one CPU per rank), and
 "scratch" is `/glade/derecho/scratch` (Lustre), "campaign" `/glade/campaign` (GPFS), "csg"
 `/glade/campaign/cisl/csg`.
@@ -29,8 +31,8 @@ one node however the files are made; and campaign's numbers move with the day's 
 - **Casper reaches the same filesystems over its own network.** Its path to Lustre doubles
   every metadata round trip (openat 1.66 vs 0.95 ms, rename 1.13 vs 0.59, 8.8 vs 4.6 ms per
   file in all) and its cold reads cost more (a serial `cat` 58 vs 41 ms per 1 MiB file), but
-  its parallel capacity is derecho's (16 `cat`s at once: 2.98 vs 2.90 ms per file). Its
-  path to GPFS is derecho's (one rsync 20.7 vs 20.0 ms per 80 KB file). Sweep 2, "The same
+  its parallel capacity is Derecho's (16 `cat`s at once: 2.98 vs 2.90 ms per file). Its
+  path to GPFS is Derecho's (one rsync 20.7 vs 20.0 ms per 80 KB file). Sweep 2, "The same
   on Casper".
 - The node's NIC is 200 Gb/s (~25 GB/s) and `mktree` wrote 17 GB/s from one node in 1 MiB
   writes (phase 5): none of the tools is near the hardware.
@@ -56,8 +58,11 @@ one node however the files are made; and campaign's numbers move with the day's 
   writes without a sign of strain. So the VIT-shaped case scales with nodes, not with
   anything inside a node. The tail is one batch: the walk ends ~20 s after the first rank
   runs dry (a 1,000-file VIT batch is 4 GiB, ~30 s for one rank), which is 40% of the
-  8-node walk, so a smaller `--batch-size` (1–2 GiB) is the next lever there. perf-1
-  step B.
+  8-node walk. A smaller batch trims it: `--batch-size 2GiB` gave 29–30 GiB/s at 8 nodes
+  against 23–25 by default. At 16 nodes the average reached ~49 GiB/s (10-second peaks of
+  107–109), ~3 GiB/s per node, and neither csg nor GDEX had flattened; VIT (1.3 TiB) is too
+  small to say more, since a third or more of a 26 s walk is start-up and tail. perf-1
+  step B, with the 8-, 12- and 16-node runs added in indexes-2.
 - **The reader threads need CPU, and two cores per rank are enough.** PALS pins each rank
   to one CPU (`os.sched_getaffinity(0)` is `{rank}`) and the 16 readers share it. Any wider
   binding lifts the small-file rate the same, 1.4–1.6× on both filesystems: `manyfiles`
@@ -103,13 +108,13 @@ one node however the files are made; and campaign's numbers move with the day's 
   walk; 36,253 of them were share requests, 35,520 answered empty (phase 5.5's question 4:
   the ping-pong is there, 9× the one-node count for 4× the ranks, and it costs the busy
   workers one probe and one small reply each, nothing measurable). Phase 3, 3.5, perf-1.
-- **mpi4py's matched probe hangs across derecho nodes.** A walktar over 2 nodes stopped
+- **mpi4py's matched probe hangs across Derecho nodes.** A walktar over 2 nodes stopped
   every time at ~2 minutes with every rank spinning in `MPI_Mprobe`: `ready` messages that
   were sent were never matched by the Manager's any-source receive (four of 63 in the
   dumped run), with or without the rendezvous threshold raised. `mpi4py.rc.recv_mprobe =
   False` (Probe + Recv) fixed it; the walk tools set it before importing MPI. One node
   never leaves shared memory, so single-node runs never saw it. perf-1 step B.
-- **One destination directory takes ~1,250 creates per second from derecho and ~1,000 from
+- **One destination directory takes ~1,250 creates per second from Derecho and ~1,000 from
   Casper, whatever the file size.** A probe that makes files as rsync's receiver does (a
   temporary name, write, fchmod, close, utime, rename) with 32 processes: 1,231–1,296/s into
   one directory for 80 KB and 1 MiB alike, 2,621–4,278/s into a directory per process, and
@@ -117,7 +122,7 @@ one node however the files are made; and campaign's numbers move with the day's 
   bytes are not. Sweep "K rsyncs". A login-node probe had seen the same shape (26.5 s into
   one directory against 14.1 into 32, Part A).
 - **One scratch directory takes ~6,000 unlinks per second, whichever tool.** A mock of 4D's
-  `cpl` on derecho scratch (741,000 × 4 KiB files in `hist/`, 917,204 entries in all), 2 nodes
+  `cpl` on Derecho scratch (741,000 × 4 KiB files in `hist/`, 917,204 entries in all), 2 nodes
   × 32 (tools-find-rm, step 2): `drm` 154 s (5,940 items/s), walkrm 144 s (137.7 s walk, 0.1 s
   for the 204 directories). walkrm scanned all 917K names in 12 s and spread the 741 unlink
   batches over the ranks (730 moved by shares). Both then ran at the directory's unlink rate,
@@ -130,7 +135,7 @@ one node however the files are made; and campaign's numbers move with the day's 
   subjobs of 1 × 128) running, the same `.Radiosonde` copy took 912 s against 367 s in the
   morning. Only pairs from one job compare; note `qstat -t -u csgteam | grep -c " R "` with
   any campaign number. Part A, Part B.
-- **Lustre honours `O_NOATIME`, and a per-entry line of output costs nothing.** walktar's
+- **Lustre honors `O_NOATIME`, and a per-entry line of output costs nothing.** walktar's
   readers open with `O_NOATIME` (the owner or root); a full read of `manyfiles` left the
   sampled atimes untouched. Writing an index line per entry (walkstat `--index`, walktar
   `--index`: a dict lookup, a formatted line, a buffered write) was within the noise of
@@ -214,6 +219,15 @@ one node however the files are made; and campaign's numbers move with the day's 
   scratch within the quota, csg for tars only and removed after, GDEX read-only, no other
   campaign data read for a tar or copy (atimes drive the purge reports), flash for profiling
   only and emptied after.
+- **The flash fileset** (`/glade/campaign/flash_test/csg`, fileset `flash_test`, 600 TiB
+  quota) takes the disks out of a per-file cost and leaves the software. It is a profiling
+  aid only: stay below 200 TiB, remove everything after each run, and check its use with
+  `/usr/lpp/mmfs/bin/mmlsquota --block-size auto -j flash_test csfs1` (it is not in
+  `gladequota`).
+- **A Casper node to work on interactively:**
+  `qsub -q casper -l select=1:ncpus=34:mpiprocs=32:mem=200GB -- /bin/sleep 9000`, then
+  `ssh <node>` from a login node attaches to the job. `pbsnodes -a` shows which node sizes
+  are free.
 
 ## 6. Rules of thumb
 
@@ -221,8 +235,9 @@ one node however the files are made; and campaign's numbers move with the day's 
    for them: `mpiexec --cpu-bind depth --depth 2` (two cores per rank; wider buys nothing)
    before any change to the walk, and read the `CPUs per rank` line of every log.
 2. Big files: one node reads scratch at ~2.5 GiB/s and campaign at ~6; more nodes, not more
-   threads. Small files on campaign scale with nodes too: 4, 8, 16, 24 GiB/s at 1, 2, 4,
-   8 nodes (the last one tail-bound: shrink the batches).
+   threads. Small files on campaign scale with nodes too: 4, 8, 16 GiB/s at 1, 2, 4
+   nodes, then ~30 at 8 and ~49 at 16 with `--batch-size 2GiB` (at the default the 8-node
+   run is tail-bound at 24: shrink the batches as nodes are added).
 3. Metadata: spread stats over ranks and nodes; expect 1–2 ms each on an idle campaign,
    6–18 ms on a node that is also reading, where threads (walktar's readers, walkstat
    `--stat-threads 16`) give it back; a node that only stats is at its client's ceiling
@@ -238,15 +253,22 @@ one node however the files are made; and campaign's numbers move with the day's 
 
 ## 7. Open
 
-- Where campaign's write side or GDEX's read side stops scaling with nodes: 8 nodes gave
-  24 GiB/s with the one-batch tail taking 40% of the walk, so the per-node rate is not
-  known to have fallen yet; a smaller `--batch-size` at 8 nodes, then 16 nodes, would
-  say (phase 5.5 question 5 is answered to 8 nodes). For large-file copies campaign to
-  campaign it had not fallen at 16 nodes (~86 GiB/s, section 4); where csfs1 stops is
-  untested, a question for a maintenance window rather than production.
-- Why Part B's per-rank stats cost 4–7% on VIT under the one-CPU binding even threaded
+- **Where campaign's write side or GDEX's read side stops scaling with nodes.** Small files
+  (VIT → csg) had not flattened at 16 nodes (~49 GiB/s average), but VIT is too small to
+  give a sustained number there; that needs a tree several times its size, each run writing
+  ~5 TiB to csg. Large-file copies campaign to campaign had not flattened at 16 nodes either
+  (~86 GiB/s, section 4). Where csfs1 stops is untested: a question for a maintenance window
+  rather than production.
+- **Why walktar's per-rank stats cost 4–7% on VIT** under the one-CPU binding even threaded
   (the stats' CPU on the busy ranks is the hypothesis; with four CPUs per rank the threaded
   stats pay 7% instead). Also: a file's open and close cost ~5 and ~7 ms on a loaded
-  campaign node (the B2 profile), as much as a stat; whether that is the client or the
-  server is unmeasured.
-- LPT batch order, share ping-pong at 4 nodes (phase 5.5 questions 3 and 4).
+  campaign node, as much as a stat; whether that is the client or the server is unmeasured.
+- **Which side limits walksync on small files past ~12 nodes** (~18,000 files/s, campaign →
+  scratch): scratch's metadata servers or campaign's reads. A scratch-to-scratch copy, or
+  walktar reading the same tree, would separate them.
+- **walksync's costliest-first copy order** is implemented and not yet measured at scale
+  ([walk-tail-4F.md](walk-tail-4F.md)).
+
+Closed: share ping-pong (the empty share replies grow with ranks but cost nothing
+measurable, at 4 nodes × 96 and at 8 × 32; [phase3.5-results.md](phase3.5-results.md),
+perf-1 step B).

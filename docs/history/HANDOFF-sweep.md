@@ -1,5 +1,9 @@
 # Hand-off: the walk toolkit sweep, indexes, logging and old idioms (written 2026-11-09)
 
+> **Historical, not maintained.** This is the plan and log of the sweep (Parts A to E). It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 Phases 3–6 were additive. Each added a tool or a feature: local queues, filters, batches, walktar's
 tars, walkstat's stat batches, walksync. Each copied the scaffolding it needed instead of
 reshaping what was there. This note is the retrospective: what to consolidate now that the shape

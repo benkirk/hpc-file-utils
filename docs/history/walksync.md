@@ -1,3 +1,7 @@
+> **Historical, not maintained.** This is the hand-off for the walksync prototype (2026-11-05), written in csg-utils. It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 > **Imported 2026-11-06** from csg-utils branch `walksync-handoff`
 > (`filesystem/scans/walkstat/HANDOFF.md`, commit c341266). Paths below are csg-utils paths:
 > `filesystem/scans/walkstat/` is now `hpc_file_utils/walk/`, and `filesystem/cgd_migration/`

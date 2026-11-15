@@ -1,5 +1,9 @@
 # Hand-off: phased walkstat development (written 2026-11-06)
 
+> **Historical, not maintained.** This is the original phased plan (2026-11-06). It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 The repo was created mechanically: csg-utils history was imported with `git filter-repo` (see
 the README's path table) and **no code was changed**. Development happens in five phases, in
 order, each closed by an acceptance gate. Do one phase per PR.
@@ -138,7 +142,7 @@ Each fix turns a phase-1 test from xfail to pass, or adds a failing test first.
 ---
 
 ## Phase 3.5: local work queues (done)
-Research: [walk-load-balancing.md](walk-load-balancing.md). The Manager's message rate (three
+Research: [walk-load-balancing.md](../walk-load-balancing.md). The Manager's message rate (three
 pickled messages per directory plus a probe sweep per pass) was the scaling ceiling on trees of
 small directories. Now workers keep the subdirectories they find on a local stack and walk them
 depth-first, sending `ready` only when it is empty; the Manager sees directories only as overflow
@@ -180,7 +184,7 @@ counting each rank's share), and the union of the tars equals the tree.
 
 ## Phase 6: adding sync
 **Status (2026-11-08): implemented, gate passing on laptop/CI-style runs; derecho smoke run and
-benchmarks to do.** See [walk/README.md, walksync](../hpc_file_utils/walk/README.md#walksync-phase-6).
+benchmarks to do.** See [walk/README.md, walksync](../../hpc_file_utils/walk/README.md#walksync).
 Rebuilt on the phase 3–5 walk rather than ported (the prototype's copy thread and back-pressure
 are replaced by batches + `share`). Decisions taken along the way:
 - the src/dest compare happens in **compare batches** (like walkstat's stat batches), so a huge

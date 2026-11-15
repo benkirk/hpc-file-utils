@@ -513,8 +513,11 @@ For an importer:
   in order), one `root=` per `--dirs` entry, and for `walksync` `dest=` and `dry-run=yes`.
   **Map columns by name**, and ignore fields you do not know. Any line starting with `#` is a
   header: `cat` of several files has one per file.
-- **The column set is fixed at v1.** A different set would be a new version, so refuse a
-  header that is not v1.
+- **The column set is fixed at v1**: the 13 columns above, or 15 with `walktar`'s two offsets.
+  A different set would be a new version, so refuse a header that is not v1. Having done
+  that, a parser that handles lines without their header may go by position.
+- **Not every index is a usage listing.** `walksync`'s and `walkfind`'s hold part of a tree;
+  `tool=` tells them apart.
 - **`P` records stay out of the totals.** A `-` field is unknown.
 
 ## CPU binding

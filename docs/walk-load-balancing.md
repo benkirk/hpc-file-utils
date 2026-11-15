@@ -1,9 +1,12 @@
 # Load balancing the walk: manager dispatch, libcircle-style work stealing, and what to do next
 
-> Research note for the walkstat/walktar/walksync family (2026-11-07). Nothing here is
-> implemented; it records how the alternatives work, what they would cost in mpi4py, and a
-> measured path for deciding. The baseline is the manager/worker dispatch in
-> `hpc_file_utils/walk/manager.py` and `base_worker.py`.
+> Research note for the walk tools (2026-11-07): how the alternatives work, what they would
+> cost in mpi4py, and a measured path for deciding. When it was written nothing here was
+> implemented and the baseline was a Manager that handed out every directory. **Since then
+> section 5 (local queues with Manager-brokered sharing) has been built** and is how the walk
+> works today (`hpc_file_utils/walk/common/manager.py`, `common/worker.py`); sections 1 to 4
+> describe the earlier baseline and are kept as the reasoning. Section 8 is a design that is
+> documented and not built.
 
 ## TL;DR
 
@@ -22,7 +25,7 @@
   campaign tree; (2) if it saturates, add **local queues with Manager-brokered sharing**
   (section 5), which cuts Manager traffic by one to two orders of magnitude while keeping the
   existing race-free termination argument; (3) only if that still saturates at the rank counts
-  we care about, go fully decentralised with libcircle-style stealing plus a termination
+  we care about, go fully decentralized with libcircle-style stealing plus a termination
   token (section 4). A pure-Python libcircle is about 300 lines; the hard part is testing
   termination, not writing it.
 - The phase-5 plan (file batches as work units for walktar/walksync) is orthogonal and is
@@ -124,7 +127,7 @@ is the Manager ceiling. If items/s still scales at 256 ranks, nothing below is n
 >   blocked in `recv` 98–100% of the time at 32, 96, 256 and 384 ranks.
 > - **The ceiling is the filesystem client on each node.** One node walks faster with 32
 >   ranks than with 96. Across 4 nodes, 4 × 32 beats 4 × 96 by 21–44%.
-> - **So section 3 (decentralised stealing) is not needed at these scales.**
+> - **So section 3 (decentralized stealing) is not needed at these scales.**
 
 ## 2. libcircle: how it actually works
 
@@ -183,14 +186,14 @@ This is the Dijkstra-Feijen-van Gasteren ring, as implemented in `CIRCLE_check_f
 `CIRCLE_token_recv`:
 
 - Ranks form a ring: `token_src = (rank-1) mod P`, `token_dest = (rank+1) mod P`. Rank 0 holds
-  the token initially. Each rank has a colour `token_proc`, initially WHITE.
+  the token initially. Each rank has a color `token_proc`, initially WHITE.
 - **A rank turns itself BLACK when it sends work to a rank the token has already passed**:
   in `CIRCLE_send_work`, `if (dest < rank || dest == token_src) token_proc = BLACK`. That is
   the whole correctness idea: work moving "backwards" around the ring could re-activate a rank
   that already reported itself idle, so the current token round must be invalidated.
 - **The token only moves while the holder is idle.** When an idle rank holds the token it
   forwards it: rank 0 always sends WHITE (starting a new round); any other rank sends BLACK if
-  it is itself BLACK, else forwards the colour it received, and then resets itself to WHITE.
+  it is itself BLACK, else forwards the color it received, and then resets itself to WHITE.
   The token is sent with `MPI_Issend` so the sender knows the receiver has posted a matching
   receive.
 - **Rank 0 receiving a WHITE token terminates** ("Master has detected termination"): a full
@@ -232,7 +235,7 @@ The abstract reports three fully distributed algorithms, tested on LANL's Cielo 
 system), that run "orders of magnitude faster than state-of-the-art algorithms while
 achieving ideal load balancing and low communication cost", with a randomized work-stealing
 scheduler and a hybrid variant among the keywords. The comparison point in that paper is a
-centralised master/worker walker like ours, and the paper's reason for leaving it is the one in
+centralized master/worker walker like ours, and the paper's reason for leaving it is the one in
 section 1.3: the master's message rate. (The full text was not re-read for this note; the
 numbers above are from the abstract and the libcircle README.)
 
@@ -274,7 +277,7 @@ def service_requests(self):
     share = spread_counts(len(self.q), len(requesters)+1)           # equal split
     for r, n in zip(requesters, share[1:]):
         items, self.q = self.q[:n], self.q[n:]          # give the OLDEST (shallowest) dirs
-        if r < self.rank or r == self.token_src: self.colour = BLACK
+        if r < self.rank or r == self.token_src: self.color = BLACK
         self.isend_to(r, items, T_REPLY)
 
 def request_work(self):
@@ -288,8 +291,8 @@ def request_work(self):
     return self.check_token()               # Dijkstra ring, only reached while idle
 ```
 
-The ring termination is another ~40 lines following section 2.3 literally: `colour`,
-`has_token`, `token_colour`, `isend` the token to `(rank+1) % P`, `iprobe` for it from
+The ring termination is another ~40 lines following section 2.3 literally: `color`,
+`has_token`, `token_color`, `isend` the token to `(rank+1) % P`, `iprobe` for it from
 `(rank-1) % P`, rank 0 starts rounds, rank 0 receiving WHITE sends TERMINATE around. Order of
 events inside `check_token` matters (service requests and reap sends *before* forwarding the
 token, so a reply you just sent backwards has already turned you BLACK).
@@ -349,7 +352,7 @@ poll interval per rank.
   which is fine, but there is no single place to implement "steal from the rank with the
   deepest queue" either; libcircle deliberately steals at random.
 - **Debuggability.** The Manager's hang was found by looking at one rank's state. A stuck ring
-  needs every rank's colour and token state. Budget for a `--debug-termination` log and a
+  needs every rank's color and token state. Budget for a `--debug-termination` log and a
   simulation test (section 6).
 - **Determinism** of which rank walked which directory is already absent; nothing changes.
 
@@ -417,7 +420,7 @@ and `dirlen` global (`dirlen` becomes "on the Manager", plus a per-rank queue le
 
 Its limit is the same in kind as the baseline's: a single broker, and one message per
 imbalance event per rank. When *that* saturates (a few thousand ranks on a very bushy tree),
-the fully decentralised version in section 3 is the next step, and by then the local-queue
+the fully decentralized version in section 3 is the next step, and by then the local-queue
 code, the poll hook in `process_directory`, and the `isend` bookkeeping are already there.
 
 ## 6. Comparison
@@ -438,7 +441,7 @@ code, the poll hook in `process_directory`, and the `isend` bookkeeping are alre
 
 1. **Measure first (half a day).** Add the two saturation counters from 1.4 to `Manager.run()`
    and run walkstat at 32/96/256 ranks on one small-directory tree and one large-file tree
-   on derecho. Decide from the plot.
+   on Derecho. Decide from the plot.
 2. **Baseline cheap wins (one PR).** `ANY_SOURCE` probing and k-per-`ready` dispatch. Both are
    compatible with the current tests.
 3. **Local queues + brokered sharing (one PR, after phase 5 or alongside it).** Gate: the
@@ -447,10 +450,10 @@ code, the poll hook in `process_directory`, and the `isend` bookkeeping are alre
    *Done as phase 3.5 and measured. The Manager is idle at 384 ranks, and the waiting that
    remains is set by the tree's shape (see section 1.4 and
    [phase3.5-results.md](phase3.5-results.md)).*
-4. **Decentralised stealing (only if 3 is not enough; it is, for now).** Prototype as a separate
+4. **Decentralized stealing (only if 3 is not enough; it is, for now).** Prototype as a separate
    `walk/experiments/steal_walk.py` that reuses `process_directory`. Before running it at
    scale, write a **termination simulator**: the same loop driven by a fake `comm` (a dict of
-   deques) with randomised interleavings, asserting that TERMINATE is never delivered while any
+   deques) with randomized interleavings, asserting that TERMINATE is never delivered while any
    queue is non-empty and that it is always delivered eventually. That test is the reason this
    option costs more than its line count suggests.
 
@@ -527,7 +530,7 @@ number on it: at 16 nodes, with 1.3–2.7 batches per worker, the first idle ran
   SC12. https://sc12.supercomputing.org/schedule/event_detail.php-evid=pap573.html
 - E. W. Dijkstra, W. H. J. Feijen, A. J. M. van Gasteren, "Derivation of a termination
   detection algorithm for distributed computations", Information Processing Letters 16 (1983):
-  the ring/colour algorithm libcircle implements.
-- This repo: `hpc_file_utils/walk/manager.py` (protocol and termination argument),
-  `base_worker.py`, `tests/test_termination_race.py`, [HANDOFF.md](HANDOFF.md) phase 5,
-  [walksync.md](walksync.md).
+  the ring/color algorithm libcircle implements.
+- This repo: `hpc_file_utils/walk/common/manager.py` (protocol and termination argument),
+  `common/worker.py`, `tests/test_termination_race.py`, and, for history,
+  [history/HANDOFF.md](history/HANDOFF.md) phase 5 and [history/walksync.md](history/walksync.md).
