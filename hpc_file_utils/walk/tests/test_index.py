@@ -566,3 +566,17 @@ def test_walktar_gz_indexes_match_their_tars(walk, private_golden_tree, big_dir_
     paths = _check_tar_indexes(tmp_path, ".idx.gz")
     assert paths == set(find(root, mindepth=0))
     assert index_mod.main([str(f) for f in _index_files(tmp_path, "*.idx.gz")] + ["--find"]) == 0
+
+
+def test_the_checker_does_not_compare_a_walkfind_index_with_find(tmp_path, capsys):
+    """A walkfind index holds a search's matches: closure and exactly-once are checked,
+    --find's comparison with the whole tree is not."""
+    root = tmp_path / "tree"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub/a.nc").write_bytes(b"x")
+    (root / "sub/b.txt").write_bytes(b"x")
+    w = IndexWriter(str(tmp_path / "index-r001.tsv"), "walkfind", [str(root)])
+    w.add(str(root / "sub/a.nc"), os.lstat(root / "sub/a.nc"))
+    w.close()
+    assert index_mod.main([w.name, "--find"]) == 0
+    assert "find: not compared" in capsys.readouterr().out

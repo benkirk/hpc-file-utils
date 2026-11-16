@@ -362,7 +362,9 @@ def find(root, mindepth):
 def main(argv=None):
     """Check index files: closure per file, E exactly once across them, and with --find the
     E set against find's listing of the header's roots (walkstat: below the roots, as
-    Total Count; walktar: the roots too, as the tars). Exit 1 on any failure."""
+    Total Count; walktar: the roots too, as the tars; walksync: below the roots, which
+    holds only for a copy into an empty destination; walkfind: not compared, its index
+    is the matches of a search). Exit 1 on any failure."""
     argv = sys.argv[1:] if argv is None else argv
     check_find = '--find' in argv
     names = [a for a in argv if a != '--find']
@@ -387,7 +389,10 @@ def main(argv=None):
     failed |= bool(repeated)
     for p in sorted(repeated)[:10]:
         print(f'  repeated: {p!r}')
-    if check_find and names:
+    if check_find and tool == 'walkfind':
+        # a search's matches, not a listing: find of the roots says nothing about it
+        print('find: not compared (a walkfind index holds only the entries that matched)')
+    elif check_find and names:
         expected = set()
         for root in sorted(roots):
             expected |= find(root, 0 if tool == 'walktar' else 1)
