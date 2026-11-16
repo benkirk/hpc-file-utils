@@ -4,7 +4,7 @@ The scaffolding every tool's worker shares: entries() is the scan of one directo
 the progress and 'share' checks and --exclude; ticked() and tick() are the same checks
 inside a batch; in_flight() keeps I/O started ahead of its use (walktar's reader threads,
 walksync's rsyncs); error() and vanished() count and print; push_dir() feeds the local
-stack; a RankFile is a per-rank output opened at its first write and closed by run().
+stack; rank_file() makes a per-rank output (common/rankfile.py), closed by run().
 """
 
 import collections
@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 from hpc_file_utils.walk.common.mpiclass import MPIClass
 from hpc_file_utils.walk.common.protocol import Tag
+from hpc_file_utils.walk.common.rankfile import RankFile
 
 log = logging.getLogger(__name__)
 
@@ -30,30 +31,6 @@ class FileBatch(NamedTuple):
     pickle in a share_reply; the Manager treats every kind as one opaque unit of work."""
     paths  : list   # the files' paths (walktar) or paths relative to the source root (walksync)
     nbytes : int    # their st_size total
-
-
-class RankFile:
-    """A text file one rank writes (walksync's dry-run list, walkfind's list): opened at its
-    first write, so a rank that writes nothing leaves no file; closed by the worker's run(),
-    which knows the ones made with BaseWorker.rank_file(). binary: written as bytes
-    (walkfind --print0), not UTF-8 text."""
-
-    binary = False
-
-    def __init__(self, name, binary=False):
-        self.name = name
-        self.file = None
-        self.binary = binary
-
-    def write(self, text):
-        if self.file is None:
-            self.file = open(self.name, 'wb') if self.binary else open(self.name, 'w', encoding='utf-8')
-        self.file.write(text)
-
-    def close(self):
-        if self.file is not None:
-            self.file.close()
-            self.file = None
 
 
 class BaseWorker(MPIClass):
@@ -89,10 +66,23 @@ class BaseWorker(MPIClass):
         self.files.append(f)
         return f
 
+    def open_rank_index(self, fields=()):
+        """--index for the tools that write one index per rank (walkstat, walksync, walkfind):
+        index-r{rank}.tsv in the working directory (index-<prefix>-r{rank}.tsv with
+        --summary-prefix; .gz with --index=gz), opened at its first record and closed by
+        run(); None without --index. fields: (key, value) pairs for its header."""
+        from hpc_file_utils.walk.common.index import IndexWriter, rank_index_name
+        o = self.options
+        if not o.index:
+            return None
+        index = IndexWriter(rank_index_name(o.summary_prefix, self.rank), o.app, o.dirs, how=o.index, fields=fields)
+        self.files.append(index)
+        return index
+
     def error(self, what, error):
         """Count what could not be done (an entry scanned, stat'ed, archived or copied) and
         say so on stderr: '[rank] ERROR Cannot <what>: <error>' (common/log.py)."""
-        self.stats.num_errors += 1
+        self.count_error()
         log.error('Cannot %s: %s', what, error)
 
     def vanished(self, dirname):

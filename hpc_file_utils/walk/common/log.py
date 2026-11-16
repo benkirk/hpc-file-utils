@@ -3,9 +3,9 @@
 Every rank writes its own warnings and errors ('[rank] LEVEL message', one write per
 line, so lines from many ranks splice less under mpiexec); the results (the banner,
 the progress line, the '-->' lines, the summary and the userlists) stay print() on
-rank 0's stdout: they are the parsed contract. Logging never counts: an error is counted
-where it is found, in BaseWorker.error() on a worker (walkrm's check of its targets after
-the run, on rank 0, counts its own).
+rank 0's stdout: they are the parsed contract. Logging never counts: MPIClass.count_error()
+is the one place that does, called by BaseWorker.error() and by a tool that words its own
+message (walkrm's check of its targets after the run, on rank 0).
 
   setup(rank, verbose)   once per rank, in cli.main(): one stderr handler on the
                          'hpc_file_utils.walk' logger, DEBUG with --verbose, else INFO

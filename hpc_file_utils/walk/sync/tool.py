@@ -7,6 +7,9 @@ from hpc_file_utils.walk.common.index import add_index_argument
 from hpc_file_utils.walk.common.tool import Tool
 from hpc_file_utils.walk.sync.rsync import RSYNC_OPTS, choose_rsync, inflight_mode, rsync_base_opts
 
+DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'      # each worker's --dry-run list, in the working directory
+DRYRUN_FILES = DRYRUN_FILE.replace('{:03d}', '*')
+
 
 class SyncTool(Tool):
 
@@ -17,16 +20,18 @@ class SyncTool(Tool):
     examples = ('mpiexec -n 32 walksync --dirs /src/tree --dest /dest/tree --dry-run',
                 'mpiexec -n 32 walksync --dirs /src/tree --dest /dest/tree --rsync-opts=--inplace',
                 'rsync -aHAX --delete /src/tree/ /dest/tree/    # afterwards, serial: what walksync leaves')
-    writes = ('copied', 'rsync batches')
+    verb = 'copied'
     batches_bytes = True
     dirs_help = 'The source directory (exactly one)'
     batch_help = 'compared with the destination a batch at a time, and each batch to copy is copied by --rsyncs rsyncs'
     selects = 'copied'
+    reports_help = ('walkstat\'s summary and userlists of what was compared, written only when '
+                    '--summary-prefix or --spreadsheet is given.')
     errors_exit = 1          # an incomplete copy must not look like a finished one
 
     def add_arguments(self, parser):
         parser.add_argument('--dest', required=True, metavar='DIR', help='Destination directory: the source --dirs DIR is copied into it (rsync DIR/ DEST/)')
-        parser.add_argument('-n', '--dry-run', action='store_true', help='Copy nothing: list what would be copied (N new, C changed) and what is only in the destination (X), one file per rank: walksync-dryrun-r*.txt')
+        parser.add_argument('-n', '--dry-run', action='store_true', help='Copy nothing: list what would be copied (N new, C changed) and what is only in the destination (X), one file per rank: ' + DRYRUN_FILES)
         parser.add_argument('--rsync', default=None, metavar='FILE', help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
         parser.add_argument('--rsync-opts', default='', metavar='OPTS', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to ' + ' '.join(RSYNC_OPTS) + ')')
         add_index_argument(parser, 'Every rank also writes an index of what it copied, one line of metadata each (from the source stat the compare took) per entry an rsync copied, to index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix) in the working directory; unchanged entries are not listed, and with --dry-run it lists what would be copied; see the walk README, "Indexes"')

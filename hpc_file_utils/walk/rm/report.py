@@ -1,6 +1,7 @@
 """walkrm's summary, on rank 0 after the walk and the rmdir pass (no MPI)."""
 
 from hpc_file_utils.walk.common.formatting import format_number
+from hpc_file_utils.walk.rm.tool import DRYRUN_FILES
 
 
 def rm_lines(stats, options, walk_seconds, rmdir_seconds):
@@ -11,7 +12,7 @@ def rm_lines(stats, options, walk_seconds, rmdir_seconds):
     if options.dry_run:
         chmod = f" ({n(c['chmod'])} would need u+rwx first)" if c['chmod'] else ''
         lines = [f"--> Dry run: would remove {n(c['removed'])} files, links and specials and {n(ndirs)} directories"
-                 f"{chmod}; listed in walkrm-dryrun-r*.txt"]
+                 f"{chmod}; listed in {DRYRUN_FILES}"]
     else:
         lines = [f"--> Removed {n(c['removed'])} files, links and specials and {n(c['dirs_removed'])} directories "
                  f"({n(c['chmod'])} made u+rwx first); walk {walk_seconds:.1f} s, directories {rmdir_seconds:.1f} s"]

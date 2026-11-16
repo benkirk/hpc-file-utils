@@ -18,6 +18,11 @@ class MPIClass:
         self.stats = WalkStats(self.options.heap_size, self.options.now)
         self.total_errors = 0 # sum over all ranks, set in collect()
 
+    def count_error(self):
+        """One more thing that could not be done; the sum over the ranks is the exit status's
+        (collect()). The message is the caller's (BaseWorker.error(), or a tool's own)."""
+        self.stats.num_errors += 1
+
     def rank_info(self):
         """This rank's own counts for --verbose. The Manager waits for no work and keeps
         no stack: zeros; the workers fill those in."""

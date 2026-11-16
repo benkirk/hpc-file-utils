@@ -1,6 +1,7 @@
 """walksync's summary, from the counters the ranks summed (no MPI)."""
 
 from hpc_file_utils.walk.common.formatting import format_number, format_size
+from hpc_file_utils.walk.sync.tool import DRYRUN_FILES
 
 
 def sync_lines(stats, elapsed, options):
@@ -15,7 +16,7 @@ def sync_lines(stats, elapsed, options):
     if options.dry_run:
         lines.append(f"--> Dry run: would copy {format_number(c['new'] + c['changed'])} entries, "
                      f"{format_size(c['bytes_to_copy'])}; listed (N new, C changed, X only in the "
-                     'destination) in walksync-dryrun-r*.txt')
+                     f'destination) in {DRYRUN_FILES}')
         return lines
     rate = c['copied_bytes'] / elapsed if elapsed > 0 else 0
     lines.append(f"--> Copied {n('copied_files')} entries, {format_size(c['copied_bytes'])} ({format_size(rate)}/s) "

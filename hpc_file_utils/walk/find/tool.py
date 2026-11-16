@@ -1,10 +1,10 @@
 """walkfind: list the entries that match, like find, in parallel (common/tool.py)."""
 
-import fnmatch
 import glob
 import os
 import shlex
 
+from hpc_file_utils.walk.common.filters import globs_to_regex
 from hpc_file_utils.walk.common.index import add_index_argument
 from hpc_file_utils.walk.common.tool import Tool
 
@@ -33,15 +33,15 @@ class FindTool(Tool):
         add_index_argument(parser, 'Every rank also writes an index of its matches, one line of metadata each (find -ls: type, size, allocation, mode, owner, times, inode, path), to index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix) in the working directory; see the walk README, "Indexes"')
 
     def check(self, parser, args):
-        """--name as one regex (filters.py does the same for --exclude); --output's directory
+        """--name as one regex (filters.globs_to_regex(), as --exclude); --output's directory
         must exist. A run's lists replace an earlier run's: this removes walkfind-r*.list
         from the working directory, so a rank that matches nothing leaves no stale list."""
         args.name_regex = None
         if args.name:
-            for g in args.name:
-                if not g or '/' in g:
-                    parser.error(f"--name matches names, so GLOB cannot be empty or hold a '/': {g!r}")
-            args.name_regex = '|'.join(fnmatch.translate(g) for g in args.name)
+            try:
+                args.name_regex = globs_to_regex(args.name, '--name')
+            except ValueError as e:
+                parser.error(str(e))
         if args.prune_matches and not args.name:
             parser.error('--prune-matches needs --name')
         if args.output is not None:

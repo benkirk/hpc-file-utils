@@ -21,13 +21,10 @@ import re
 import stat
 from typing import NamedTuple
 
-from hpc_file_utils.walk.common.filters import TYPES
 from hpc_file_utils.walk.common.formatting import printable
-from hpc_file_utils.walk.common.index import IndexWriter, rank_index_name
+from hpc_file_utils.walk.common.index import TYPE_LETTERS
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.find.tool import LIST_FILE
-
-TYPE_LETTERS = {mode: letter for letter, mode in TYPES.items()}
 
 
 class FindBatch(NamedTuple):
@@ -45,10 +42,7 @@ class FindWorker(BaseWorker):
         self.prune = o.prune_matches
         self.print0 = o.print0
         self.list = self.rank_file(LIST_FILE, binary=o.print0)
-        self.index = None
-        if o.index:
-            self.index = IndexWriter(rank_index_name(o.summary_prefix, self.rank), 'walkfind', o.dirs, how=o.index)
-            self.files.append(self.index)
+        self.index = self.open_rank_index()
 
     def process_directory(self, dirname):
         if self.vanished(dirname):

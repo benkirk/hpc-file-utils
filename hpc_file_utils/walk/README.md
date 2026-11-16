@@ -108,8 +108,9 @@ The report options belong to `walkstat`, and to `walksync` when it is asked for 
 | `--threshold-size SIZE`, `--threshold-count N` | 10MB, 10000 | What is too small to list: see [walkstat](#walkstat) |
 | `--fail-on-errors` | off | `walkstat`, `walktar`: exit 2 if anything could not be read. See [Exit status](#exit-status) |
 
-`walkfind` and `walkrm` still accept the report options, and the other three tools accept
-`--fail-on-errors`, but they do nothing there and `--help` leaves them out.
+A tool accepts only the options it uses: `walkfind` and `walkrm` refuse the report options,
+and only `walkstat` and `walktar` take `--fail-on-errors`. `walkfind` keeps `--summary-prefix`,
+which names its index.
 
 ## Filters
 
@@ -198,8 +199,8 @@ Archives the trees into tar files in the working directory, many at once.
 - `output-r{rank}-dirs.tar`: every directory `rank` walked, the roots included, with its mode,
   owner and times.
 - With `--index`, `<tar>.idx` beside each tar. See [Indexes](#indexes).
-- A final `--> Batches:` line with the files, bytes and tars written, and `walkstat`'s summary
-  of what was archived.
+- A `--> Wrote F files, S (B bytes) in A archives` line, then `walkstat`'s summary of what
+  was archived.
 
 **Restoring:**
 
@@ -568,15 +569,15 @@ Python stack to that rank's stderr, and the rank goes on.
 | `tools.py` | `TOOLS`, the tools by name |
 | `common/tool.py` | `Tool`: what a tool adds (options, checks, banner, a collective phase, report, exit status, worker) |
 | `common/manager.py` | The Manager, `BatchQueue`; its docstring is the protocol and the termination argument |
-| `common/worker.py` | `BaseWorker`: `entries()`, the local stack, sharing, batches, `in_flight()`; `FileBatch`, `RankFile` |
+| `common/worker.py` | `BaseWorker`: `entries()`, the local stack, sharing, batches, `in_flight()`, `open_rank_index()`; `FileBatch` |
 | `common/protocol.py`, `mpiclass.py`, `progress.py` | Message tags and the progress payload; the end-of-walk reduction; the progress line |
 | `common/stats.py`, `heaps.py`, `report.py` | What a rank accumulates and how two ranks' results merge; the balance and per-rank lines |
 | `common/options.py`, `filters.py` | The common options and the filters |
 | `common/index.py` | `IndexWriter`, the reader and the checker |
-| `common/formatting.py`, `log.py` | Number, size and path formatting; diagnostics on stderr |
+| `common/formatting.py`, `log.py`, `rankfile.py` | Number, size and path formatting; diagnostics on stderr; a per-rank output file |
 | `stat/` | `walkstat`: `StatWorker`, `StatBatch`, `report.py` (summary and userlists), `spreadsheet.py` |
-| `tar/` | `walktar`: `TarWorker`, a `StatWorker` whose stat batches fill tar batches |
-| `sync/` | `walksync`: `SyncWorker`, `CompareBatch`, `CopyBatch`, `compare.py` (the copy decision), `rsync.py`, `report.py` |
+| `tar/` | `walktar`: `TarWorker`, a `StatWorker` whose stat batches fill tar batches; `report.py` |
+| `sync/` | `walksync`: `SyncWorker`, `CompareBatch`, `CopyBatch`, `compare.py` (the copy decision), `rsync.py`, `inflight.py` (bytes of the running copy), `report.py` |
 | `find/` | `walkfind`: `FindWorker`, `FindBatch`, `report.py` |
 | `rm/` | `walkrm`: the guard rails and the rmdir pass in `tool.py`, `RmWorker`, `RmBatch`, `report.py` |
 
@@ -590,6 +591,13 @@ A tool is one `<tool>/tool.py` (a `Tool` subclass) and one `<tool>/worker.py` (a
 subclass with `process_directory()` and `process_batch()`), added to `TOOLS` in `tools.py` and
 to `[project.scripts]` in `pyproject.toml`, plus a wrapper in `cli.py`. A tool that needs a
 collective phase after the walk does it in `Tool.finish()`, as `walkrm`'s rmdir pass does.
+
+`common/` imports no tool. A tool says what it is through its `Tool` attributes (`reports`,
+`indexes`, `selects`, `batches_bytes`, `errors_exit`, `verb`), and `parse_options()` gives it
+only the option groups those call for; the options still carry every name, at its default.
+The scan of a directory is each tool's own (`process_directory()`), built on
+`BaseWorker.entries()`, which does what the scans share: the `scandir`, `--exclude`, and the
+progress and share checks.
 
 A batch must be a module-level `NamedTuple` (it is pickled in a share), and processing a batch
 must create no directories and no batches that outlive the call on another rank: the

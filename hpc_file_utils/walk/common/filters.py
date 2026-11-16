@@ -34,13 +34,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from hpc_file_utils.walk.common.index import TYPE_LETTERS
 from hpc_file_utils.walk.common.stats import SECONDS_IN_YEAR
 
 AGE_UNITS = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 7*86400, 'y': SECONDS_IN_YEAR}
 AGE_RE = re.compile(r'^(\d+(?:\.\d+)?)([smhdwy]?)$')
 
-TYPES = {'f': stat.S_IFREG, 'd': stat.S_IFDIR, 'l': stat.S_IFLNK, 'p': stat.S_IFIFO,
-         's': stat.S_IFSOCK, 'b': stat.S_IFBLK, 'c': stat.S_IFCHR}
+TYPES = {letter: mode for mode, letter in TYPE_LETTERS.items()}   # --type's letters -> S_IFMT bits
 
 TIME_FIELDS = ('mtime', 'atime', 'ctime')
 
@@ -110,8 +110,9 @@ class Filters:
 
 def add_filter_options(parser: argparse.ArgumentParser, tool=None) -> None:
     """The filter options. tool (a Tool) says what its selecting filters decide, for the
-    help; a tool that takes no filters (walkrm) still parses them, to refuse them with
-    its own message, but its --help leaves them out."""
+    help. A tool that takes no filters (walkrm) still parses them, out of its --help, so
+    that it can refuse them in its own words (RmTool.check()) rather than argparse's
+    'unrecognized arguments'."""
     selects = getattr(tool, 'selects', 'counted')
     if selects is None:
         for flag, options in filter_flags():
@@ -149,6 +150,15 @@ def filter_flags():
               ('--max-size', dict(metavar='SIZE')),
               ('--type', dict(metavar='T[,T...]'))]
     return flags
+
+
+def globs_to_regex(globs, option):
+    """Name globs (fnmatch, case-sensitive) as one regex for re.match, their union;
+    ValueError, naming the option, for one that is empty or holds a '/'."""
+    for glob in globs:
+        if not glob or '/' in glob:
+            raise ValueError(f"{option} matches names, so GLOB cannot be empty or hold a '/': {glob!r}")
+    return '|'.join(fnmatch.translate(g) for g in globs)
 
 
 def parse_when(text: str, now: float) -> float:
@@ -206,11 +216,8 @@ def compile_filters(args: argparse.Namespace, now: float | None = None) -> 'Filt
     f = Filters()
 
     if args.exclude:
-        for glob in args.exclude:
-            if not glob or '/' in glob:
-                raise ValueError(f"--exclude matches names, so GLOB cannot be empty or hold a '/': {glob!r}")
         f.exclude = list(args.exclude)
-        f.exclude_regex = '|'.join(fnmatch.translate(g) for g in f.exclude)
+        f.exclude_regex = globs_to_regex(f.exclude, '--exclude')
         f.described += [f'--exclude {shlex.quote(g)}' for g in f.exclude]
 
     for name in TIME_FIELDS:

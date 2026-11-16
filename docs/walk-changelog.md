@@ -798,3 +798,26 @@ here. What they added:
 - **Documentation**: the walk README became a user guide and reference; this changelog moved
   out of it; the sprint hand-offs moved to [history/](history/).
 
+### The refactors after the review
+
+Structure only, except where a line says the output changed.
+
+- **`common/` no longer imports a tool.** `Tool.report()` is empty by default; the Manager
+  takes the progress line's verb from the options and no longer imports the tool registry;
+  `RankFile` has its own module, so `common/index.py` does not import the MPI worker.
+  **Output:** walktar's written totals moved from the Manager's `--> Batches:` line to a
+  `--> Wrote F files, S (B bytes) in A archives` line after the balance lines. walksync's
+  totals are in its `--> Copied` line, as before, and no longer repeated on `--> Batches:`.
+  The `--> Batches:` line now appears only when batches moved between ranks.
+- **One copy of shared helpers**: the per-rank index opener, the file-type letters, the
+  glob-to-regex conversion, the dry-run list names.
+- **A tool accepts only the options it uses.** **Behavior:** an option that did nothing is now
+  a usage error (exit 2), for example `walkrm --heap-size`, `walkfind --spreadsheet`,
+  `walksync --fail-on-errors` or `walkstat --batch-size`. `--help` groups the report options.
+- **`sync/inflight.py`** holds walksync's in-flight byte tracking, out of `sync/worker.py`.
+- **The index checker** no longer compares a walkfind index with `find` of its roots.
+- **Not done, on purpose: one shared scan loop.** `BaseWorker.entries()` already holds what
+  the scans share. What is left in each tool's `process_directory()` is its own per-entry
+  logic, and a template with hooks would add a call per entry and four methods per tool to
+  save about ten lines in each.
+

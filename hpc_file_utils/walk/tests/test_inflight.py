@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from hpc_file_utils.walk.sync import inflight as inflight_mod
 from hpc_file_utils.walk.sync import worker as worker_mod
 from hpc_file_utils.walk.sync.compare import NEW
 from hpc_file_utils.walk.sync.worker import CopyBatch, find_temp
@@ -34,7 +35,7 @@ class _ScriptedRsync:
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setattr(worker_mod, "INFLIGHT_CACHE_SECONDS", 0)   # measure at every look
+    monkeypatch.setattr(inflight_mod, "INFLIGHT_CACHE_SECONDS", 0)   # measure at every look
     src = tmp_path / "src"
     src.mkdir()
     dest = tmp_path / "dest"
@@ -152,7 +153,7 @@ def test_a_temp_file_not_there_yet_is_looked_for_less_often(setup, monkeypatch):
 
 def test_the_cache_spares_the_lstats(setup, monkeypatch):
     make, dest = setup
-    monkeypatch.setattr(worker_mod, "INFLIGHT_CACHE_SECONDS", 1.0)
+    monkeypatch.setattr(inflight_mod, "INFLIGHT_CACHE_SECONDS", 1.0)
     w = make()
     seen = []
 
