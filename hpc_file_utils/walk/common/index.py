@@ -80,6 +80,7 @@ GZIP_MAGIC = b'\x1f\x8b'
 RANK_INDEX = 'index-r{:03d}.tsv'              # walkstat's, walksync's and walkfind's per-rank index
 PREFIXED_RANK_INDEX = 'index-{}-r{:03d}.tsv'  # ... with --summary-prefix
 
+# an entry's type bits (S_IFMT) -> its letter, find's: here, in --type and in walkfind's counts
 TYPE_LETTERS = {stat.S_IFREG: 'f', stat.S_IFDIR: 'd', stat.S_IFLNK: 'l', stat.S_IFIFO: 'p',
                 stat.S_IFSOCK: 's', stat.S_IFBLK: 'b', stat.S_IFCHR: 'c'}
 

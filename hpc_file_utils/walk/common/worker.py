@@ -66,6 +66,19 @@ class BaseWorker(MPIClass):
         self.files.append(f)
         return f
 
+    def open_rank_index(self, fields=()):
+        """--index for the tools that write one index per rank (walkstat, walksync, walkfind):
+        index-r{rank}.tsv in the working directory (index-<prefix>-r{rank}.tsv with
+        --summary-prefix; .gz with --index=gz), opened at its first record and closed by
+        run(); None without --index. fields: (key, value) pairs for its header."""
+        from hpc_file_utils.walk.common.index import IndexWriter, rank_index_name
+        o = self.options
+        if not o.index:
+            return None
+        index = IndexWriter(rank_index_name(o.summary_prefix, self.rank), o.app, o.dirs, how=o.index, fields=fields)
+        self.files.append(index)
+        return index
+
     def error(self, what, error):
         """Count what could not be done (an entry scanned, stat'ed, archived or copied) and
         say so on stderr: '[rank] ERROR Cannot <what>: <error>' (common/log.py)."""

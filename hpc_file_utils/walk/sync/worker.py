@@ -69,14 +69,13 @@ import time
 from typing import NamedTuple
 
 from hpc_file_utils.walk.common.formatting import printable
-from hpc_file_utils.walk.common.index import IndexWriter, encode_path, index_stat, rank_index_name
+from hpc_file_utils.walk.common.index import encode_path, index_stat
 from hpc_file_utils.walk.common.worker import BaseWorker
 from hpc_file_utils.walk.sync.compare import NEW, TYPE, extraneous, needs_copy
+from hpc_file_utils.walk.sync.tool import DRYRUN_FILE
 from hpc_file_utils.walk.sync.rsync import RSYNC_VANISHED, Rsync, rsync_command, split
 
 log = logging.getLogger(__name__)
-
-DRYRUN_FILE = 'walksync-dryrun-r{:03d}.txt'
 
 INFLIGHT_MIN = 256 * 1024 * 1024   # entries at least this big are followed while their rsync runs
 INFLIGHT_CACHE_SECONDS = 1.0       # the in-flight total is re-measured at most this often
@@ -161,14 +160,8 @@ class SyncWorker(BaseWorker):
     def open_index(self):
         """--index: this rank's record of what it copied (the module docstring), opened at
         its first record and closed by run(); None without."""
-        o = self.options
-        if not o.index:
-            return None
         fields = [('dest', encode_path(self.dest))] + ([('dry-run', 'yes')] if self.dry_run else [])
-        index = IndexWriter(rank_index_name(o.summary_prefix, self.rank), 'walksync', [self.src],
-                            how=o.index, fields=fields)
-        self.files.append(index)
-        return index
+        return self.open_rank_index(fields)
 
     def rel(self, path):
         """A source path relative to the source root ('' for the root)."""

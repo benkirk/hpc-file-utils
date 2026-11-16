@@ -7,7 +7,8 @@ from hpc_file_utils.walk.common.tool import Tool
 
 log = logging.getLogger(__name__)
 
-DRYRUN_FILE = 'walkrm-dryrun-r{:03d}.txt'
+DRYRUN_FILE = 'walkrm-dryrun-r{:03d}.txt'        # each worker's --dry-run list, in the working directory
+DRYRUN_FILES = DRYRUN_FILE.replace('{:03d}', '*')
 
 
 def strictly_under(path, root):
@@ -33,7 +34,7 @@ class RmTool(Tool):
 
     def add_arguments(self, parser):
         parser.add_argument('--allowed-root', action='append', required=True, metavar='DIR', help='Required (repeatable): every --dirs target must be strictly below one of these (after resolving symlinks); a root itself is refused')
-        parser.add_argument('-n', '--dry-run', action='store_true', help='Remove nothing: count, and list what would be removed, one file per rank: walkrm-dryrun-r*.txt')
+        parser.add_argument('-n', '--dry-run', action='store_true', help='Remove nothing: count, and list what would be removed, one file per rank: ' + DRYRUN_FILES)
         parser.add_argument('--keep-root', action='store_true', help='Empty each target but keep the target directory itself')
 
     def check(self, parser, args):
@@ -81,7 +82,7 @@ class RmTool(Tool):
             lines.append(f"{verb} {shown}{' (its contents; --keep-root)' if args.keep_root else ''}")
         lines.append(f"Allowed roots: {' '.join(args.allowed_roots)}")
         if args.dry_run:
-            lines.append('Dry run: nothing is removed; the lists are walkrm-dryrun-r*.txt')
+            lines.append(f'Dry run: nothing is removed; the lists are {DRYRUN_FILES}')
         return lines
 
     def finish(self, walker):
