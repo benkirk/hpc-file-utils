@@ -11,7 +11,6 @@ class TarTool(Tool):
                    'of files, plus one per rank for the directories.')
     examples = ('mpiexec -n 32 --cpu-bind depth --depth 2 walktar --dirs /glade/campaign/proj/run1',
                 'mpiexec -n 32 --cpu-bind depth --depth 2 walktar --dirs run1 --index --batch-size 4GiB')
-    writes = ('wrote', 'archives')
     batches_bytes = True
     batch_help = 'stat\'ed a batch at a time, and each batch of files is written as one tar'
     selects = 'archived'
@@ -23,6 +22,13 @@ class TarTool(Tool):
     def check(self, parser, args):
         if args.read_ahead < 0:
             parser.error('--read-ahead must be at least 0')
+
+    def report(self, manager, stats):
+        """What was written, then walkstat's reports of what was archived."""
+        from hpc_file_utils.walk.stat.report import write_reports
+        from hpc_file_utils.walk.tar.report import tar_lines
+        print('\n'.join(tar_lines(manager.written())), flush=True)
+        write_reports(stats, manager.options)
 
     def make_worker(self):
         from hpc_file_utils.walk.tar.worker import TarWorker

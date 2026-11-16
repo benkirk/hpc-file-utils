@@ -17,8 +17,8 @@ from hpc_file_utils.walk.tests.conftest import BIG_DIR_FILES as NFILES   # the b
 
 pytestmark = pytest.mark.mpi
 
-BATCHES_RE = re.compile(r"--> Batches: ([\d,]+) received in share replies, ([\d,]+) handed out; "
-                        r"wrote ([\d,]+) files, .+ \(([\d,]+) bytes\) in ([\d,]+) archives")
+BATCHES_RE = re.compile(r"--> Batches: ([\d,]+) received in share replies, ([\d,]+) handed out")
+WROTE_RE = re.compile(r"^--> Wrote ([\d,]+) files, .+ \(([\d,]+) bytes\) in ([\d,]+) archives", re.M)
 TAR_RE = re.compile(r"^output-r(\d+)-(b\d+|dirs)\.tar$")
 
 
@@ -58,7 +58,8 @@ def test_big_directory_is_spread_over_every_rank(walk, big_dir_tree, tmp_path):
     assert min(n for n, _ in files.values()) >= 10, f"{dict(files)}\n{r.report()}"
     assert sum(len(v) for v in dirs.values()) == 5     # tree, big, a, a/b, c: one -dirs tar each walker
 
-    shared, handed, written_files, written_bytes, archives = r.ints(BATCHES_RE)
+    shared, handed = r.ints(BATCHES_RE)
+    written_files, written_bytes, archives = r.ints(WROTE_RE)
     assert shared > 0 and handed > 0, r.report()      # the work moved by sharing batches
     assert written_files == nfiles
     batch_tars = [t for t in tmp_path.glob("output-r*-b*.tar")]

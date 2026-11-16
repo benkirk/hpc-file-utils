@@ -57,6 +57,7 @@ def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Names
 
     args = parser.parse_args(argv)
     args.app = appname
+    args.verb = tool.verb
 
     # consistency checks
     if args.local_queue_max < 2:

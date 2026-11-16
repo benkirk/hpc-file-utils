@@ -106,7 +106,7 @@ def test_walksync_options(tmp_path):
     assert (a.batch_files, a.batch_size) == (1000, 16 * 1024 ** 3)
     assert a.rsync_opts == ["--inplace", "-v"] and not a.dry_run
     assert a.app == "walksync" and a.rsyncs == 8
-    assert TOOLS["walksync"].writes == ("copied", "rsync batches") and TOOLS["walkstat"].writes is None
+    assert TOOLS["walksync"].verb == "copied" and TOOLS["walkstat"].verb == "wrote"
     assert parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "--rsyncs", "3"]).rsyncs == 3
     a = parse_options("walksync", ["--dirs", str(src), "--dest", str(dest), "-n", "--mtime-newer", "1y",
                                    "--exclude", "COLD_STORAGE*", "--batch-size", "1GiB"])

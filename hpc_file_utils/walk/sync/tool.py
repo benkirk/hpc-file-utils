@@ -17,7 +17,7 @@ class SyncTool(Tool):
     examples = ('mpiexec -n 32 walksync --dirs /src/tree --dest /dest/tree --dry-run',
                 'mpiexec -n 32 walksync --dirs /src/tree --dest /dest/tree --rsync-opts=--inplace',
                 'rsync -aHAX --delete /src/tree/ /dest/tree/    # afterwards, serial: what walksync leaves')
-    writes = ('copied', 'rsync batches')
+    verb = 'copied'
     batches_bytes = True
     dirs_help = 'The source directory (exactly one)'
     batch_help = 'compared with the destination a batch at a time, and each batch to copy is copied by --rsyncs rsyncs'

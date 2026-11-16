@@ -14,8 +14,8 @@ class Tool:
     name = ''                # the console script
     description = ''         # argparse's
     examples = ()            # command lines for the end of --help
-    writes = None            # None, or (verb, units) for the progress line's rate and the Manager's
-                             # last line: walktar ('wrote', 'archives'), walksync ('copied', 'rsync batches')
+    verb = 'wrote'           # what a tool that writes does, for the progress line's rate
+                             # ('| wrote S ...'; walksync: 'copied')
     batches_bytes = False    # True: --batch-size closes a batch by bytes too (walktar, walksync)
 
     # what --help says and shows (options.py); none of these changes what is parsed
@@ -55,10 +55,7 @@ class Tool:
         level). Errors counted here are in the exit status."""
 
     def report(self, manager, stats) -> None:
-        """Rank 0, after the walk's balance lines: the tool's own reports (walkstat's
-        summary and userlists, unless the tool says otherwise)."""
-        from hpc_file_utils.walk.stat.report import write_reports
-        write_reports(stats, manager.options)
+        """Rank 0, after the walk's balance lines: the tool's own reports."""
 
     def exit_status(self, total_errors: int, options: argparse.Namespace) -> int:
         """The job's exit status after a walk, by the tool's errors_exit: errors are only

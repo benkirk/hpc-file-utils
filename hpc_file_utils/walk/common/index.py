@@ -66,7 +66,7 @@ import sys
 from collections import OrderedDict
 from typing import NamedTuple
 
-from hpc_file_utils.walk.common.worker import RankFile
+from hpc_file_utils.walk.common.rankfile import RankFile
 
 VERSION = 1
 HEADER = f'# hfu-index v{VERSION}'

@@ -21,6 +21,11 @@ class StatTool(Tool):
         if args.stat_threads < 0:
             parser.error('--stat-threads must be at least 0')
 
+    def report(self, manager, stats):
+        """The summary, the userlists and, if asked for, the spreadsheet."""
+        from hpc_file_utils.walk.stat.report import write_reports
+        write_reports(stats, manager.options)
+
     def make_worker(self):
         from hpc_file_utils.walk.stat.worker import StatWorker
         return StatWorker()

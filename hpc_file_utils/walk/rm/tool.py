@@ -31,8 +31,6 @@ class RmTool(Tool):
     selects = None           # whole trees only: a filter is refused
     errors_exit = 1          # something was left (or would not be removed)
 
-    rmdir_seconds = 0.0      # rank 0: the rmdir pass's time, for the report
-
     def add_arguments(self, parser):
         parser.add_argument('--allowed-root', action='append', required=True, metavar='DIR', help='Required (repeatable): every --dirs target must be strictly below one of these (after resolving symlinks); a root itself is refused')
         parser.add_argument('-n', '--dry-run', action='store_true', help='Remove nothing: count, and list what would be removed, one file per rank: walkrm-dryrun-r*.txt')
@@ -104,7 +102,7 @@ class RmTool(Tool):
                 rmdir_pass(walker, scanned[depth], keep)
             comm.Barrier()
         if walker.rank == 0:
-            self.rmdir_seconds = MPI.Wtime() - t0
+            walker.rmdir_seconds = MPI.Wtime() - t0      # for the report
             if not o.dry_run:
                 self.check_targets(walker)
 
@@ -121,15 +119,15 @@ class RmTool(Tool):
                 except OSError as error:
                     left = error
                 if left is not None:
-                    walker.stats.num_errors += 1
+                    walker.count_error()
                     log.error('%s is not empty after the run (%s)', target, getattr(left, 'name', left))
             elif os.path.lexists(target):
-                walker.stats.num_errors += 1
+                walker.count_error()
                 log.error('%s still exists after the run', target)
 
     def report(self, manager, stats):
         from hpc_file_utils.walk.rm.report import rm_lines
-        print('\n'.join(rm_lines(stats, manager.options, manager.walk_elapsed, self.rmdir_seconds)), flush=True)
+        print('\n'.join(rm_lines(stats, manager.options, manager.walk_elapsed, manager.rmdir_seconds)), flush=True)
 
     def make_worker(self):
         from hpc_file_utils.walk.rm.worker import RmWorker

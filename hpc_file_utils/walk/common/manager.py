@@ -90,11 +90,10 @@ import heapq
 from collections import deque
 from dataclasses import dataclass
 
-from hpc_file_utils.walk.common.formatting import format_number, format_size
+from hpc_file_utils.walk.common.formatting import format_number
 from hpc_file_utils.walk.common.mpiclass import MPIClass
 from hpc_file_utils.walk.common.protocol import Tag
 from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
-from hpc_file_utils.walk.tools import TOOLS
 
 class BatchQueue:
     """The batches waiting here for a worker, in the order they are handed out.
@@ -171,8 +170,8 @@ class Manager(MPIClass):
         self.progress = ProgressTally(self.nranks)
         self.progress_time = self.start_time = MPI.Wtime()
         self.walk_elapsed = 0.0
-        # what the tool's batches do, for the progress line and the last line (walkstat: nothing)
-        self.verb, self.units = TOOLS[self.options.app].writes or ('wrote', 'archives')
+        self.verb = self.options.verb                  # 'wrote' or 'copied', for the progress line's rate
+        self.rmdir_seconds = 0.0                       # walkrm: its rmdir pass's time (RmTool.finish())
 
     def finished(self):
         """Nothing queued here and every worker idle: nothing left anywhere (see module doc)."""
@@ -337,14 +336,9 @@ class Manager(MPIClass):
         print(f'  --> Dispatches: {format_number(self.c.ndispatches)}; directories received as overflow: '
               f'{format_number(self.c.ndirs_overflow)}, shared: {format_number(self.c.ndirs_shared)} '
               f'({format_number(self.c.nshares)} share requests, {format_number(self.c.nshares_empty)} answered empty)')
-        written = self.written()
-        if self.c.nbatches_shared or written is not None:
-            line = (f'  --> Batches: {format_number(self.c.nbatches_shared)} received in share replies, '
-                    f'{format_number(self.c.nbatch_dispatches)} handed out')
-            if written is not None:
-                line += (f'; {self.verb} {format_number(written[1])} files, {format_size(written[0])} '
-                         f'({format_number(written[0])} bytes) in {format_number(written[2])} {self.units}')
-            print(line)
+        if self.c.nbatches_shared or self.c.nbatch_dispatches:
+            print(f'  --> Batches: {format_number(self.c.nbatches_shared)} received in share replies, '
+                  f'{format_number(self.c.nbatch_dispatches)} handed out')
         if self.options.verbose:
             self.print_counters()
         print('  --> Finished dispatch, Terminating ranks')
