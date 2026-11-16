@@ -25,6 +25,8 @@ class SyncTool(Tool):
     dirs_help = 'The source directory (exactly one)'
     batch_help = 'compared with the destination a batch at a time, and each batch to copy is copied by --rsyncs rsyncs'
     selects = 'copied'
+    reports_help = ('walkstat\'s summary and userlists of what was compared, written only when '
+                    '--summary-prefix or --spreadsheet is given.')
     errors_exit = 1          # an incomplete copy must not look like a finished one
 
     def add_arguments(self, parser):

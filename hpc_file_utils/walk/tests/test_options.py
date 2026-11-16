@@ -210,3 +210,33 @@ def test_walksync_keeps_a_capable_rsync_on_path(tmp_path, monkeypatch):
     assert choose_rsync(alternatives=(other,)) == (on_path, True, True, "")
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))                  # none on PATH
     assert choose_rsync(alternatives=(other,))[0] == other
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("walkfind", ["--heap-size", "5"]),
+    ("walkfind", ["--spreadsheet", "s.xlsx"]),
+    ("walkfind", ["--fail-on-errors"]),
+    ("walksync", ["--fail-on-errors"]),
+    ("walkstat", ["--batch-size", "1GiB"]),
+    ("walkrm", ["--summary-prefix", "p"]),
+    ("walkrm", ["--threshold-size", "0"]),
+    ("walkrm", ["--index"]),
+])
+def test_a_tool_refuses_the_options_it_does_not_use(tmp_path, tool, args, capsys):
+    """An option that would do nothing is a usage error, not silently accepted."""
+    own = {"walksync": ["--dest", str(tmp_path)], "walkrm": ["--allowed-root", str(tmp_path)]}.get(tool, [])
+    with pytest.raises(SystemExit) as e:
+        parse_options(tool, ["--dirs", str(tmp_path)] + own + args)
+    assert e.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tool", ["walkstat", "walktar", "walkfind", "walkrm"])
+def test_the_options_carry_every_name_whatever_the_tool(tmp_path, tool):
+    """Readers of the options (the workers, the reports) never ask which tool runs."""
+    target = tmp_path / "t"
+    target.mkdir()
+    own = ["--allowed-root", str(tmp_path)] if tool == "walkrm" else []
+    a = parse_options(tool, ["--dirs", str(target)] + own)
+    assert (a.heap_size, a.threshold_count, a.threshold_size) == (500, 10000, 10 * 1024 * 1024)
+    assert a.spreadsheet is None and a.summary_prefix is None and a.index is None and a.fail_on_errors is False
+    assert (a.batch_size is None) == (tool != "walktar")

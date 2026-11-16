@@ -9,6 +9,15 @@ from hpc_file_utils.walk.common.filters import add_filter_options, compile_filte
 from hpc_file_utils.walk.tools import TOOLS
 
 
+# the options only some tools take (parse_options()), at their defaults
+DEFAULTS = dict(
+    spreadsheet=None, summary_prefix=None, heap_size=500, threshold_size='10MB', threshold_count=10000,   # the reports
+    batch_size=None,          # bytes per batch: only the tools that batch by bytes too (walktar, walksync)
+    fail_on_errors=False,     # walkstat, walktar
+    index=None,               # every tool but walkrm (each adds its own --index)
+)
+
+
 class HelpFormatter(argparse.HelpFormatter):
     """argparse's, but text with line breaks of its own (the examples) is left as written."""
 
@@ -29,26 +38,32 @@ def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Names
     parser = argparse.ArgumentParser(prog=appname, description=tool.description, epilog=tool.epilog(), allow_abbrev=False,
                                      formatter_class=HelpFormatter)
 
-    # common arguments first. An option a tool accepts but does not use is left out of
-    # its --help (hidden()); it still parses, as before.
-    def hidden(used, text):
-        return text if used else argparse.SUPPRESS
-
+    # the options every tool takes
     parser.add_argument('-d', '--dirs', nargs='+', metavar='DIR', required=True, help=tool.dirs_help)
     parser.add_argument('-p', '--progress', type=int, default=5, metavar='SECONDS', help='Seconds between progress lines; 0 or less prints none (default: 5)')
-    parser.add_argument('-s', '--spreadsheet', default=None, type=str, metavar='FILE', help=hidden(tool.reports, 'Also write the summary\'s lists to this .xlsx workbook, as sheets added to it or replaced in it (needs pandas and openpyxl)'))
-    parser.add_argument('--summary-prefix', default=None, metavar='PREFIX', help=hidden(tool.reports or tool.indexes, 'Name this run\'s outputs: ' + ('summary-PREFIX, userlists/PREFIX/, the spreadsheet\'s sheets and ' if tool.reports else '') + 'index-PREFIX-r{rank}.tsv (default: ' + ('summary-output, userlists/ and ' if tool.reports else '') + 'index-r{rank}.tsv)'))
     parser.add_argument('-v', '--verbose', action='store_true', help='Print detailed information (per-rank counts, Manager counters)')
-    parser.add_argument('--heap-size', default=500, type=int, metavar='N', help=hidden(tool.reports, 'Length of the largest-files and largest-directories lists kept, overall and per user (default: 500)'))
-    parser.add_argument('--threshold-size', default='10MB', type=str, metavar='SIZE', help=hidden(tool.reports, 'With --threshold-count, what is too small to list: a directory below both stays out of the per-user and by-age directory lists, and a user or group below both gets no row and no userlist (default: 10MB)'))
-    parser.add_argument('--threshold-count', default=10000, type=int, metavar='N', help=hidden(tool.reports, 'The same threshold, as a number of entries (default: 10000)'))
     parser.add_argument('--local-queue-max', default=1000, type=int, metavar='N', help='Subdirectories a worker keeps for itself; past this it sends the oldest half to the Manager (default: 1000)')
     parser.add_argument('--dirs-per-dispatch', default=8, type=int, metavar='N', help='Directories the Manager hands an idle worker at once (default: 8)')
     parser.add_argument('--batch-files', default=1000, type=int, metavar='N', help=f'Names per batch, the unit of work an idle rank can take from a busy one: {tool.batch_help} (default: 1000)')
+    parser.add_argument('--profile', action='store_true', help='Every rank writes a cProfile of its run to profile-r{rank}.prof in the working directory (read with python -m pstats)')
+
+    # the options only some tools take. A tool that does not use one does not accept it;
+    # the options still carry every name, at its default, so no reader has to ask which tool runs.
+    parser.set_defaults(**DEFAULTS)
+    summary_prefix = dict(metavar='PREFIX', help='Name this run\'s outputs: ' + ('summary-PREFIX, userlists/PREFIX/, the spreadsheet\'s sheets and ' if tool.reports else '') + 'index-PREFIX-r{rank}.tsv (default: ' + ('summary-output, userlists/ and ' if tool.reports else '') + 'index-r{rank}.tsv)')
+    if tool.reports:
+        g = parser.add_argument_group('reports', tool.reports_help)
+        g.add_argument('--summary-prefix', **summary_prefix)
+        g.add_argument('-s', '--spreadsheet', type=str, metavar='FILE', help='Also write the summary\'s lists to this .xlsx workbook, as sheets added to it or replaced in it (needs pandas and openpyxl)')
+        g.add_argument('--heap-size', type=int, metavar='N', help=f'Length of the largest-files and largest-directories lists kept, overall and per user (default: {DEFAULTS["heap_size"]})')
+        g.add_argument('--threshold-size', type=str, metavar='SIZE', help=f'With --threshold-count, what is too small to list: a directory below both stays out of the per-user and by-age directory lists, and a user or group below both gets no row and no userlist (default: {DEFAULTS["threshold_size"]})')
+        g.add_argument('--threshold-count', type=int, metavar='N', help=f'The same threshold, as a number of entries (default: {DEFAULTS["threshold_count"]})')
+    elif tool.indexes:
+        parser.add_argument('--summary-prefix', **summary_prefix)
     if tool.batches_bytes:
         parser.add_argument('--batch-size', default='16GiB', type=str, metavar='SIZE', help='Bytes per batch (st_size), the other limit; a bigger file is a batch on its own. The walk ends one batch after the last rank takes its last, so aim for at least ~5 batches per worker: total bytes / (5 x workers), within about 1GiB to 16GiB (the walk README, "Sizing the batches") (default: 16GiB)')
-    parser.add_argument('--fail-on-errors', action='store_true', help=hidden(tool.errors_exit is None, 'Exit with status 2 if any directory or entry could not be read (default: exit 0; errors are counted and reported)'))
-    parser.add_argument('--profile', action='store_true', help='Every rank writes a cProfile of its run to profile-r{rank}.prof in the working directory (read with python -m pstats)')
+    if tool.errors_exit is None:
+        parser.add_argument('--fail-on-errors', action='store_true', help='Exit with status 2 if any directory or entry could not be read (default: exit 0; errors are counted and reported)')
 
     add_filter_options(parser, tool)
 
@@ -70,7 +85,7 @@ def parse_options(appname: str, argv: list[str] | None = None) -> argparse.Names
         parser.error('--batch-files must be at least 1')
 
     try:
-        if tool.batches_bytes:
+        if args.batch_size is not None:
             args.batch_size = parse_size_option(args.batch_size, '--batch-size')
             if args.batch_size < 1:
                 parser.error('--batch-size must be at least 1 byte')

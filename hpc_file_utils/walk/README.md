@@ -108,8 +108,9 @@ The report options belong to `walkstat`, and to `walksync` when it is asked for 
 | `--threshold-size SIZE`, `--threshold-count N` | 10MB, 10000 | What is too small to list: see [walkstat](#walkstat) |
 | `--fail-on-errors` | off | `walkstat`, `walktar`: exit 2 if anything could not be read. See [Exit status](#exit-status) |
 
-`walkfind` and `walkrm` still accept the report options, and the other three tools accept
-`--fail-on-errors`, but they do nothing there and `--help` leaves them out.
+A tool accepts only the options it uses: `walkfind` and `walkrm` refuse the report options,
+and only `walkstat` and `walktar` take `--fail-on-errors`. `walkfind` keeps `--summary-prefix`,
+which names its index.
 
 ## Filters
 

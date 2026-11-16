@@ -110,8 +110,9 @@ class Filters:
 
 def add_filter_options(parser: argparse.ArgumentParser, tool=None) -> None:
     """The filter options. tool (a Tool) says what its selecting filters decide, for the
-    help; a tool that takes no filters (walkrm) still parses them, to refuse them with
-    its own message, but its --help leaves them out."""
+    help. A tool that takes no filters (walkrm) still parses them, out of its --help, so
+    that it can refuse them in its own words (RmTool.check()) rather than argparse's
+    'unrecognized arguments'."""
     selects = getattr(tool, 'selects', 'counted')
     if selects is None:
         for flag, options in filter_flags():

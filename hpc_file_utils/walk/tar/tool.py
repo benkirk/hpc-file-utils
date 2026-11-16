@@ -14,6 +14,7 @@ class TarTool(Tool):
     batches_bytes = True
     batch_help = 'stat\'ed a batch at a time, and each batch of files is written as one tar'
     selects = 'archived'
+    reports_help = 'walkstat\'s summary and userlists of what was archived, written in the working directory.'
 
     def add_arguments(self, parser):
         parser.add_argument('--read-ahead', default=16, type=int, metavar='N', help='Files each rank opens and reads (whole, up to 16 MiB) ahead of the one it is archiving, in as many reader threads: a small file costs one storage round trip, ~35 ms on campaign GPFS and scratch, and these overlap them; 0 reads one file at a time. The threads need CPU: under PALS\'s default binding of one CPU per rank they lose a third of the rate on small files, so launch with mpiexec --cpu-bind depth --depth 2 (the walk README, "CPU binding") (default: 16)')

@@ -22,6 +22,7 @@ class Tool:
     dirs_help = 'The directories to walk'
     batch_help = ''          # what this tool does with a batch of --batch-files names
     reports = True           # writes walkstat's summary, userlists and --spreadsheet
+    reports_help = 'The summary and the userlists, written in the working directory.'
     indexes = True           # has --index
     selects = 'counted'      # what the selecting filters decide; None: the tool takes no filters
     errors_exit = None       # the exit status when anything failed: None for 0, or 2 with
