@@ -1,5 +1,9 @@
 # Hand-off: the indexes' Part C cleanups, sprint indexes-2 (written 2026-11-10)
 
+> **Historical, not maintained.** This is the log of the indexes-2 sprint. It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 Three steps, in order, each its own commit on branch `indexes-2` and its own entry in the
 walk README (`hpc_file_utils/walk/README.md`, the "indexes-2" entries), closing the open
 questions of `HANDOFF-sweep.md` 4.8:

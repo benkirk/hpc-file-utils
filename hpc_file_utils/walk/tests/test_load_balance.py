@@ -1,4 +1,4 @@
-"""Local queues with Manager-brokered sharing (phase 3.5; docs/walk-load-balancing.md).
+"""Local queues with Manager-brokered sharing (docs/walk-load-balancing.md).
 
 Workers walk their own queue and only talk to the Manager on overflow, when idle, or
 when asked to share. On a tree whose directories are too narrow to ever overflow, the

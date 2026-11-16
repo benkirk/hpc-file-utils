@@ -1,16 +1,18 @@
-"""Filters for the walk (phase 4): find-like, compiled once on rank 0 (no MPI).
+"""Filters for the walk: find-like, compiled once on rank 0 (no MPI).
 
 Two kinds, which behave differently:
 
   pruning    --exclude GLOB      tested on an entry's name, before its stat: a match is never
-                                 stat'ed, counted, descended or archived (find's
-                                 '-name GLOB -prune'). The --dirs roots are never tested.
+                                 stat'ed or descended, so nothing is done with it or
+                                 below it (find's '-name GLOB -prune'). The --dirs roots
+                                 are never tested.
   selecting  --{m,a,c}time-{older,newer} WHEN, --user, --group, --min-size, --max-size,
              --type              tested on the stat already fetched (no extra system calls),
                                  on every entry, directories included. They decide what is
-                                 counted (walkstat), archived (walktar) or copied (walksync),
-                                 never what is descended: a directory that fails can hold
-                                 entries that pass.
+                                 counted (walkstat), archived (walktar), copied (walksync)
+                                 or listed (walkfind), never what is descended: a
+                                 directory that fails can hold entries that pass. walkrm
+                                 removes whole trees and refuses every filter.
 
 Kinds AND together; the values of one repeatable kind (--user a,b --user c) OR together.
 
@@ -21,6 +23,7 @@ workers inside the options by bcast. Each rank then builds its callables once fr
 pays only an 'is None' test per entry.
 """
 
+import argparse
 import fnmatch
 import grp
 import pwd
@@ -105,29 +108,47 @@ class Filters:
         return select
 
 
-def add_filter_options(parser: argparse.ArgumentParser) -> None:
-    g = parser.add_argument_group('filters', 'find-like; different kinds AND together. '
-                                  '--exclude prunes (never stat\'ed or descended); the others select what is '
-                                  'counted (walkstat), archived (walktar) or copied (walksync), and are tested '
-                                  'on every entry, directories included, without stopping descent.')
-    g.add_argument('--exclude', action='append', metavar='GLOB',
-                   help='skip entries whose name matches GLOB (fnmatch, case-sensitive; repeatable): '
-                        'never stat\'ed, counted, descended or archived, like find\'s -name GLOB -prune')
+def add_filter_options(parser: argparse.ArgumentParser, tool=None) -> None:
+    """The filter options. tool (a Tool) says what its selecting filters decide, for the
+    help; a tool that takes no filters (walkrm) still parses them, to refuse them with
+    its own message, but its --help leaves them out."""
+    selects = getattr(tool, 'selects', 'counted')
+    if selects is None:
+        for flag, options in filter_flags():
+            parser.add_argument(flag, help=argparse.SUPPRESS, **options)
+        return
+    g = parser.add_argument_group('filters', 'Like find\'s tests; different kinds AND together. '
+                                  f'--exclude prunes (never stat\'ed or descended); the others select what is '
+                                  f'{selects}, and are tested on every entry, directories included, without '
+                                  'stopping the descent.')
+    help = {
+        '--exclude': 'Skip entries whose name matches GLOB (fnmatch, case-sensitive; repeatable): '
+                     'never stat\'ed or descended, like find\'s -name GLOB -prune',
+        '--user': 'Only entries owned by these users (names or uids; repeatable)',
+        '--group': 'Only entries in these groups (names or gids; repeatable)',
+        '--min-size': 'Only entries of at least SIZE bytes (st_size; e.g. 10MB, which is binary: 10 x 1024 x 1024)',
+        '--max-size': 'Only entries of at most SIZE bytes (st_size)',
+        '--type': 'Only entries of these types: f (regular file), d (directory), l (symlink), '
+                  'p (fifo), s (socket), b (block device), c (character device)',
+    }
     for f in TIME_FIELDS:
-        g.add_argument(f'--{f}-older', metavar='WHEN',
-                       help=f'only entries whose {f} is before WHEN: {WHEN_HELP}')
-        g.add_argument(f'--{f}-newer', metavar='WHEN',
-                       help=f'only entries whose {f} is after WHEN')
-    g.add_argument('--user', action='append', metavar='U[,U...]',
-                   help='only entries owned by these users (names, or uids; repeatable)')
-    g.add_argument('--group', action='append', metavar='G[,G...]',
-                   help='only entries in these groups (names, or gids; repeatable)')
-    g.add_argument('--min-size', metavar='SIZE', help='only entries of at least SIZE bytes (st_size; e.g. 10MB, binary)')
-    g.add_argument('--max-size', metavar='SIZE', help='only entries of at most SIZE bytes (st_size)')
-    g.add_argument('--type', metavar='T[,T...]',
-                   help='only entries of these types: f (regular file), d (directory), l (symlink), '
-                        'p (fifo), s (socket), b (block device), c (character device)')
-    return g
+        help[f'--{f}-older'] = f'Only entries whose {f} is before WHEN: {WHEN_HELP}'
+        help[f'--{f}-newer'] = f'Only entries whose {f} is after WHEN'
+    for flag, options in filter_flags():
+        g.add_argument(flag, help=help[flag], **options)
+
+
+def filter_flags():
+    """Every filter option and how argparse takes it, in --help's order."""
+    flags = [('--exclude', dict(action='append', metavar='GLOB'))]
+    for f in TIME_FIELDS:
+        flags += [(f'--{f}-older', dict(metavar='WHEN')), (f'--{f}-newer', dict(metavar='WHEN'))]
+    flags += [('--user', dict(action='append', metavar='U[,U...]')),
+              ('--group', dict(action='append', metavar='G[,G...]')),
+              ('--min-size', dict(metavar='SIZE')),
+              ('--max-size', dict(metavar='SIZE')),
+              ('--type', dict(metavar='T[,T...]'))]
+    return flags
 
 
 def parse_when(text: str, now: float) -> float:

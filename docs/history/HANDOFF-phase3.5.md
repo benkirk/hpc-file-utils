@@ -1,9 +1,13 @@
 # Hand-off: finish phase 3.5, local work queues (written 2026-11-07)
 
+> **Historical, not maintained.** This is the hand-off for finishing phase 3.5. It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 Phase 3.5 is on `main`: PR #5, ported onto phase 3 (PR #4) and merged as `f06778a`. **It works and is tested,
 but it has not been measured at scale.** This note is for a fresh session that measures it, tunes
 it and closes it out. Read first:
-- [walk-load-balancing.md](walk-load-balancing.md): section 1.4 (the saturation signal), section
+- [walk-load-balancing.md](../walk-load-balancing.md): section 1.4 (the saturation signal), section
   5 (this design) and section 7 (the plan).
 - The module docstring of `hpc_file_utils/walk/common/manager.py`: the protocol and the
   termination argument, including why `share` cannot upset it.

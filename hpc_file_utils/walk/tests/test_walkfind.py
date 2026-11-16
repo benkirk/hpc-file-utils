@@ -1,4 +1,4 @@
-"""walkfind (tools-find-rm, step 1), end to end under MPI, with find(1) as the oracle.
+"""walkfind, end to end under MPI, with find(1) as the oracle.
 
 walkfind's list (--print0, joined by --output) is the set of paths that
     find TREE -mindepth 1 [( -name X ... ) -prune -o] [( -name G -o ... )] [-prune] [( preds )] -print0

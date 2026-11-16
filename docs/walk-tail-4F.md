@@ -2,9 +2,10 @@
 
 Investigation: the findings, a local reproduction, and recommendations. **Fixed in tail-fixes:**
 recommendation 1 (share the last directory), 2 (walksync walks before copying) and the cmp
-byte cap, option (a). Recommendation 3 (largest batches first) is still open.
+byte cap, option (a). **Implemented since:** recommendation 3 (costliest copy batches first;
+see the note under it). Its gain at scale has not been measured yet.
 
-Measured after the fixes (derecho scratch, 2 nodes × 32, a 4F-shaped mock: 16 directories, each
+Measured after the fixes (Derecho scratch, 2 nodes × 32, a 4F-shaped mock: 16 directories, each
 an 8 GiB file on top and another three levels down, `--batch-size 4GiB`; ABBA against the
 shared install's 510ceab): the walk was complete at the first progress line (5 s) in both new
 runs, against 45 s and 30 s in the old ones, which sat at 139 of 145 items with `queued=1,
@@ -93,6 +94,19 @@ The run was `--batch-size 10MB`, so each big file is its own batch, as 4F's were
 
    A 930 GiB file started in the first minutes costs its ~1.5 h inside an 11 h run instead of
    after it.
+
+   *As implemented:* the order is by cost, not by `nbytes`. Only copy batches carry a size
+   (compare and stat batches do not), and bytes alone misjudge how long a batch takes: a
+   batch is copied by `--rsyncs` streams but one file by one stream. So
+   `cost = max(largest file, nbytes / rsyncs)` (`copy_cost()` in `sync/worker.py`).
+   - A rank whose walk is done copies its costliest batch first.
+   - A share takes a rank's compare batches, then its costliest copy batches.
+   - The Manager hands out batches without a cost (the walk) first, then directories, then
+     copy batches, costliest first (`BatchQueue` in `common/manager.py`).
+
+   This changes when a long copy starts, not how fast it runs. A run bound by copy bandwidth,
+   like the mock above, should not move. The case it is for (one file whose copy time is a
+   large part of the run, found among many small ones) still needs a measurement on Derecho.
 4. **Single huge files stay the floor.** One rsync copies one file at ~180 MB/s, so a 1 TiB
    file is ~1.6 h whatever the schedule. Beyond that only a chunked parallel copy helps
    (several ranks writing ranges of one file with `--inplace` semantics). That's out of scope;

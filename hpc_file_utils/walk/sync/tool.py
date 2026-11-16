@@ -14,16 +14,23 @@ class SyncTool(Tool):
     description = ('Walk a directory tree in parallel (MPI) and copy what is new or changed to a destination, '
                    'with batched rsync --files-from. Never deletes; hard links, deletions and final '
                    'directory modes and times are left to a final serial rsync -aHAX --delete.')
+    examples = ('mpiexec -n 32 walksync --dirs /src/tree --dest /dest/tree --dry-run',
+                'mpiexec -n 32 walksync --dirs /src/tree --dest /dest/tree --rsync-opts=--inplace',
+                'rsync -aHAX --delete /src/tree/ /dest/tree/    # afterwards, serial: what walksync leaves')
     writes = ('copied', 'rsync batches')
     batches_bytes = True
+    dirs_help = 'The source directory (exactly one)'
+    batch_help = 'compared with the destination a batch at a time, and each batch to copy is copied by --rsyncs rsyncs'
+    selects = 'copied'
+    errors_exit = 1          # an incomplete copy must not look like a finished one
 
     def add_arguments(self, parser):
-        parser.add_argument('--dest', required=True, help='Destination directory: the source --dirs DIR is copied into it (rsync DIR/ DEST/)')
+        parser.add_argument('--dest', required=True, metavar='DIR', help='Destination directory: the source --dirs DIR is copied into it (rsync DIR/ DEST/)')
         parser.add_argument('-n', '--dry-run', action='store_true', help='Copy nothing: list what would be copied (N new, C changed) and what is only in the destination (X), one file per rank: walksync-dryrun-r*.txt')
-        parser.add_argument('--rsync', default=None, help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
-        parser.add_argument('--rsync-opts', default='', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to ' + ' '.join(RSYNC_OPTS) + ')')
+        parser.add_argument('--rsync', default=None, metavar='FILE', help='The rsync to run (default: rsync on PATH, or /usr/bin/rsync if rsync on PATH lacks ACLs or xattrs and /usr/bin/rsync has both)')
+        parser.add_argument('--rsync-opts', default='', metavar='OPTS', help='More rsync options for every copy batch, one string, given as --rsync-opts="..." (appended to ' + ' '.join(RSYNC_OPTS) + ')')
         add_index_argument(parser, 'Every rank also writes an index of what it copied, one line of metadata each (from the source stat the compare took) per entry an rsync copied, to index-r{rank}.tsv (index-<prefix>-r{rank}.tsv with --summary-prefix) in the working directory; unchanged entries are not listed, and with --dry-run it lists what would be copied; see the walk README, "Indexes"')
-        parser.add_argument('--rsyncs', default=8, type=int, help='rsyncs per copy batch, side by side, each over a K-th of its files: a cold file costs one storage round trip whatever rsync does with it, and K rsyncs overlap them; 1 is one rsync per batch (default: 8, the fastest or within noise of it at 1 x 32 on every tree measured, see the walk README)')
+        parser.add_argument('--rsyncs', default=8, type=int, metavar='N', help='Rsyncs per copy batch, side by side, each over an N-th of its files: a cold file costs one storage round trip whatever rsync does with it, and N rsyncs overlap them; 1 is one rsync per batch. 8 was the fastest, or within noise of it, at 32 ranks on one node on every tree measured (default: 8)')
 
     def check(self, parser, args):
         """One source, its own rsync and filter rules, an existing destination that
@@ -76,10 +83,6 @@ class SyncTool(Tool):
         print('\n'.join(sync_lines(stats, manager.walk_elapsed, options)), flush=True)
         if options.summary_prefix or options.spreadsheet:
             write_reports(stats, options)
-
-    def exit_status(self, total_errors, options):
-        """Always 1 on errors: an incomplete copy must not look like a finished one."""
-        return 1 if total_errors else 0
 
     def make_worker(self):
         from hpc_file_utils.walk.sync.worker import SyncWorker

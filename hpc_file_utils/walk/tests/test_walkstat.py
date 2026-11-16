@@ -1,7 +1,7 @@
-"""walkstat/walktar behaviour on the fixture trees.
+"""walkstat/walktar behavior on the fixture trees.
 
-Every walk checks walkstat's Total Count against the tree: before phase 2, the
-termination race could end a walk early under load and drop directories silently.
+Every walk checks walkstat's Total Count against the tree: the
+termination race (test_termination_race.py) could end a walk early under load and drop directories silently.
 """
 
 import os
@@ -13,9 +13,9 @@ pytestmark = pytest.mark.mpi
 GOLDEN_ARGS = ["--summary-prefix", "golden", "--threshold-size", "1MB"]
 
 
-# --batch-files 1 splits every directory over stat batches (phase 5): the directory lists
+# --batch-files 1 splits every directory over stat batches: the directory lists
 # must still come out the same, from the parts added up after the reduction; and the same
-# with the batches' stats in --stat-threads threads (perf-1, step C)
+# with the batches' stats in --stat-threads threads
 BATCHES = pytest.mark.parametrize("batches", [[], ["--batch-files", "1"], ["--stat-threads", "4"],
                                               ["--batch-files", "3", "--stat-threads", "2"]],
                                   ids=["default", "split", "threads", "split-threads"])

@@ -4,7 +4,7 @@ copy batch, and one rsync as a process to start, poll and finish.
 Several rsyncs run side by side over one copy batch (--rsyncs K, split() cutting the
 batch K ways): a cold file costs one storage round trip, ~40 ms per 1 MiB file on
 derecho's scratch, whatever rsync does with it, and K rsyncs overlap those round trips as
-walktar's reader threads do (docs/HANDOFF-sweep.md 0.4).
+walktar's reader threads do (measurements: docs/GLADE_PERFORMANCE.md).
 """
 
 import os

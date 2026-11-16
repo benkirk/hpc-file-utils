@@ -1,4 +1,4 @@
-"""Fixtures for the walkstat, walktar and walksync tests.
+"""Fixtures for the walk tools' tests.
 
 The tests run the console scripts the way the scans do:
 ``mpiexec -n 4 walkstat --dirs <tree>``, in a scratch working directory
@@ -128,7 +128,7 @@ class WalkResult:
 
 
 def console_script(app):
-    """The installed console script, walkstat, walktar or walksync ('pip install -e .' puts them beside python)."""
+    """The installed console script of a walk tool ('pip install -e .' puts them beside python)."""
     exe = Path(sys.executable).parent / app
     if not exe.exists():
         pytest.fail(f"{exe} is missing: reinstall the package (source etc/config_env.sh)")

@@ -1,5 +1,9 @@
 # Peer review: filesystem/cgd_migration (branch cgd_migration vs main)
 
+> **Historical, not maintained.** This is a review of the copy pipeline as it was in csg-utils (`filesystem/cgd_migration`), before the import. It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 ## Context
 You asked for a review only: no edits, commits or job submissions. I read the README, all six shell
 scripts, split_pair.py, the Makefile and pairs.conf (including the uncommitted `batch_files: 25000` on 3B),

@@ -1,4 +1,4 @@
-"""Phase 4 filters, end to end under MPI, with find(1) as the oracle.
+"""The filters, end to end under MPI, with find(1) as the oracle.
 
 A filtered walkstat counts what `find TREE -mindepth 1 <same predicates>` lists: its Total
 Count is find's count, and its Total Size is the sum of min(st_size, st_blocks*512) over
@@ -123,7 +123,7 @@ def check_against_find(walk, tree, tmp_path, excludes, args, preds):
 @pytest.mark.parametrize("batches", [[], ["--batch-files", "1"]], ids=["default", "split"])
 @pytest.mark.parametrize("case", CASES)
 def test_selecting_matches_find(walk, golden_tree, tmp_path, case, batches):
-    """Also with every directory split over stat batches (phase 5): the selecting
+    """Also with every directory split over stat batches: the selecting
     filters are applied after the stat, wherever the batch is processed."""
     args, preds = CASES[case]
     check_against_find(walk, golden_tree, tmp_path, [], _fill(args, golden_tree) + batches,

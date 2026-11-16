@@ -25,8 +25,8 @@ WORKER_UPDATE_SECONDS = 10   # most seconds between a worker's progress messages
 
 
 class FileBatch(NamedTuple):
-    """A closed batch of selected files (close_batch()): walktar writes it as one tar,
-    walksync copies it with one rsync. Batches are module-level NamedTuples so they
+    """A closed batch of selected files (close_batch()): walktar writes it as one tar;
+    walksync's is a CopyBatch (sync/worker.py), with more fields. Batches are module-level NamedTuples so they
     pickle in a share_reply; the Manager treats every kind as one opaque unit of work."""
     paths  : list   # the files' paths (walktar) or paths relative to the source root (walksync)
     nbytes : int    # their st_size total
@@ -64,8 +64,8 @@ class BaseWorker(MPIClass):
     def __init__(self):
         super().__init__()
 
-        self.local_dirs = []          # directories still to walk, a stack (phase 3.5)
-        self.local_batches = []       # closed batches still to process (phase 5): FileBatch, or the tool's own kind
+        self.local_dirs = []          # directories still to walk, a stack
+        self.local_batches = []       # closed batches still to process: FileBatch, or the tool's own kind
         self.batch = []               # the open batch: paths of selected files, across directories
         self.batch_bytes = 0          # ... and their st_size total
         self.max_local_dirs = 0       # its high-water mark
@@ -171,8 +171,8 @@ class BaseWorker(MPIClass):
 
     def process_directory(self, dirname):
         """Scan one directory, ours or the Manager's: count it, push its subdirectories
-        (push_dir()) and queue its other names as the tool's batches. Every tool's scan
-        is walkstat's (stat/worker.py) or built on it; walksync's is its own."""
+        (push_dir()) and queue its other names as the tool's batches. Each tool has its
+        own scan; walktar's is walkstat's (stat/worker.py)."""
         raise NotImplementedError
 
     def list_directory(self, dirname, totals):
@@ -270,6 +270,11 @@ class BaseWorker(MPIClass):
         walks before it copies (sync/worker.py)."""
         return self.local_batches.pop() if self.local_batches else None
 
+    def last_batch(self):
+        """The batch drain_local_work() processes when next_batch() gave none and the stack
+        is empty, removed from our list. Default: the newest. walksync: the costliest."""
+        return self.local_batches.pop()
+
     def drain_local_work(self):
         """Process our batches and walk our stack until both are empty, in next_batch()'s
         order (batches first, unless the tool says otherwise); then close the open batch
@@ -287,7 +292,7 @@ class BaseWorker(MPIClass):
                 self.max_local_dirs = max(self.max_local_dirs, len(self.local_dirs))
                 self.process_directory(self.local_dirs.pop())
             elif self.local_batches:
-                self.process_batch(self.local_batches.pop())
+                self.process_batch(self.last_batch())
             else:
                 self.close_batch()
                 if not self.local_batches:

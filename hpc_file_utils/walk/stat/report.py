@@ -95,7 +95,7 @@ def scanned_line(dirs):
 
 
 def filter_items(stats, options, per_user=False):
-    """(label, text) pairs naming the active filters (phase 4), or [] for an unfiltered walk,
+    """(label, text) pairs naming the active filters, or [] for an unfiltered walk,
     so a filtered report is never mistaken for a full one. The counts are the whole walk's,
     so a userlist gets only the filters."""
     filters = options.filters

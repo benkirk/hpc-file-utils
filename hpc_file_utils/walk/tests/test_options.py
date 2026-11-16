@@ -12,7 +12,7 @@ def test_defaults(tmp_path):
     assert a.dirs == [str(tmp_path)]
     assert (a.progress, a.heap_size, a.threshold_count) == (5, 500, 10000)
     assert (a.local_queue_max, a.dirs_per_dispatch) == (1000, 8)
-    assert not hasattr(a, "max_dirs_per_send")       # replaced in phase 3.5
+    assert not hasattr(a, "max_dirs_per_send")       # replaced by --local-queue-max
     assert a.threshold_size == 10 * 1024 * 1024      # '10MB', binary
     assert not a.verbose and not a.fail_on_errors
     assert a.spreadsheet is None and a.summary_prefix is None
@@ -33,7 +33,7 @@ def test_values(tmp_path):
 def test_walktar_extras(tmp_path):
     a = parse_options("walktar", ["--dirs", str(tmp_path)])
     assert (a.batch_files, a.batch_size, a.read_ahead) == (1000, 16 * 1024 ** 3, 16)
-    assert not hasattr(a, "tar_queue_depth")         # the tar thread is gone (phase 5)
+    assert not hasattr(a, "tar_queue_depth")         # the tar thread is gone
     a = parse_options("walktar", ["--dirs", str(tmp_path), "--batch-files", "7", "--batch-size", "2MB"])
     assert (a.batch_files, a.batch_size) == (7, 2 * 1024 ** 2)
     assert parse_options("walktar", ["--dirs", str(tmp_path), "--read-ahead", "0"]).read_ahead == 0
@@ -44,7 +44,7 @@ def test_walktar_extras(tmp_path):
 
 
 def test_walkstat_stat_threads(tmp_path):
-    """--stat-threads (perf-1, step C): walkstat's, 0 (serial) by default, never negative;
+    """--stat-threads: walkstat's, 0 (serial) by default, never negative;
     walktar's stat batches run in its --read-ahead threads instead."""
     assert parse_options("walkstat", ["--dirs", str(tmp_path)]).stat_threads == 0
     assert parse_options("walkstat", ["--dirs", str(tmp_path), "--stat-threads", "8"]).stat_threads == 8

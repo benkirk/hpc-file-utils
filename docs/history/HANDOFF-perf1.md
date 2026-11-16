@@ -1,5 +1,9 @@
 # Hand-off: performance characterization, sprint perf-1 (written 2026-11-10)
 
+> **Historical, not maintained.** This is the log of the perf-1 sprint. It describes the code and the plans as of
+> its date; paths, options and numbers may since have changed. Current documentation starts
+> at [docs/README.md](../README.md).
+
 Three steps, in order, each its own commit on branch `perf-1` and its own entry in the walk
 README (`hpc_file_utils/walk/README.md`, the "perf-1" entries), working through the first
 three items of `docs/GLADE_PERFORMANCE.md` section 7 in the order 2, 1, 3:

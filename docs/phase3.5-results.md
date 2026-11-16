@@ -1,8 +1,8 @@
 # Phase 3.5 close-out: measurements (2026-11-07)
 
 Phase 3.5 (workers walk a local stack; the Manager brokers only overflow and `share`
-requests) measured on derecho against phase 3 (`ebfd026`) and the deployed csg-utils
-walkstat. The plan and the gate are in [HANDOFF-phase3.5.md](HANDOFF-phase3.5.md); the
+requests) measured on Derecho against phase 3 (`ebfd026`) and the deployed csg-utils
+walkstat. The plan and the gate are in [history/HANDOFF-phase3.5.md](history/HANDOFF-phase3.5.md); the
 design is section 5 of [walk-load-balancing.md](walk-load-balancing.md).
 
 ## How these were measured
@@ -110,7 +110,7 @@ configuration from job 8106112.
 | 384 | 4 × 96 | 44.7 s | 87k | 44.9 s | 108k | 24.6% / 7.2% |
 
 **The Manager is not the ceiling.** It is blocked in `recv` 98–100% of the time at every
-rank count and layout, so section 3's decentralised stealing would buy nothing at these
+rank count and layout, so section 3's decentralized stealing would buy nothing at these
 scales.
 
 **The ceiling is per node.** Throughput depends on how many nodes there are, and more ranks

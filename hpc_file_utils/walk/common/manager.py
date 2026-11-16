@@ -2,16 +2,23 @@
 
 Workers walk their own local stack of directories, depth-first, and talk to the Manager
 only when it overflows, when it runs dry, or when the Manager asks them to share
-(phase 3.5; docs/walk-load-balancing.md, section 5).
+(docs/walk-load-balancing.md, section 5).
 
-Phase 5: the workers also turn a directory's files into batches, kept on the scanning
+Batches: the workers also turn a directory's names into batches, kept on the scanning
 worker's own list and processed there, batches before directories (walksync: compare
-batches, then directories, then copy batches; BaseWorker.next_batch()): walkstat's are
-StatBatch(dirname, names, tail), the names still to stat (stat/worker.py); walktar's
-are those too, whose stats fill FileBatch(paths, nbytes), archived into one tar each
-(tar/worker.py); walksync's are CompareBatch and FileBatch (sync/worker.py). A batch
-leaves its worker only in a share_reply, and the Manager hands batches out before
-directories. To the Manager and to this argument, a batch is opaque: one unit of work.
+batches, then directories, then copy batches; BaseWorker.next_batch()). Each tool has
+its own kinds:
+  walkstat   StatBatch(dirname, names, tail), the names still to stat (stat/worker.py)
+  walktar    those too, whose stats fill FileBatch(paths, nbytes), archived into one tar
+             each (tar/worker.py)
+  walksync   CompareBatch, the names still to compare, and CopyBatch, what one group of
+             rsyncs copies (sync/worker.py)
+  walkfind   FindBatch, the matching names still to stat and list (find/worker.py)
+  walkrm     RmBatch, the names still to unlink (rm/worker.py)
+A batch leaves its worker only in a share_reply, and the Manager hands batches out before
+directories (BatchQueue: walksync's copy batches last, costliest first). To the Manager
+and to this argument, a batch is one unit of work: it reads nothing of one but an
+optional 'cost'.
 
 Messages (tags in protocol.py; 'payload' is the (items, bytes, queued, extra) tuple):
 
@@ -45,8 +52,9 @@ How the Manager decides the walk is done:
   1. A worker is idle only while the Manager holds its 'ready' unanswered. A worker
      sends 'ready' only when its local stack is empty, it holds no batch (none closed,
      and the open one, if any, has been closed and processed), and its last directory
-     or batch is done; process_batch() runs on the worker's only thread, so done means
-     returned. It then waits for the answer, so it cannot send anything else.
+     or batch is done; process_batch() runs on the worker's main thread, the only one
+     that talks to MPI (a tool's stat or reader threads are joined inside it), so done
+     means returned. It then waits for the answer, so it cannot send anything else.
   2. The Manager receives with ANY_SOURCE and ANY_TAG, so every message matches the
      same receive and it gets each worker's messages in the order they were sent
      (MPI's non-overtaking rule applies to messages from one sender that match the
@@ -75,7 +83,7 @@ Fairness: MPI promises no order between senders, but the Manager takes every mes
 as it comes, whatever its tag, and each costs it microseconds, so a busy worker's
 dir_reply/progress messages delay a 'ready' only briefly. (One blocking receive per
 message replaced a pass that probed every worker in turn: at 384 ranks over 4 nodes
-those probes kept the Manager busy and made workers wait; see walk/README.md.)
+those probes kept the Manager busy and made workers wait; see docs/walk-changelog.md.)
 """
 
 import heapq
@@ -87,6 +95,38 @@ from hpc_file_utils.walk.common.mpiclass import MPIClass
 from hpc_file_utils.walk.common.protocol import Tag
 from hpc_file_utils.walk.common.progress import ProgressTally, progress_line, written_status
 from hpc_file_utils.walk.tools import TOOLS
+
+class BatchQueue:
+    """The batches waiting here for a worker, in the order they are handed out.
+
+    A batch with a 'cost' (walksync's copy batches: sync/worker.py) leaves costliest
+    first, so the longest work starts first and does not become the run's tail. Any other
+    batch (stat, compare, tar, find, rm) leaves in arrival order, and before every costed
+    one: those are the walk, or sized alike.
+    """
+
+    def __init__(self):
+        self.fifo = deque()
+        self.costed = []                      # a heap of (-cost, arrival number, batch)
+        self.arrivals = 0
+
+    def __len__(self):
+        return len(self.fifo) + len(self.costed)
+
+    def extend(self, batches):
+        for batch in batches:
+            cost = getattr(batch, 'cost', None)
+            if cost is None:
+                self.fifo.append(batch)
+            else:
+                self.arrivals += 1
+                heapq.heappush(self.costed, (-cost, self.arrivals, batch))
+
+    def pop(self):
+        if self.fifo:
+            return self.fifo.popleft()
+        return heapq.heappop(self.costed)[2]
+
 
 def _ms(seconds):
     return f'{1e3 * seconds:.3f} ms'
@@ -123,7 +163,7 @@ class Manager(MPIClass):
         MPI = self.MPI
         self.c = Counters()
         self.dirs = list(self.options.dirs)           # directories waiting for a worker
-        self.batches = deque()                         # batches waiting for a worker (phase 5)
+        self.batches = BatchQueue()                    # batches waiting for a worker
         self.nworkers = self.nranks - 1
         self.idle = deque()                            # (rank, when) of each 'ready' we hold, unanswered
         self.idle_set = set()                          # ... just the ranks
@@ -143,15 +183,16 @@ class Manager(MPIClass):
         self.progress.update(rank, payload)
 
     def written(self):
-        """(bytes, files, archives) written so far, summed over the workers' 'extra'
-        payloads; None when no worker sends one (walkstat)."""
+        """(bytes, files, archives) written so far (walksync: bytes, entries, rsync batches
+        copied), summed over the workers' 'extra' payloads; None when no worker sends one
+        (a tool that writes nothing)."""
         extras = [e for e in self.progress.extra if e is not None]
         if not extras:
             return None
         return tuple(sum(col) for col in zip(*extras))
 
     def progress_extra_status(self, elapsed, interval=None):
-        """Text appended to the progress line: tools that write (walktar) report bytes
+        """Text appended to the progress line: tools that write (walktar, walksync) report bytes
         written and the rate, now (over 'interval', since the last line) and on average.
         Without 'interval', the final line: the totals only."""
         written = self.written()
@@ -228,11 +269,12 @@ class Manager(MPIClass):
         Batches first, one per worker: a batch is already sized as a unit of work, and
         handing one worker several would rebuild the tail. Then directories, up to
         --dirs-per-dispatch each, fewer when there are not enough to go round the idle
-        workers.
+        workers. Last, the batches with a cost (walksync's copies; BatchQueue), costliest
+        first: they wait for the walk, which finds the rest of them.
         """
         while (self.batches or self.dirs) and self.idle:
-            if self.batches:
-                give = ([], [self.batches.popleft()])
+            if self.batches.fifo or (self.batches and not self.dirs):
+                give = ([], [self.batches.pop()])
                 self.c.nbatch_dispatches += 1
             else:
                 n = max(1, min(self.options.dirs_per_dispatch, len(self.dirs) // len(self.idle)))

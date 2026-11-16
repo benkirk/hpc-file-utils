@@ -1,4 +1,4 @@
-"""The phase 4 filters: parsing, validation and the compiled callables (no MPI)."""
+"""The filters: parsing, validation and the compiled callables (no MPI)."""
 
 import grp
 import os

@@ -1,10 +1,10 @@
-"""walksync (phase 6): copy what is new or changed, with batched rsync, spread over the ranks.
+"""walksync: copy what is new or changed, with batched rsync, spread over the ranks.
 
-The gate (docs/HANDOFF.md, phase 6): after a run, the oracle
+The gate: after a run, the oracle
     rsync -naxAX --delete -i [--chmod=Du+w] [--exclude ...] SRC/ DEST/
 lists only directory-time lines, and a rerun copies nothing.
 
---index (indexes-2, step B): the E records of a run are what the same oracle, run before
+--index: the E records of a run are what the same oracle, run before
 it (without --delete), says rsync would copy; a --dry-run's index is the real run's.
 """
 

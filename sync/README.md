@@ -1,7 +1,14 @@
-# cgd_migration
+# sync: copying directory pairs with PBS jobs
 
-Large cross-fileset copies on `/glade/campaign` for CGD (Nov 2026 derecho downtime),
-modeled on `../p_migration`. Each pair in `pairs.conf` is synchronized by one PBS job,
+Large cross-fileset copies on `/glade/campaign`, written for the CGD migration (Nov 2026
+Derecho downtime) and still named for it in its job names and logs (`cgd_`). It came from
+csg-utils (`filesystem/cgd_migration`, modeled on `filesystem/p_migration` there; paths below
+that start `../p_migration` are in csg-utils, not in this repository).
+
+**What it needs:** the walk tools from a shared install of this repository (`hfu_root`,
+[deploy/README.md](../deploy/README.md)), mpifileutils for `dsync`, and `rsync`.
+
+Each pair in `pairs.conf` is synchronized by one PBS job,
 `sync_dir_job_array.sh`:
 
 1. **HSM preflight** - `walkfind --name 'COLD_STORAGE*' --prune-matches` (from the shared install
@@ -63,9 +70,9 @@ Tunables, per pair or global:
 | `verify_max_bytes` | `16G` | sampled files up to this size are compared whole; bigger ones by their size, first and last 1 GiB and 8 random 1 GiB windows |
 | `copier` | `dsync` | `dsync` or `walksync`: the bulk copy, see *walksync as the copier* |
 | `walksync_opts` | `--rsyncs 8` | more walksync options, split on blanks (no quotes or globs) |
-| `walksync_bind` | derecho `--cpu-bind depth --depth 4`, casper `--bind-to none` | walksync's `mpiexec` CPU binding |
+| `walksync_bind` | Derecho `--cpu-bind depth --depth 4`, Casper `--bind-to none` | walksync's `mpiexec` CPU binding |
 | `hfu_root` | `/glade/u/apps/opt/hpc-file-utils/current-<host>` | the install walkfind (every pair) and walksync run from |
-| `hfu_bind` | derecho `--cpu-bind depth --depth 4`, casper none | walkfind's `mpiexec` CPU binding |
+| `hfu_bind` | Derecho `--cpu-bind depth --depth 4`, Casper none | walkfind's `mpiexec` CPU binding |
 | `walksync_inplace` | `auto` | rsync `--inplace` for walksync's copies: `auto` = only into a dest empty at job start, `yes`, `no` |
 
 Safety checks on every pair: src and dest absolute and normalized, different, not nested
@@ -76,8 +83,8 @@ Environment variables override the global settings for one submission, e.g.
 
 ## Usage
 
-Submit from a login node of the cluster to run on (derecho or casper); the job script picks the
-modules for that cluster and launches MPI with `mpibind`.
+Submit from a login node of the cluster to run on (Derecho or Casper); the job script picks the
+modules for that cluster, launches `dsync` with `mpibind` and the walk tools with `mpiexec`.
 
 ```bash
 make list                                  # parsed settings & pairs - sanity check
@@ -158,13 +165,13 @@ behind - remove it by hand.
 - **mpibind can exit 0 when the MPI launcher crashed.** The job therefore requires walkfind's
   `--> Find: walked` summary and dsync's `Completed sync`, and aborts otherwise.
 - **Casper: Open MPI's launcher (PRRTE 3.0.11a1) segfaults for some multi-node allocations**,
-  depending on the node set, before any rank starts. Such jobs abort at the preflight; derecho
+  depending on the node set, before any rank starts. Such jobs abort at the preflight; Derecho
   (cray-mpich) is not affected.
 - **Size `batch_files` by data volume.** dsync sets file metadata per batch, so files of an
   interrupted batch are recopied on restart: keep one batch well under the walltime. A batch
   counts *all* items - directories and symlinks too, not just files.
-- **Throughput** (3D, 174 TiB): 7.1 GiB/s on 4 casper nodes x 16 ranks; 3C reached 50-60 GiB/s
-  on 16 casper nodes x 9 ranks.
+- **Throughput** (3D, 174 TiB): 7.1 GiB/s on 4 Casper nodes x 16 ranks; 3C reached 50-60 GiB/s
+  on 16 Casper nodes x 9 ranks.
 - **`dsync --dryrun` ignores source-only files**, so against an empty or partial dest it
   under-reports; it is only meaningful for an almost-complete dest.
 - **Copies are written uncompressed.** GPFS-compressed sources expand on copy (1.65x for 3D,
@@ -175,7 +182,7 @@ behind - remove it by hand.
   them on (a running job reads its own logs); `clean` keeps the `.xz` indexes.
 - **Hard links:** dsync copies every name of a hard-linked file separately (mpifileutils keeps
   no link counts), and msrsync does too whenever the names land in different buckets. The final
-  serial `rsync -H --delete` re-links them, so the result is correct - but a link-heavy tree
+  serial `rsync -axAHX --delete` re-links them, so the result is correct - but a link-heavy tree
   (e.g. conda) temporarily occupies N x the space.
 
 The patched `msrsync` is `../p_migration/msrsync.BSK` (skip vs. fail on non-UTF-8 names) plus
@@ -204,12 +211,12 @@ matched M` line is in `walkfind.out`, and the list holds exactly M lines. `walke
 the source, the root not counted) must be at least 1, and is what `max_delete`'s percentage is
 of.
 
-On casper the job sets `HFU_MPI=conda` before `config_env.sh`, and launches with the env's
+On Casper the job sets `HFU_MPI=conda` before `config_env.sh`, and launches with the env's
 conda-forge Open MPI (`mpiexec -x PATH --hostfile $PBS_NODEFILE <tool's full path>`): the host
 Open MPI launcher segfaults now and then (*Expectations*, below). `-x PATH`: the env is active on
 the first node only, and without it the other nodes' daemons could not find the tool (exit 66).
-The install's casper env is conda-forge's Open MPI (`HFU_MPI=auto` on casper since
-2026-11-14, `deploy/README.md`). Tested through `run_hfu` at 2 casper nodes × 16 from a
+The install's Casper env is conda-forge's Open MPI (`HFU_MPI=auto` on Casper since
+2026-11-14, `deploy/README.md`). Tested through `run_hfu` at 2 Casper nodes × 16 from a
 conda-MPI test checkout: 6 of 6 launches ran on 32 ranks (exit 66 on every one before `-x PATH`).
 
 ## Deleting a dest
@@ -255,7 +262,7 @@ make delete_dest PAIR=<pair> CONFIRM=<dest> [PREFLIGHT=skip] [DRYRUN=yes] [AFTER
 ## walksync as the copier
 
 `copier: walksync` (per pair or global, e.g. `derecho.copier: walksync`) replaces dsync, and
-msrsync's `auto`, with walksync (`../hpc_file_utils/walk/README.md`, "walksync (phase 6)") from
+msrsync's `auto`, with walksync (`../hpc_file_utils/walk/README.md`, "walksync") from
 the shared install `hfu_root`. It runs on all nodes before the node release:
 
 ```
@@ -282,11 +289,11 @@ the shared install `hfu_root`. It runs on all nodes before the node release:
   rank was lost) aborts the job, as a dsync without `Completed sync` does: on a fresh
   destination the serial rsync would be a single-stream copy of the whole tree. A missing
   `hfu_root/etc/config_env.sh` aborts before the preflight.
-- **casper** (since 2026-11-15): walksync runs there too, launched with the install's
-  conda-forge Open MPI (`mpiexec -x PATH --hostfile $PBS_NODEFILE --bind-to none`). casper's
+- **Casper** (since 2026-11-15): walksync runs there too, launched with the install's
+  conda-forge Open MPI (`mpiexec -x PATH --hostfile $PBS_NODEFILE --bind-to none`). Casper's
   host Open MPI launcher, which used to segfault now and then, is no longer in the path. The
   job's own `openmpi/5.0.8` module (for dsync) stays loaded, but conda's mpi4py finds its own
-  libmpi by RPATH: at 2 casper nodes under the job's modules, all 32 ranks loaded conda's
+  libmpi by RPATH: at 2 Casper nodes under the job's modules, all 32 ranks loaded conda's
   Open MPI 5.0.11, and walkfind (3/3) and walksync (2/2) ran clean.
 - **Refused:** with a `chmod:` other than `Du+w`, with `walksync_opts` that set `--dirs`, `--dest`,
   `--summary-prefix` or `--dry-run` (the job does), and when another filesystem is mounted
@@ -422,18 +429,18 @@ one array share them, and an hsm piece releases all but one node after its walkf
 - the final whole-tree pass catches loose files, small subtrees, and anything newer than the scan;
   every split dsync pair still runs the walkfind guard.
 
-What to expect (3A, Oct 2026: casper, 4 nodes x 8 cores per piece, 8 pieces at a time):
+What to expect (3A, Oct 2026: Casper, 4 nodes x 8 cores per piece, 8 pieces at a time):
 - ~50-60 GiB/s aggregate while dsync pieces dominate; ~1.1 PiB in ~9 h.
 - msrsync manages only ~1 GiB/s per hsm piece (8 rsync streams), so the hsm pieces set the
   tail. `msrsync_procs` above the core count may help (rsync mostly waits on I/O) - untested.
 - dsync stops printing progress near the end of a batch while a few ranks finish the largest
   files - for a single huge batch that can be hours. Judge progress by the destination
   (`find <dest> -type f -mmin -5`, or bytes vs. the source), not by `dsync.out`.
-- casper's launcher (PRRTE) segfaults on some node sets, either at startup (`ERROR: dfind
+- Casper's launcher (PRRTE) segfaults on some node sets, either at startup (`ERROR: dfind
   failed`, `Segmentation fault ... $mpicmd` in `dfind.err`) or at shutdown after `Completed sync`
   (the segfault line in `dsync.err` leaves the pass unstamped). Both fail closed and the next
   round retries; a crashing node set can take several pieces in a row as each failure frees it
-  for the next one. Prefer derecho for multi-node pieces when it has room.
+  for the next one. Prefer Derecho for multi-node pieces when it has room.
 
 ## Compression
 
@@ -447,7 +454,7 @@ Campaign Storage policy (files >= 100 MiB, >= 180 days;
   a large `-P` in a batch job.
 - compression keeps mtime and logical size, so later sync passes are unaffected.
 - run it as the files' owner, i.e. **before** the root chown.
-- `--status --exact` stats every file (`../glade_hsm/libexec/glade_hsm_scan_filelist.py`):
+- `--status --exact` stats every file (`../tools/glade_hsm/libexec/glade_hsm_scan_filelist.py`):
   true vs. on-disk bytes, ~3 min for 152K files.
 
 ## Downtime-day runbook

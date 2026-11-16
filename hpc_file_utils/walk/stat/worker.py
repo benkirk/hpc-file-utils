@@ -1,5 +1,5 @@
-"""StatWorker: walkstat's worker, with stat batches (phase 5); the scan every tool's
-worker builds on (walktar's TarWorker is a StatWorker whose stat batches fill tar batches).
+"""StatWorker: walkstat's worker, with stat batches. walktar builds on it: its TarWorker
+is a StatWorker whose stat batches fill tar batches.
 
 The scan of a directory reads its names and types from scandir (d_type: no stat on
 GPFS or Lustre) and stats only the subdirectories, which it must count and walk. The
@@ -19,7 +19,7 @@ each batch's files.
   the parts add up in the reduction, and rank 0 lists the directory after it
   (WalkStats.finish_directories()). Only big directories go there.
 
---stat-threads K (perf-1, step C): a stat batch's lstats K at a time in K threads, yielded
+--stat-threads K: a stat batch's lstats K at a time in K threads, yielded
 in order (lstats(), the same in_flight() as walktar's reads), so the counting is as with
 the serial calls (K = 0, the default). A stat is a metadata round trip, ~1 ms on an idle
 campaign GPFS and 6-9 ms under load, so a batch of 1,000 serial ones held a rank for

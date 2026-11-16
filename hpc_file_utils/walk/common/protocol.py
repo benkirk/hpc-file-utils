@@ -8,9 +8,10 @@ Progress payload: every worker -> Manager message carries one
     (items, bytes, queued, extra)
 
 the worker's running entry count and byte total, the length of its local stack of
-directories still to walk (phase 3.5) plus its closed batches (phase 5), and 'extra':
-None in walkstat; walktar's (bytes, files, archives) written so far, which the Manager
-sums into the progress line's write rate. Built by BaseWorker.progress_payload(), unpacked by
+directories still to walk plus its closed batches, and 'extra':
+None for a tool that writes nothing (walkstat, walkfind, walkrm); walktar's (bytes,
+files, archives) written or walksync's (bytes, entries, rsync batches) copied so far,
+which the Manager sums into the progress line's rate. Built by BaseWorker.progress_payload(), unpacked by
 Manager.update_progress().
 """
 

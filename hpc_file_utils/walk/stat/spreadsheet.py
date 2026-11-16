@@ -52,7 +52,7 @@ def write_spreadsheet(stats, options):
         df = pd.DataFrame(rows, columns=['username', 'groupname', 'size', 'nbytes', 'nitems'])
         df.to_excel(writer, sheet_name=sheet_prefix + 'Users & Groups', index=False)
 
-        # a filtered walk names its filters (phase 4)
+        # a filtered walk names its filters
         items = filter_items(stats, options)
         if items:
             df = pd.DataFrame(items, columns=['filter', 'value'])

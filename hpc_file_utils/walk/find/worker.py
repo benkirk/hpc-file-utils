@@ -1,4 +1,4 @@
-"""FindWorker: walkfind's worker (tools-find-rm, step 1). Lists the entries that match, like find.
+"""FindWorker: walkfind's worker. Lists the entries that match, like find.
 
   scan     a directory: one scandir (names and d_type, no stat). Every entry scanned counts
            as walked. --name is tested on the name: a non-match is never stat'ed. A matched
